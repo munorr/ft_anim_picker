@@ -69,22 +69,46 @@ class animation_tool_layout:
         self.col2 = QtWidgets.QHBoxLayout()
         self.col2.setSpacing(4)
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-        ts = 10 # text size
+        ts = 11 # text size
         bh = 20 # button height
+        #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
         reset_move_button = CB.CustomButton(text='Move', icon=':delete.png', color='#262626', size=14, tooltip="Resets the moved object values to Origin.",text_size=ts, height=bh)
         reset_rotate_button = CB.CustomButton(text='Rotate', icon=':delete.png', color='#262626', size=14, tooltip="Resets the rotated object values to Origin.",text_size=ts, height=bh)
         reset_scale_button = CB.CustomButton(text='Scale', icon=':delete.png', color='#262626', size=14, tooltip="Resets the scaled object values to Origin.",text_size=ts, height=bh)
-        reset_all_button = CB.CustomButton(text='Reset All', color='#CF2222', tooltip="Resets all the object transform to Origin.",text_size=ts, height=bh)
+        reset_all_button = CB.CustomButton(text='All', icon=':delete.png', size=14, color='#262626', tooltip="Resets all the object transform to Origin.",text_size=ts, height=bh)
+
+        timeLine_key_button = CB.CustomButton(text='Key', color='#d62e22', tooltip="Sets key frame.",text_size=ts, height=bh)
+        timeLine_delete_key_button = CB.CustomButton(text='Key', icon=':delete.png', color='#262626', size=14, tooltip="Deletes keys from the given start frame to the current frame.",text_size=ts, height=bh)
+        timeLine_copy_key_button = CB.CustomButton(text='Copy', color='#293F64', tooltip="Copy selected key(s).",text_size=ts, height=bh)
+        timeLine_paste_key_button = CB.CustomButton(text='Paste', color='#1699CA', tooltip="Paste copied key(s).",text_size=ts, height=bh)
+        timeLine_pasteInverse_key_button = CB.CustomButton(text='Paste Inverse', color='#9416CA', tooltip="Paste Inverted copied keys(s).",text_size=ts, height=bh)
+        #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
         reset_move_button.singleClicked.connect(reset_move)
         reset_rotate_button.singleClicked.connect(reset_rotate)
         reset_scale_button.singleClicked.connect(reset_scale)
         reset_all_button.singleClicked.connect(reset_all)
+
+        timeLine_key_button.singleClicked.connect(set_key)
+        timeLine_delete_key_button.singleClicked.connect(delete_keys)
+        timeLine_copy_key_button.singleClicked.connect(copy_keys)
+        timeLine_paste_key_button.singleClicked.connect(paste_keys)
+        timeLine_pasteInverse_key_button.singleClicked.connect(paste_inverse)
+        #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
         self.col1.addWidget(reset_move_button)
         self.col1.addWidget(reset_rotate_button)
         self.col1.addWidget(reset_scale_button)
         self.col1.addWidget(reset_all_button)
+
+        self.col1.addSpacing(4)
+
+        self.col1.addWidget(timeLine_key_button)
+        self.col1.addWidget(timeLine_delete_key_button)
+        self.col1.addWidget(timeLine_copy_key_button)
+        self.col1.addWidget(timeLine_paste_key_button)
+        self.col1.addWidget(timeLine_pasteInverse_key_button)
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
         self.tools_scroll_frame_layout.addLayout(self.col1)
+        self.tools_scroll_frame_layout.addSpacing(2)
         self.tools_scroll_frame_layout.addLayout(self.col2)
         self.layout.addWidget(self.tools_scroll_area)
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -234,4 +258,74 @@ def reset_all():
                 cmds.setAttr(f"{obj}.sz", 1)
     finally:
         cmds.undoInfo(closeChunk=True) 
+#---------------------------------------------------------------------------------------------------------------
+def set_key():
+    mel.eval("setKeyframe -breakdown 0 -preserveCurveShape 1 -hierarchy none -controlPoints 0 -shape 0;")
+
+def delete_keys():
+    mel.eval('''timeSliderClearKey;''')
+
+def copy_keys():
+        mel.eval("timeSliderCopyKey;")
+    
+def paste_keys():
+    mel.eval("timeSliderPasteKey false;")
+
+@undoable
+def paste_inverse():
+    mel.eval("timeSliderPasteKey false;")
+    try:
+        # Get the list of selected objects
+        sel_objs = cmds.ls(sl=True)
+
+        # Loop through each selected object
+        for obj in sel_objs:
+            # Get the current translate, rotate, and scale values
+            tx = cmds.getAttr(f"{obj}.tx")
+            ty = cmds.getAttr(f"{obj}.ty")
+            tz = cmds.getAttr(f"{obj}.tz")
+            rx = cmds.getAttr(f"{obj}.rx")
+            ry = cmds.getAttr(f"{obj}.ry")
+            rz = cmds.getAttr(f"{obj}.rz")
+            sx = cmds.getAttr(f"{obj}.sx")
+            sy = cmds.getAttr(f"{obj}.sy")
+            sz = cmds.getAttr(f"{obj}.sz")
+
+            # Check if the attributes are locked
+            tx_locked = cmds.getAttr(f"{obj}.tx", lock=True)
+            ty_locked = cmds.getAttr(f"{obj}.ty", lock=True)
+            tz_locked = cmds.getAttr(f"{obj}.tz", lock=True)
+            rx_locked = cmds.getAttr(f"{obj}.rx", lock=True)
+            ry_locked = cmds.getAttr(f"{obj}.ry", lock=True)
+            rz_locked = cmds.getAttr(f"{obj}.rz", lock=True)
+            sx_locked = cmds.getAttr(f"{obj}.sx", lock=True)
+            sy_locked = cmds.getAttr(f"{obj}.sy", lock=True)
+            sz_locked = cmds.getAttr(f"{obj}.sz", lock=True)
+
+            # Reset the translate values if the attribute is not locked
+            if not tx_locked:
+                cmds.setAttr(f"{obj}.tx", tx * -1)
+
+            '''if not ty_locked:
+                cmds.setAttr(f"{obj}.ty", ty * -1)
+            if not tz_locked:
+                cmds.setAttr(f"{obj}.tz", tz * -1)'''
+
+            # Reset the rotate values if the attribute is not locked
+            if not rx_locked:
+                cmds.setAttr(f"{obj}.rx", rx)
+            if not ry_locked:
+                cmds.setAttr(f"{obj}.ry", ry * -1)
+            if not rz_locked:
+                cmds.setAttr(f"{obj}.rz", rz * -1)
+            
+            '''# Reset the scale values if the attribute is not locked
+            if not sx_locked:
+                cmds.setAttr(f"{obj}.sx", 1)
+            if not sy_locked:
+                cmds.setAttr(f"{obj}.sy", 1)
+            if not sz_locked:
+                cmds.setAttr(f"{obj}.sz", 1)'''
+    finally:
+        cmds.undoInfo(closeChunk=True)    
 #---------------------------------------------------------------------------------------------------------------

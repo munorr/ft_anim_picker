@@ -28,7 +28,7 @@ from . import button_edit_widgets as BEW
 from . import tool_functions as TF
 from . fade_away_logic import FadeAway
 
-anim_picker_version = 'v1_0_0'
+anim_picker_version = 'v1_2_1'
 
 class AnimPickerWindow(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -76,7 +76,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
             {'widget': self.canvas_frame, 'exclude': [self.canvas_frame_row]}, # Keep the canvas content visible
             {'widget': self.tools_EF, 'hide_in_minimal': False},
             {'widget': self.canvas_tab_frame, 'hide_in_minimal': True},
-            {'widget': self.canvas_util_frame, 'hide_in_minimal': True},
+            {'widget': self.image_opacity_slider, 'hide_in_minimal': True},
             {'widget': self.namespace_dropdown, 'hide_in_minimal': True},
             {'widget': self.close_button, 'hide_in_minimal': True},
         ]
@@ -136,30 +136,25 @@ class AnimPickerWindow(QtWidgets.QWidget):
         config_util = CB.CustomButton(text='Config', height=20, width=60, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa')
         help_util = CB.CustomButton(text='Help', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,cmColor='#333333',tooltip='Help')
 
+        #------------------------------------------------------------------------------------------------------------------------------------------------------
+        #-Close button
+        self.close_button = QtWidgets.QPushButton("✕", self)
+        self.close_button.setStyleSheet('''
+        QPushButton {background-color: rgba(200, 0, 0, 0.6); color: #ff9393; border: none; border-radius: 3px; padding: 0px 0px 2px 0px;}
+        QPushButton:hover {background-color: rgba(255, 0, 0, 0.6);}''')
+        self.close_button.setFixedSize(16, 16)
+        #------------------------------------------------------------------------------------------------------------------------------------------------------
+
         self.util_frame_col.addWidget(file_util)
         self.util_frame_col.addWidget(edit_util)
         #self.util_frame_col.addWidget(config_util)
         self.util_frame_col.addWidget(help_util)
-
-        #------------------------------------------------------------------------------------------------------------------------------------------------------
-        self.namespace_dropdown = QtWidgets.QComboBox(self)
-        self.namespace_dropdown.setFixedHeight(20)
-        self.namespace_dropdown.setMinimumWidth(40)
-        self.namespace_dropdown.setMaximumWidth(120)
-        #self.namespace_dropdown.setFixedSize(100, 20)
-        
-        self.namespace_dropdown.setStyleSheet(f'''QComboBox{{background-color: {UT.rgba_value('#222222', 1,.9)}; color: #dddddd;border: 1px solid #2f2f2f; padding: 0px 0px 0px 5px;}}
-                                    QComboBox:hover {{background-color: {UT.rgba_value('#222222', .8,1)};}}
-                                    QComboBox::drop-down {{border: 0px;}}
-                                    QComboBox::down-arrow {{background-color: transparent;}} 
-                                    QToolTip {{background-color: #222222; color: white; border:0px;}} ''')
-        self.namespace_dropdown.setToolTip('Select Namespace')
-
         self.util_frame_col.addStretch(1)
-        self.util_frame_col.addWidget(self.namespace_dropdown)
+        self.util_frame_col.addWidget(self.close_button)
+        self.util_frame_col.addSpacing(2)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
 
-        self.close_button_col = QtWidgets.QHBoxLayout()
+        self.top_col = QtWidgets.QHBoxLayout()
         self.area_01_col = QtWidgets.QHBoxLayout()
         self.edit_row = QtWidgets.QVBoxLayout()
         
@@ -226,20 +221,24 @@ class AnimPickerWindow(QtWidgets.QWidget):
             QPushButton:hover {background-color: #91cb08;}
             QToolTip {background-color: #7fb20a; color: white; border: 0px;}''')
         set_margin_space(self.canvas_tab_frame_col, 4, 2)
-        
-        #-Canvas Util Frame
-        self.canvas_util_frame = QtWidgets.QFrame()
-        self.canvas_util_frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.canvas_util_frame.setFixedHeight(24)
-        #self.canvas_util_frame.setFixedWidth(100)
-        self.canvas_util_frame.setStyleSheet(f'''QFrame {{border: 0px solid gray; padding: 0px; margin: 0px; border-radius: 12px; background-color: rgba(35, 35, 35, .8);}}''')
-        self.canvas_util_frame_col = QtWidgets.QHBoxLayout(self.canvas_util_frame)
-        set_margin_space(self.canvas_util_frame_col, 4, 2)
-
-        self.image_opacity_slider = CS.CustomSlider(min_value=0, max_value=100, float_precision=0, height=16, radius=8,prefix='Opacity: ',suffix='%', color='#444444')
-        self.image_opacity_slider.setValue(100)
-        #self.image_opacity_slider.setFixedWidth(120)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
+        self.namespace_dropdown = QtWidgets.QComboBox(self)
+        self.namespace_dropdown.setFixedHeight(24)
+        self.namespace_dropdown.setMinimumWidth(40)
+        self.namespace_dropdown.setMaximumWidth(120)
+        #self.namespace_dropdown.setFixedSize(100, 20)
+        
+        self.namespace_dropdown.setStyleSheet(f'''QComboBox{{background-color: {UT.rgba_value('#222222', 1,.9)}; color: #dddddd;border: 1px solid #2f2f2f; padding: 0px 0px 0px 5px;}}
+                                    QComboBox:hover {{background-color: {UT.rgba_value('#222222', .8,1)};}}
+                                    QComboBox::drop-down {{border: 0px;}}
+                                    QComboBox::down-arrow {{background-color: transparent;}} 
+                                    QToolTip {{background-color: #222222; color: white; border:0px;}} ''')
+        self.namespace_dropdown.setToolTip('Select Namespace')
+
+        
+        #self.canvas_frame.addWidget(self.namespace_dropdown)
+        #------------------------------------------------------------------------------------------------------------------------------------------------------
+        
         #-Edit Frame
         self.edit_frame = QtWidgets.QFrame()
         self.edit_frame.setStyleSheet('QFrame {background-color: rgba(40, 40, 40, .8); border: 0px solid #333333;}')
@@ -341,10 +340,26 @@ class AnimPickerWindow(QtWidgets.QWidget):
         
         self.toggle_axes = CB.CustomRadioButton('Toggle Axes', height=None,color='#5285a6',fill=False)
         self.toggle_axes.setChecked(True)
+        #------------------------------------------------------------------------------------------------------------------------------------------------------
+        #-Canvas Util Frame
+        self.bg_opacity_frame = QtWidgets.QFrame()
+        self.bg_opacity_frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.bg_opacity_frame.setFixedHeight(24)
+        self.bg_opacity_frame.setStyleSheet(f'''QFrame {{border: 0px solid gray; padding: 0px; margin: 0px; border-radius: 12px; background-color: rgba(35, 35, 35, .8);}}''')
+        self.bg_opacity_frame_col = QtWidgets.QHBoxLayout(self.bg_opacity_frame)
+        set_margin_space(self.bg_opacity_frame_col, 4, 2)
+
+        self.image_opacity_slider = CS.CustomSlider(min_value=0, max_value=100, float_precision=0, height=16, radius=8,prefix='Opacity: ',suffix='%', color='#444444')
+        self.image_opacity_slider.setValue(100)
+
+        
+        self.bg_opacity_frame_col.addWidget(self.image_opacity_slider)
+        #------------------------------------------------------------------------------------------------------------------------------------------------------
 
         self.edit_canvas_EF.addWidget(self.add_image)
         self.edit_canvas_EF.addWidget(self.remove_image)
         self.edit_canvas_EF.content_layout.addSpacing(10)
+        self.edit_canvas_EF.addWidget(self.bg_opacity_frame)
         self.edit_canvas_EF.addLayout(self.image_scale_layout)
         self.edit_canvas_EF.addWidget(self.toggle_axes)
         
@@ -357,15 +372,6 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.edit_layout.addWidget(self.edit_canvas_EF)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         
-
-        #------------------------------------------------------------------------------------------------------------------------------------------------------
-        #-Close button
-        self.close_button = QtWidgets.QPushButton("✕", self)
-        self.close_button.setStyleSheet('''
-        QPushButton {background-color: rgba(200, 0, 0, 0.6); color: #ff9393; border: none; border-radius: 3px; padding: 0px 0px 2px 0px;}
-        QPushButton:hover {background-color: rgba(255, 0, 0, 0.6);}''')
-        self.close_button.setFixedSize(18, 18)
-
         # Version Label
         self.versionLabel = QtWidgets.QLabel(f'Anim Picker ({anim_picker_version})')
         self.versionLabel.setStyleSheet(f'''QLabel {{ color:rgba(160, 160, 160, .5); background-color: transparent}},''')  
@@ -442,13 +448,15 @@ class AnimPickerWindow(QtWidgets.QWidget):
 
         #self.picker_canvas_col1.addWidget(self.canvas_tab_frame)
         self.picker_canvas_col1.addWidget(self.canvas_tab_frame_scroll_area)
+        self.picker_canvas_col1.addWidget(self.namespace_dropdown)
         #self.picker_canvas_col1.addStretch(1)
         
         self.canvas_tab_frame_col.addWidget(self.addTabButton)
         #self.picker_canvas_col1.addWidget(self.canvas_util_frame)
         #self.picker_canvas_col1.addWidget(self.namespace_dropdown)
-        self.picker_canvas_col1.addWidget(self.canvas_util_frame)
-        self.canvas_util_frame_col.addWidget(self.image_opacity_slider)
+
+        #self.picker_canvas_col1.addWidget(self.canvas_util_frame)
+        #self.canvas_util_frame_col.addWidget(self.image_opacity_slider)
 
         #self.area_01_col.addWidget(self.edit_frame)
         
@@ -464,10 +472,10 @@ class AnimPickerWindow(QtWidgets.QWidget):
         #self.toggle_edit_mode_button.setVisible(self.edit_mode)
 
         # Add layouts to main layout
-        self.close_button_col.addWidget(self.util_frame)
-        self.close_button_col.addSpacing(4)
+        self.top_col.addWidget(self.util_frame)
+        #self.top_col.addSpacing(2)
         #self.close_button_col.addStretch()
-        self.close_button_col.addWidget(self.close_button)
+        #self.top_col.addWidget(self.close_button)
         
         #self.bottom_col.addWidget(self.versionLabel)
         #self.bottom_col.addStretch(1)
@@ -477,7 +485,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.tool_col.addWidget(self.tools_EF)
         #self.tool_col.addWidget(self.resize_handle)
 
-        self.main_frame_col.addLayout(self.close_button_col) 
+        self.main_frame_col.addLayout(self.top_col) 
         self.main_frame_col.addLayout(self.area_01_col)
         self.main_frame_col.addLayout(self.tool_col)
         self.main_frame_col.addLayout(self.bottom_col)

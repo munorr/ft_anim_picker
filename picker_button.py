@@ -271,7 +271,7 @@ class AttributeManagerWidget(QtWidgets.QWidget):
         
         # Create main frame
         self.frame = QtWidgets.QFrame()
-        self.frame.setFixedWidth(200)
+        self.frame.setFixedWidth(300)  # Increased width for better code editing
         self.frame.setStyleSheet("""
             QFrame {
                 background-color: rgba(30, 30, 30, .9);
@@ -291,7 +291,7 @@ class AttributeManagerWidget(QtWidgets.QWidget):
         title_layout.setContentsMargins(6, 0, 0, 0)
         title_layout.setSpacing(6)
         
-        self.title_label = QtWidgets.QLabel("Attribute Manager")
+        self.title_label = QtWidgets.QLabel("Python Code Editor")
         self.title_label.setStyleSheet("color: #dddddd; background: transparent;")
         title_layout.addWidget(self.title_label)
         
@@ -311,58 +311,22 @@ class AttributeManagerWidget(QtWidgets.QWidget):
         """)
         title_layout.addWidget(self.close_button)
 
-        # Object Selection Section
-        self.pin_layout = QtWidgets.QHBoxLayout()
-        self.pin_button = QtWidgets.QPushButton("Pin Object")
-        self.pin_button.setFixedHeight(20)
-        self.pin_button.setStyleSheet("""
-            QPushButton {
-                background-color: #5285a6;
-                color: white;
-                border: none;
-                border-radius: 3px;
-            }
-            QPushButton:hover {
-                background-color: #619ac2;
-            }
-        """)
-        self.pinned_object_label = QtWidgets.QLabel("No object pinned")
-        self.pinned_object_label.setStyleSheet("color: #dddddd;")
-        self.pin_layout.addWidget(self.pin_button)
-        self.pin_layout.addWidget(self.pinned_object_label)
-
-        # Attribute Selection
-        self.attribute_combo = QtWidgets.QComboBox()
-        self.attribute_combo.setFixedHeight(20)
-        self.attribute_combo.setStyleSheet("""
-            QComboBox {
-                background-color: #333333;
+        # Code Editor
+        self.code_editor = QtWidgets.QPlainTextEdit()
+        self.code_editor.setFixedHeight(200)
+        self.code_editor.setStyleSheet("""
+            QPlainTextEdit {
+                background-color: #1e1e1e;
                 color: #dddddd;
                 border: 1px solid #444444;
                 border-radius: 3px;
-                padding: 2px 5px;
+                padding: 5px;
+                font-family: Consolas, Monaco, monospace;
+                selection-background-color: #264f78;
             }
         """)
 
-        # Value Input
-        self.value_layout = QtWidgets.QHBoxLayout()
-        self.value_label = QtWidgets.QLabel("Value:")
-        self.value_label.setStyleSheet("color: #dddddd; background: transparent; border: none;")
-        self.value_input = QtWidgets.QLineEdit()
-        self.value_input.setFixedHeight(20)
-        self.value_input.setStyleSheet("""
-            QLineEdit {
-                background-color: #333333;
-                color: #dddddd;
-                border: 1px solid #444444;
-                border-radius: 3px;
-                padding: 2px 5px;
-            }
-        """)
-        self.value_layout.addWidget(self.value_label)
-        self.value_layout.addWidget(self.value_input)
-
-        # Add Apply Button
+        # Apply Button
         self.apply_button = QtWidgets.QPushButton("Apply")
         self.apply_button.setFixedHeight(24)
         self.apply_button.setStyleSheet("""
@@ -380,20 +344,13 @@ class AttributeManagerWidget(QtWidgets.QWidget):
         
         # Add all layouts to main layout
         self.frame_layout.addWidget(self.title_bar)
-        self.frame_layout.addLayout(self.pin_layout)
-        self.frame_layout.addWidget(self.attribute_combo)
-        self.frame_layout.addLayout(self.value_layout)
+        self.frame_layout.addWidget(self.code_editor)
         self.frame_layout.addWidget(self.apply_button)
         self.main_layout.addWidget(self.frame)
         
-        
-
         # Connect signals
         self.close_button.clicked.connect(self.close)
-        self.pin_button.clicked.connect(self.pin_selected_object)
-        self.attribute_combo.currentTextChanged.connect(self.on_attribute_changed)
-        self.value_input.returnPressed.connect(self.on_value_changed)
-        self.apply_button.clicked.connect(self.on_value_changed)
+        self.apply_button.clicked.connect(self.execute_code)
         
         # Window dragging
         self.dragging = False
@@ -404,11 +361,10 @@ class AttributeManagerWidget(QtWidgets.QWidget):
         
         # Store state
         self.picker_button = None
-        self.pinned_object = None
 
     def set_picker_button(self, button):
         self.picker_button = button
-        self.refresh_attribute_data()
+        self.code_editor.setPlainText(button.attribute_data.get('code', ''))
         self.position_window()
 
     def position_window(self):
@@ -418,83 +374,18 @@ class AttributeManagerWidget(QtWidgets.QWidget):
             canvas = self.picker_button.parent()
             
             if canvas:
-                # Convert scene position to global screen coordinates
                 canvas_pos = canvas.scene_to_canvas_coords(scene_pos)
                 global_pos = canvas.mapToGlobal(canvas_pos.toPoint())
-                # Position the widget to the right of the button
                 self.move(global_pos + QtCore.QPoint(button_geometry.width() + 10, 0))
 
-    def refresh_attribute_data(self):
+    def execute_code(self):
         if self.picker_button:
-            self.attribute_combo.clear()
-            if self.picker_button.attribute_data:
-                self.pinned_object = self.picker_button.attribute_data.get('object', '')
-                self.pinned_object_label.setText(self.pinned_object.split('|')[-1])
-                self.populate_attributes()
-                
-                # Get value and type from attribute data
-                value = self.picker_button.attribute_data.get('value', '')
-
-                self.value_input.setText(str(value))
-
-    def pin_selected_object(self):
-        selected = cmds.ls(selection=True, long=True)
-        if selected:
-            self.pinned_object = selected[-1]  # Use the last selected object
-            self.pinned_object_label.setText(self.pinned_object.split('|')[-1])
-            self.populate_attributes()
-            self.update_button_data()
-
-    def populate_attributes(self):
-        self.attribute_combo.clear()
-        if self.pinned_object and cmds.objExists(self.pinned_object):
-            # Get only custom attributes
-            all_attrs = cmds.listAttr(self.pinned_object, userDefined=True) or []
-            self.attribute_combo.addItems(all_attrs)
-            if self.picker_button and self.picker_button.attribute_data:
-                current_attr = self.picker_button.attribute_data.get('attribute', '')
-                index = self.attribute_combo.findText(current_attr)
-                if index >= 0:
-                    self.attribute_combo.setCurrentIndex(index)
-
-    def on_attribute_changed(self, attribute):
-        if self.picker_button and attribute:
-            self.update_button_data()
-
-    def on_value_changed(self):
-        if self.picker_button:
-            current_value = self.value_input.text()
-            if current_value:  # Only update if there's a value
-                self.update_button_data()
-                # If triggered by Apply button, close the window
-                if self.sender() == self.apply_button:
-                    self.close()
-
-    def update_button_data(self):
-        if self.picker_button:
-            current_attr = self.attribute_combo.currentText()
-            current_value = self.value_input.text()
-            
-            
-            # Get the attribute type if an object and attribute are selected
-            attr_type = None
-            if self.pinned_object and current_attr:
-                try:
-                    attr_type = cmds.getAttr(f"{self.pinned_object}.{current_attr}", type=True)
-                except:
-                    pass
-
-            # Convert the value based on the attribute type
-            converted_value = current_value
-            
-            # Store the original string value alongside the converted value
-            attribute_data = {
-                'object': self.pinned_object,
-                'attribute': current_attr,
-                'value': current_value,
-                'type': attr_type
-            }
-            self.picker_button.set_attribute_data(attribute_data)
+            code = self.code_editor.toPlainText()
+            # Store the code in the button's attribute data
+            self.picker_button.attribute_data = {'code': code}
+            self.picker_button.changed.emit(self.picker_button)
+            # Close the window
+            self.close()
     
     # Window dragging methods
     def title_bar_mouse_press(self, event):
@@ -730,9 +621,19 @@ class PickerButton(QtWidgets.QWidget):
             self.setCursor(QtCore.Qt.ArrowCursor)
     #---------------------------------------------------------------------------------------
     def set_mode(self, mode):
-        self.mode = mode
-        self.update()
-        self.changed.emit(self)  # Emit changed signal to update data
+        canvas = self.parent()
+        if canvas:
+            # Apply mode change to all selected buttons
+            selected_buttons = canvas.get_selected_buttons()
+            for button in selected_buttons:
+                button.mode = mode
+                button.update()
+                button.changed.emit(button)
+        else:
+            # Fallback for single button if no canvas parent
+            self.mode = mode
+            self.update()
+            self.changed.emit(self)
 
     def toggle_selection(self):
         self.set_selected(not self.is_selected)
@@ -1124,25 +1025,12 @@ class PickerButton(QtWidgets.QWidget):
 
     def execute_attribute_command(self):
         if self.mode == 'attribute' and self.attribute_data:
-            obj = self.attribute_data.get('object')
-            attr = self.attribute_data.get('attribute')
-            value = float(self.attribute_data.get('value'))
-            attr_type = self.attribute_data.get('type')
-            
-            if obj and attr and value is not None:
+            code = self.attribute_data.get('code', '')
+            if code:
                 try:
-                    # Get the namespace from the main window
-                    main_window = self.window()
-                    if isinstance(main_window, UI.AnimPickerWindow):
-                        current_namespace = main_window.namespace_dropdown.currentText()
-                        if current_namespace and current_namespace != 'None':
-                            obj = f"{current_namespace}:{obj}"
-                    
-                    # Value is already converted to the correct type when stored
-                    if cmds.objExists(f"{obj}.{attr}"):
-                        cmds.setAttr(f"{obj}.{attr}", value)
+                    exec(code)
                 except Exception as e:
-                    print(f"Error setting attribute: {e}")
+                    cmds.warning(f"Error executing code: {str(e)}")
     #---------------------------------------------------------------------------------------
     def set_size(self, width, height):
         self.width = width

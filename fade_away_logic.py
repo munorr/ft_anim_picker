@@ -73,6 +73,27 @@ class FadeAway(QObject):
             if current_tab:
                 canvas = self.parent.tab_system.tabs[current_tab]['canvas']
                 canvas.set_minimal_mode(self.minimal_mode_enabled)
+                
+                # Handle canvas frame and canvas reparenting
+                if self.minimal_mode_enabled:
+                    # Store the original parent and layout for restoration
+                    canvas.original_parent = canvas.parent()
+                    canvas.original_layout = self.parent.canvas_frame_row
+                    
+                    # Remove from canvas frame and add directly to area_01_col layout
+                    self.parent.canvas_frame_row.removeWidget(canvas)
+                    self.parent.area_01_col.insertWidget(0, canvas)  # Insert at the beginning of area_01_col
+                    
+                    # Hide the canvas frame
+                    self.parent.canvas_frame.hide()
+                else:
+                    # Restore canvas to original layout
+                    if hasattr(canvas, 'original_parent') and hasattr(canvas, 'original_layout'):
+                        # First remove from area_01_col
+                        self.parent.area_01_col.removeWidget(canvas)
+                        # Then add back to canvas frame row
+                        canvas.original_layout.addWidget(canvas)
+                        self.parent.canvas_frame.show()
         
         for widget in self.minimal_affected_widgets:
             if isinstance(widget, dict):
