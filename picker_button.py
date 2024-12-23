@@ -289,28 +289,69 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
         self.special_format = QtGui.QTextCharFormat()
         self.special_format.setForeground(QtGui.QColor("#91CB08"))  # Bright green color
         self.special_format.setFontWeight(QtGui.QFont.Bold)
-        
+
+        # Create format for special tokens 2
+        self.special_format_02 = QtGui.QTextCharFormat()
+        self.special_format_02.setForeground(QtGui.QColor("#10b1cc"))  
+        self.special_format_02.setFontWeight(QtGui.QFont.Bold)
+   
         # Create format for comments
         self.comment_format = QtGui.QTextCharFormat()
         self.comment_format.setForeground(QtGui.QColor("#555555"))  # Gray color for comments
+
+        # Create format for quoted text in comments
+        self.quoted_text_format = QtGui.QTextCharFormat()
+        self.quoted_text_format.setForeground(QtGui.QColor("#ce9178"))
         
     def highlightBlock(self, text):
         # Define all special tokens to highlight
         special_patterns = [
-            r'@ns(?![a-zA-Z0-9_])|@ns(?=[a-zA-Z0-9_])',  # Original @ns pattern
             r'@match_ik_to_fk\s*\([^)]*\)',  # Match @match_ik_to_fk() with any parameters
-            r'@match_fk_to_ik\s*\([^)]*\)'   # Match @match_fk_to_ik() with any parameters
+            r'@match_fk_to_ik\s*\([^)]*\)',   # Match @match_fk_to_ik() with any parameters
         ]
+        special_patterns_02 = [r'@ns(?![a-zA-Z0-9_])|@ns(?=[a-zA-Z0-9_])',]  # Original @ns pattern
         
         # Apply highlighting for special patterns
         for pattern in special_patterns:
             for match in re.finditer(pattern, text):
                 self.setFormat(match.start(), len(match.group()), self.special_format)
         
+        for pattern in special_patterns_02:
+            for match in re.finditer(pattern, text):
+                self.setFormat(match.start(), len(match.group()), self.special_format_02)
+        
         # Highlight comments (lines starting with #)
         comment_pattern = r'#.*$'
         for match in re.finditer(comment_pattern, text):
             self.setFormat(match.start(), len(match.group()), self.comment_format)
+        
+        # Highlight quoted text (both single and double quotes)
+        # Handle double quotes
+        double_quote_pattern = r'"[^"\\]*(?:\\.[^"\\]*)*"'
+        for match in re.finditer(double_quote_pattern, text):
+            # Don't highlight quotes in comments
+            start_pos = match.start()
+            if not self.format(start_pos) == self.comment_format:
+                self.setFormat(start_pos, len(match.group()), self.quoted_text_format)
+
+                for pattern in special_patterns_02:
+                    for match in re.finditer(pattern, text):
+                        self.setFormat(match.start(), len(match.group()), self.special_format_02)
+        
+        # Handle single quotes
+        single_quote_pattern = r'\'[^\'\\]*(?:\\.[^\'\\]*)*\''
+        for match in re.finditer(single_quote_pattern, text):
+            # Don't highlight quotes in comments
+            start_pos = match.start()
+            if not self.format(start_pos) == self.comment_format:
+                self.setFormat(start_pos, len(match.group()), self.quoted_text_format)
+
+                for pattern in special_patterns_02:
+                    for match in re.finditer(pattern, text):
+                        self.setFormat(match.start(), len(match.group()), self.special_format_02)
+        
+        
+        
 
 class ScriptManagerWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -324,6 +365,7 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.resize_edge = None
         self.resize_range = 8  # Pixels from edge where resizing is active
         self.setMinimumSize(300, 300)  # Set minimum size
+        self.setGeometry(0,0,400,300)
         
         # Setup main layout
         self.main_layout = QtWidgets.QVBoxLayout(self)
@@ -405,6 +447,78 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.language_layout.addStretch()
         self.language_layout.addWidget(self.function_preset_stack)
 
+        # Create custom QPlainTextEdit subclass for tab handling
+        class CodeEditor(QtWidgets.QPlainTextEdit):
+            def keyPressEvent(self, event):
+                if event.key() == QtCore.Qt.Key_Tab:
+                    cursor = self.textCursor()
+                    if cursor.hasSelection():
+                        # Get start and end positions
+                        start = cursor.selectionStart()
+                        end = cursor.selectionEnd()
+                        
+                        # Ensure we have the correct cursor positions
+                        cursor.setPosition(start)
+                        start_block = cursor.blockNumber()
+                        cursor.setPosition(end)
+                        end_block = cursor.blockNumber()
+                        
+                        # Handle shift+tab (unindent)
+                        if event.modifiers() & QtCore.Qt.ShiftModifier:
+                            cursor.beginEditBlock()
+                            for _ in range(end_block - start_block + 1):
+                                cursor.movePosition(QtGui.QTextCursor.StartOfLine)
+                                # Check if line starts with spaces
+                                line_text = cursor.block().text()
+                                if line_text.startswith("    "):
+                                    cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.KeepAnchor, 4)
+                                    cursor.removeSelectedText()
+                                elif line_text.startswith(" "):
+                                    # Remove any remaining spaces less than 4
+                                    spaces = len(line_text) - len(line_text.lstrip())
+                                    cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.KeepAnchor, min(4, spaces))
+                                    cursor.removeSelectedText()
+                                cursor.movePosition(QtGui.QTextCursor.NextBlock)
+                            cursor.endEditBlock()
+                        else:
+                            # Normal tab (indent)
+                            cursor.beginEditBlock()
+                            for _ in range(end_block - start_block + 1):
+                                cursor.movePosition(QtGui.QTextCursor.StartOfLine)
+                                # Only add indent if not doing Shift+Tab
+                                if not event.modifiers() & QtCore.Qt.ShiftModifier:
+                                    cursor.insertText("    ")
+                                else:
+                                    # Remove indent on Shift+Tab
+                                    line_text = cursor.block().text()
+                                    if line_text.startswith("    "):
+                                        cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.KeepAnchor, 4)
+                                        cursor.removeSelectedText()
+                                    elif line_text.startswith(" "):
+                                        spaces = len(line_text) - len(line_text.lstrip())
+                                        cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.KeepAnchor, min(4, spaces))
+                                        cursor.removeSelectedText()
+                                cursor.movePosition(QtGui.QTextCursor.NextBlock)
+                            cursor.endEditBlock()
+                    else:
+                        # No selection, just handle single line
+                        if event.modifiers() & QtCore.Qt.ShiftModifier:
+                            # Remove indent on Shift+Tab
+                            cursor.movePosition(QtGui.QTextCursor.StartOfLine)
+                            line_text = cursor.block().text()
+                            if line_text.startswith("    "):
+                                cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.KeepAnchor, 4)
+                                cursor.removeSelectedText()
+                            elif line_text.startswith(" "):
+                                spaces = len(line_text) - len(line_text.lstrip())
+                                cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.KeepAnchor, min(4, spaces))
+                                cursor.removeSelectedText()
+                        else:
+                            # Add indent on normal Tab
+                            cursor.insertText("    ")
+                else:
+                    super().keyPressEvent(event)
+
         # Editor style
         editor_style = """
             QPlainTextEdit {
@@ -418,21 +532,26 @@ class ScriptManagerWidget(QtWidgets.QWidget):
             }
         """
         
-        # Create stacked widget for editors
-        self.editor_stack = QtWidgets.QStackedWidget()
-        self.editor_stack.setMinimumHeight(200)
-        
-        # Python editor with syntax highlighting
-        self.python_editor = QtWidgets.QPlainTextEdit()
+        # Create editors using the custom CodeEditor class
+        self.python_editor = CodeEditor()
         self.python_editor.setStyleSheet(editor_style)
         self.python_highlighter = ScriptSyntaxHighlighter(self.python_editor.document())
         
-        # MEL editor with syntax highlighting
-        self.mel_editor = QtWidgets.QPlainTextEdit()
+        self.mel_editor = CodeEditor()
         self.mel_editor.setStyleSheet(editor_style)
         self.mel_highlighter = ScriptSyntaxHighlighter(self.mel_editor.document())
         
-        # Add editors to stack
+        # Set tab width for both editors
+        font = self.python_editor.font()
+        font_metrics = QtGui.QFontMetrics(font)
+        space_width = font_metrics.horizontalAdvance(' ')
+        self.python_editor.setTabStopDistance(space_width * 4)
+        self.mel_editor.setTabStopDistance(space_width * 4)
+        
+        # Create stacked widget for editors
+        self.editor_stack = QtWidgets.QStackedWidget()
+        self.editor_stack.setMinimumSize(100, 100)
+        #self.editor_stack.setMinimumHeight(100)
         self.editor_stack.addWidget(self.python_editor)
         self.editor_stack.addWidget(self.mel_editor)
 
@@ -478,19 +597,31 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         
         self.picker_button = None
     #--------------------------------------------------------------------------------------------------------------------
-    def python_preset_function_01(self):
+    def python_preset_function_01(self): # Match IK to FK
         preset_code = '''#Replace the ik_controls and fk_joints with your own names
-ik_controls = ['control1', 'control2'] 
-fk_joints = ['joint1', 'joint2', 'joint3'] 
+ik_controls = ['@nsik_pole_ctrl', '@nsik_arm_or_leg_ctrl'] 
+fk_joints = ['@nsfk_upper_arm_or_leg_jnt', '@nsfk_elbow_or_knee_jnt', '@nsfk_wrist_or_ankle_jnt'] 
 @match_ik_to_fk(ik_controls, fk_joints)'''
-        self.python_editor.setPlainText(preset_code)
+        
+        # Get current text and append new code with a newline if there's existing content
+        current_text = self.python_editor.toPlainText()
+        if current_text:
+            self.python_editor.setPlainText(current_text + '\n' + preset_code)
+        else:
+            self.python_editor.setPlainText(preset_code)
 
-    def python_preset_function_02(self):
+    def python_preset_function_02(self): # Match FK to IK
         preset_code = '''#Replace the fk_controls and ik_joints with your own names
-fk_controls = ['fk_ctrl1', 'fk_ctrl2','fk_ctrl3'] 
-ik_joints = ['ik_joint1', 'ik_joint2','ik_joint3'] 
+fk_controls = ['@nsfk_upper_arm_or_leg_ctrl', '@nsfk_elbow_or_knee_ctrl', '@nsfk_wrist_or_ankle_ctrl'] 
+ik_joints = ['@nsik_upper_arm_or_leg_jnt', '@nsik_elbow_or_knee_jnt', '@nsik_wrist_or_ankle_jnt'] 
 @match_fk_to_ik(fk_controls, ik_joints)'''
-        self.python_editor.setPlainText(preset_code)
+        
+        # Get current text and append new code with a newline if there's existing content
+        current_text = self.python_editor.toPlainText()
+        if current_text:
+            self.python_editor.setPlainText(current_text + '\n' + preset_code)
+        else:
+            self.python_editor.setPlainText(preset_code)
     #--------------------------------------------------------------------------------------------------------------------
     def mel_preset_function_01(self):
         print('Mel Preset Function 01')
