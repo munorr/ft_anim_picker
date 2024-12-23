@@ -19,6 +19,7 @@ from . import custom_button as CB
 from . import data_management as DM
 from . import ui as UI
 from . import script_manager as SM
+from . import tool_functions as TF
 
 class ButtonClipboard:
     _instance = None
@@ -279,20 +280,37 @@ class SelectionManagerWidget(QtWidgets.QWidget):
     def title_bar_mouse_release(self, event):
         if event.button() == QtCore.Qt.LeftButton:
             self.dragging = False
-
+#--------------------------------------------------------------------------------------------------------------------
 class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
     def __init__(self, parent=None):
         super(ScriptSyntaxHighlighter, self).__init__(parent)
         
-        # Create format for namespace token
-        self.ns_format = QtGui.QTextCharFormat()
-        self.ns_format.setForeground(QtGui.QColor("#91CB08"))  # Bright green color
-        self.ns_format.setFontWeight(QtGui.QFont.Bold)
+        # Create format for special tokens
+        self.special_format = QtGui.QTextCharFormat()
+        self.special_format.setForeground(QtGui.QColor("#91CB08"))  # Bright green color
+        self.special_format.setFontWeight(QtGui.QFont.Bold)
+        
+        # Create format for comments
+        self.comment_format = QtGui.QTextCharFormat()
+        self.comment_format.setForeground(QtGui.QColor("#555555"))  # Gray color for comments
         
     def highlightBlock(self, text):
-        # Find all occurrences of '@ns', even when directly followed by text
-        for match in re.finditer(r'@ns(?![a-zA-Z0-9_])|@ns(?=[a-zA-Z0-9_])', text):
-            self.setFormat(match.start(), 3, self.ns_format)
+        # Define all special tokens to highlight
+        special_patterns = [
+            r'@ns(?![a-zA-Z0-9_])|@ns(?=[a-zA-Z0-9_])',  # Original @ns pattern
+            r'@match_ik_to_fk\s*\([^)]*\)',  # Match @match_ik_to_fk() with any parameters
+            r'@match_fk_to_ik\s*\([^)]*\)'   # Match @match_fk_to_ik() with any parameters
+        ]
+        
+        # Apply highlighting for special patterns
+        for pattern in special_patterns:
+            for match in re.finditer(pattern, text):
+                self.setFormat(match.start(), len(match.group()), self.special_format)
+        
+        # Highlight comments (lines starting with #)
+        comment_pattern = r'#.*$'
+        for match in re.finditer(comment_pattern, text):
+            self.setFormat(match.start(), len(match.group()), self.comment_format)
 
 class ScriptManagerWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -358,12 +376,34 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         # Language selection
         self.language_layout = QtWidgets.QHBoxLayout()
         self.language_layout.setAlignment(QtCore.Qt.AlignLeft)
+
         self.python_button = CB.CustomRadioButton("Python", fill=False, width=60, height=16, group=True)
         self.mel_button = CB.CustomRadioButton("MEL", fill=False, width=40, height=16, group=True)
         self.python_button.group('script_language')
         self.mel_button.group('script_language')
+
+        self.function_preset_stack = QtWidgets.QStackedWidget()
+        self.function_preset_stack.setFixedSize(20, 20)
+        self.function_preset_stack.setStyleSheet("background: rgba(30, 30, 30, .9); border: none; border-radius: 3px;")
+        self.python_function_preset_button = CB.CustomButton(text='', icon=':addClip.png', size=14, height=20, width=20, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', 
+                                                             ContextMenu=True, onlyContext= True, cmColor='#333333',tooltip='Python function presets', flat=True)
+        
+        self.python_function_preset_button.addToMenu('Match IK to FK', self.python_preset_function_01, position=(0,0))
+        self.python_function_preset_button.addToMenu('Match FK to IK', self.python_preset_function_02, position=(1,0))
+
+        self.mel_function_preset_button = CB.CustomButton(text='', icon=':addClip.png', size=14, height=20, width=20, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', 
+                                                          ContextMenu=True, onlyContext= True, cmColor='#333333',tooltip='Python function presets', flat=True)
+        
+        self.mel_function_preset_button.addToMenu('Mel Function 1', self.mel_preset_function_01, position=(0,0))
+        self.mel_function_preset_button.addToMenu('Mel Function 2', self.mel_preset_function_02, position=(1,0))
+
+        self.function_preset_stack.addWidget(self.python_function_preset_button)
+        self.function_preset_stack.addWidget(self.mel_function_preset_button)
+
         self.language_layout.addWidget(self.python_button)
         self.language_layout.addWidget(self.mel_button)
+        self.language_layout.addStretch()
+        self.language_layout.addWidget(self.function_preset_stack)
 
         # Editor style
         editor_style = """
@@ -437,7 +477,28 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.frame.installEventFilter(self)
         
         self.picker_button = None
-        
+    #--------------------------------------------------------------------------------------------------------------------
+    def python_preset_function_01(self):
+        preset_code = '''#Replace the ik_controls and fk_joints with your own names
+ik_controls = ['control1', 'control2'] 
+fk_joints = ['joint1', 'joint2', 'joint3'] 
+@match_ik_to_fk(ik_controls, fk_joints)'''
+        self.python_editor.setPlainText(preset_code)
+
+    def python_preset_function_02(self):
+        preset_code = '''#Replace the fk_controls and ik_joints with your own names
+fk_controls = ['fk_ctrl1', 'fk_ctrl2','fk_ctrl3'] 
+ik_joints = ['ik_joint1', 'ik_joint2','ik_joint3'] 
+@match_fk_to_ik(fk_controls, ik_joints)'''
+        self.python_editor.setPlainText(preset_code)
+    #--------------------------------------------------------------------------------------------------------------------
+    def mel_preset_function_01(self):
+        print('Mel Preset Function 01')
+
+    def mel_preset_function_02(self):
+        print('Mel Preset Function 02')
+    #--------------------------------------------------------------------------------------------------------------------
+
     def set_picker_button(self, button):
         """Modified to ensure proper initialization of script data for individual buttons"""
         self.picker_button = button
@@ -484,6 +545,7 @@ class ScriptManagerWidget(QtWidgets.QWidget):
             is_python = self.python_button.isChecked()
             self.title_label.setText("Script Manager (Python)" if is_python else "Script Manager (MEL)")
             self.editor_stack.setCurrentIndex(0 if is_python else 1)
+            self.function_preset_stack.setCurrentIndex(0 if is_python else 1)
             
     def execute_code(self):
         """Modified to ensure each button gets its own script data"""
@@ -629,7 +691,7 @@ class ScriptManagerWidget(QtWidgets.QWidget):
     def title_bar_mouse_release(self, event):
         if event.button() == QtCore.Qt.LeftButton:
             self.dragging = False
-
+#--------------------------------------------------------------------------------------------------------------------
 class PickerButton(QtWidgets.QWidget):
     deleted = Signal(object)
     selected = Signal(object, bool)
@@ -942,239 +1004,6 @@ class PickerButton(QtWidgets.QWidget):
                 background-color: #2c4759;
             }''')
 
-        '''
-        # Rename action with QLineEdit
-        #---------------------------------------------------------------------------------------
-        rename_widget = QtWidgets.QWidget()
-        rename_layout = QtWidgets.QHBoxLayout(rename_widget)
-        rls = 6
-        rename_layout.setContentsMargins(0, 2, 0, 2)
-        rename_layout.setSpacing(rls)
-
-        rename_label = QtWidgets.QLabel("Rename:")
-        rename_edit = QtWidgets.QLineEdit(self.label)
-        rename_edit.setStyleSheet("background-color: #333333; color: #dddddd;border: 1px solid #444444; border-radius: 3px;")
-
-        rename_layout.addWidget(rename_label)
-        rename_layout.addWidget(rename_edit)
-        rename_action = QtWidgets.QWidgetAction(menu)
-        rename_action.setDefaultWidget(rename_widget)
-        menu.addAction(rename_action)
-
-        # Connect the returnPressed signal to rename the button
-        #rename_edit.returnPressed.connect(lambda: self.rename_button(rename_edit.text()))
-        rename_edit.returnPressed.connect(lambda: self.rename_selected_buttons(rename_edit.text()))
-
-        # Opacity slider
-        #---------------------------------------------------------------------------------------
-        opacity_action = QtWidgets.QWidgetAction(menu)
-        opacity_widget = QtWidgets.QWidget()
-        opacity_widget.setStyleSheet("background-color: None; padding: 0px; border-radius: 3px;")
-        opacity_layout = QtWidgets.QHBoxLayout(opacity_widget)
-        ols = 4
-        opacity_layout.setContentsMargins(0, ols, 0, ols)
-        opacity_layout.setSpacing(ols)
-
-        opacity_label = QtWidgets.QLabel("Opacity:")
-        opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        opacity_slider.setStyleSheet("""
-            QSlider {
-            background-color: None;
-            height: 10px;  /* Adjust the height to make the slider bar thinner */
-            }
-            QSlider::groove:horizontal {
-            height: 4px;  /* Adjust the groove height */
-            background: #444444;
-            border-radius: 2px;
-            }
-            QSlider::handle:horizontal {
-            background: #888888;
-            border: 1px solid #555555;
-            width: 10px;  /* Adjust the handle width */
-            margin: -5px 0;  /* Center the handle */
-            border-radius: 5px;
-            }
-        """)
-        opacity_slider.setRange(0, 100)
-        opacity_slider.setValue(int(self.opacity * 100))
-        opacity_slider.valueChanged.connect(self.change_opacity_for_selected_buttons)
-        opacity_layout.addWidget(opacity_label)
-        opacity_layout.addWidget(opacity_slider)
-        opacity_action.setDefaultWidget(opacity_widget)
-        menu.addAction(opacity_action)
-
-        # Transform
-        #---------------------------------------------------------------------------------------
-        transform_widget = QtWidgets.QWidget()
-        transform_layout = QtWidgets.QHBoxLayout(transform_widget)
-        transform_layout.setAlignment(QtCore.Qt.AlignLeft)
-        tls = 6
-        transform_layout.setContentsMargins(0, 2, 0, 2)
-        transform_layout.setSpacing(tls)
-
-        transform_w_label = QtWidgets.QLabel("W:")
-        transform_w_edit = CLE.IntegerLineEdit(min_value=0, max_value=1000, increment=1,width=50,height=18)
-        transform_h_label = QtWidgets.QLabel("H:")
-        transform_h_edit = CLE.IntegerLineEdit(min_value=0, max_value=1000, increment=1,width=50,height=18) 
-
-        
-
-        transform_layout.addWidget(transform_w_label)
-        transform_layout.addWidget(transform_w_edit)
-        transform_layout.addWidget(transform_h_label)
-        transform_layout.addWidget(transform_h_edit)
-
-        transform_action = QtWidgets.QWidgetAction(menu)    
-        transform_action.setDefaultWidget(transform_widget)
-        menu.addAction(transform_action)
-
-        transform_w_edit.setValue(self.width)
-        transform_h_edit.setValue(self.height)
-
-        canvas = self.parent()
-        def update_button_size():
-            new_width = transform_w_edit.value()
-            new_height = transform_h_edit.value()
-            for button in self.parent().get_selected_buttons():
-                button.set_size(new_width, new_height)
-            canvas.update_button_positions()
-
-        transform_w_edit.valueChanged.connect(update_button_size)
-        transform_h_edit.valueChanged.connect(update_button_size)
-
-        # Button radius
-        #---------------------------------------------------------------------------------------
-        radius_menu = QtWidgets.QMenu("Radius")
-        radius_menu.setWindowFlags(menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
-        radius_menu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        radius_menu.setStyleSheet(menu.styleSheet())
-        menu.addMenu(radius_menu)
-
-        radius_widget = QtWidgets.QWidget()
-        radius_widget.setStyleSheet("background-color: None; padding: 0px; border-radius: 3px;")
-
-        radius_layout = QtWidgets.QVBoxLayout(radius_widget)
-        rls = 6
-        radius_layout.setContentsMargins(0, 2, 0, 2)
-        radius_layout.setSpacing(rls)
-        rl1 = QtWidgets.QHBoxLayout()
-        rl2 = QtWidgets.QHBoxLayout()
-        rl2.setAlignment(QtCore.Qt.AlignCenter)
-        rl3 = QtWidgets.QHBoxLayout()
-        radius_layout.addLayout(rl1)
-        radius_layout.addLayout(rl2)
-        radius_layout.addLayout(rl3)
-
-        max_radius = self.height // 2
-
-        top_left_radius = CLE.IntegerLineEdit(min_value=0, max_value=max_radius, increment=1, width=50, height=18)
-        top_right_radius = CLE.IntegerLineEdit(min_value=0, max_value=max_radius, increment=1, width=50, height=18)
-        single_radius = CB.CustomRadioButton("", fill=True, width=8, height=8)
-        bottom_left_radius = CLE.IntegerLineEdit(min_value=0, max_value=max_radius, increment=1, width=50, height=18)
-        bottom_right_radius = CLE.IntegerLineEdit(min_value=0, max_value=max_radius, increment=1, width=50, height=18)
-
-        rl1.addWidget(top_left_radius)
-        rl1.addWidget(top_right_radius)
-        rl2.addWidget(single_radius)
-        rl3.addWidget(bottom_left_radius)
-        rl3.addWidget(bottom_right_radius)
-
-        radius_action = QtWidgets.QWidgetAction(radius_menu)
-        radius_action.setDefaultWidget(radius_widget)
-        radius_menu.addAction(radius_action)
-
-        # Set initial values
-        top_left_radius.setValue(self.radius[0])
-        top_right_radius.setValue(self.radius[1])
-        bottom_right_radius.setValue(self.radius[2])
-        bottom_left_radius.setValue(self.radius[3])
-
-        def update_radius():
-            tl = top_left_radius.value()
-            tr = top_right_radius.value()
-            br = bottom_right_radius.value()
-            bl = bottom_left_radius.value()
-            for button in self.parent().get_selected_buttons():
-                button.set_radius(tl, tr, br, bl)
-            self.parent().update_button_positions()
-
-        def update_all_radii(value):
-            if single_radius.isChecked():
-                top_right_radius.setValue(value)
-                bottom_right_radius.setValue(value)
-                bottom_left_radius.setValue(value)
-            update_radius()
-
-        def toggle_single_radius(checked):
-            dss = "background-color: #222222; color: #444444; border: 1px solid #444444; border-radius: 3px;"
-            ass = "background-color: #333333; color: #dddddd; border: 1px solid #444444; border-radius: 3px;"
-            if checked:
-                value = top_left_radius.value()
-                top_left_radius.setStyleSheet("background-color: #6c9809; color: #dddddd; border: 1px solid #444444; border-radius: 3px;")
-                
-                #top_right_radius.setValue(value)
-                top_right_radius.setEnabled(False)
-                top_right_radius.setStyleSheet(dss)
-
-                #bottom_right_radius.setValue(value)
-                bottom_right_radius.setEnabled(False)
-                bottom_right_radius.setStyleSheet(dss)
-
-                #bottom_left_radius.setValue(value)
-                bottom_left_radius.setEnabled(False)
-                bottom_left_radius.setStyleSheet(dss)
-            else:
-                top_left_radius.setStyleSheet(ass)
-
-                top_right_radius.setEnabled(True)
-                top_right_radius.setStyleSheet(ass)
-
-                bottom_right_radius.setEnabled(True)
-                bottom_right_radius.setStyleSheet(ass)
-
-                bottom_left_radius.setEnabled(True)
-                bottom_left_radius.setStyleSheet(ass)
-
-            update_radius()
-
-        top_left_radius.valueChanged.connect(update_all_radii)
-        top_right_radius.valueChanged.connect(update_radius)
-        bottom_right_radius.valueChanged.connect(update_radius)
-        bottom_left_radius.valueChanged.connect(update_radius)
-        single_radius.toggled.connect(toggle_single_radius) 
-
-        # Color submenu
-        #---------------------------------------------------------------------------------------
-        color_menu = QtWidgets.QMenu("Color")
-        color_menu.setWindowFlags(menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
-        color_menu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        color_menu.setStyleSheet(menu.styleSheet())
-        menu.addMenu(color_menu)
-
-        color_widget = QtWidgets.QWidget()
-        color_layout = QtWidgets.QGridLayout(color_widget)
-        color_layout.setSpacing(5)
-        color_layout.setContentsMargins(3, 5, 3, 5)
-
-        color_palette = [
-        "#828282", "#ffca0d", "#1accc7", "#f977f8", "#82b60b", 
-        "#4e4e4e", "#ff7f0c", "#38578a", "#c347a5", "#567b02", 
-        "#1b1b1b", "#f82929", "#18263d", "#552549", "#324801", 
-        ]
-
-        for i, color in enumerate(color_palette):
-            color_button = QtWidgets.QPushButton()
-            color_button.setFixedSize(20, 20)
-            color_button.setStyleSheet(f"""QPushButton {{background-color: {color}; border: none; border-radius: 3px;}} 
-                                        QPushButton:hover {{background-color: {UT.rgba_value(color, 1.2, alpha=1)};}}""")
-            color_button.clicked.connect(partial(self.color_button_clicked, color))
-            color_layout.addWidget(color_button, i // 5, i % 5)
-
-        color_action = QtWidgets.QWidgetAction(color_menu)
-        color_action.setDefaultWidget(color_widget)
-        color_menu.addAction(color_action)
-        '''
-        
         # Mode selection
         mode_menu = QtWidgets.QMenu("Mode")
         mode_menu.setStyleSheet(menu.styleSheet())
@@ -1308,7 +1137,7 @@ class PickerButton(QtWidgets.QWidget):
         self.changed.emit(self)
 
     def execute_script_command(self):
-        """Execute the script with namespace token handling"""
+        """Execute the script with namespace and match function token handling"""
         if self.mode == 'script' and self.script_data:
             script_type = self.script_data.get('type', 'python')
             
@@ -1326,10 +1155,21 @@ class PickerButton(QtWidgets.QWidget):
                         current_ns = main_window.namespace_dropdown.currentText()
                         ns_prefix = f"{current_ns}:" if current_ns and current_ns != 'None' else ""
                         
-                        # Replace '@ns' at start of identifier
+                        # Replace '@ns' tokens
                         modified_code = re.sub(r'@ns([a-zA-Z0-9_])', fr'{ns_prefix}\1', code)
-                        # Replace '@ns' when it's by itself
                         modified_code = re.sub(r'@ns(?![a-zA-Z0-9_])', f'"{ns_prefix}"', modified_code)
+                        
+                        # Replace match function tokens with actual function calls
+                        modified_code = re.sub(
+                            r'@match_ik_to_fk\s*\((.*?)\)',
+                            r'import ft_anim_picker.tool_functions as TF\nTF.match_ik_to_fk(\1)',
+                            modified_code
+                        )
+                        modified_code = re.sub(
+                            r'@match_fk_to_ik\s*\((.*?)\)',
+                            r'import ft_anim_picker.tool_functions as TF\nTF.match_fk_to_ik(\1)',
+                            modified_code
+                        )
                         
                         # Execute the modified code
                         if script_type == 'python':

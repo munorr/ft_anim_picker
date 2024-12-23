@@ -28,7 +28,7 @@ from . import button_edit_widgets as BEW
 from . import tool_functions as TF
 from . fade_away_logic import FadeAway
 
-anim_picker_version = 'v1_2_3'
+anim_picker_version = 'v1_2_4'
 
 class AnimPickerWindow(QtWidgets.QWidget):
     def __init__(self, parent=None):

@@ -88,6 +88,18 @@ class animation_tool_layout:
         timeLine_copy_key_button = CB.CustomButton(text='Copy', color='#293F64', tooltip="Copy selected key(s).",text_size=ts, height=bh)
         timeLine_paste_key_button = CB.CustomButton(text='Paste', color='#1699CA', tooltip="Paste copied key(s).",text_size=ts, height=bh)
         timeLine_pasteInverse_key_button = CB.CustomButton(text='Paste Inverse', color='#9416CA', tooltip="Paste Inverted copied keys(s).",text_size=ts, height=bh)
+
+        match_transforms_button = CB.CustomButton(text='Match', icon=':ghostingObjectTypeLocator.png', color='#262626', size=14, tooltip="Match Transforms.",
+                                                  text_size=ts, height=bh,ContextMenu=True, onlyContext=True)
+        match_transforms_button.addToMenu("Move", match_move, icon='ghostingObjectTypeLocator.png', position=(0,0))
+        match_transforms_button.addToMenu("Rotate", match_rotate, icon='ghostingObjectTypeLocator.png', position=(1,0))
+        match_transforms_button.addToMenu("Scale", match_scale, icon='ghostingObjectTypeLocator.png', position=(2,0))
+        match_transforms_button.addToMenu("All", match_all, icon='ghostingObjectTypeLocator.png', position=(3,0))
+
+        store_pos_button = CB.CustomButton(text='Store Pos', color='#16AAA6', tooltip="Store Position: Stores the position of selected Vertices, Edges or Faces. Double Click to make locator visible",
+                                           text_size=ts, height=bh)
+        move_to_pos_button = CB.CustomButton(text='Move to Pos', color='#D58C09', tooltip="Move to Position: Move selected object(s) to the stored position.",
+                                             text_size=ts, height=bh)
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
         #reset_move_button.singleClicked.connect(reset_move)
         #reset_rotate_button.singleClicked.connect(reset_rotate)
@@ -99,6 +111,9 @@ class animation_tool_layout:
         timeLine_copy_key_button.singleClicked.connect(copy_keys)
         timeLine_paste_key_button.singleClicked.connect(paste_keys)
         timeLine_pasteInverse_key_button.singleClicked.connect(paste_inverse)
+
+        store_pos_button.singleClicked.connect(store_component_position)
+        move_to_pos_button.singleClicked.connect(move_objects_to_stored_position)
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
         #self.col1.addWidget(reset_move_button)
         #self.col1.addWidget(reset_rotate_button)
@@ -113,6 +128,11 @@ class animation_tool_layout:
         self.col1.addWidget(timeLine_copy_key_button)
         self.col1.addWidget(timeLine_paste_key_button)
         self.col1.addWidget(timeLine_pasteInverse_key_button)
+
+        self.col1.addSpacing(4)
+        self.col1.addWidget(match_transforms_button)
+        self.col1.addWidget(store_pos_button)
+        self.col1.addWidget(move_to_pos_button)
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
         self.tools_scroll_frame_layout.addLayout(self.col1)
         self.tools_scroll_frame_layout.addSpacing(2)
@@ -336,3 +356,151 @@ def paste_inverse():
     finally:
         cmds.undoInfo(closeChunk=True)    
 #---------------------------------------------------------------------------------------------------------------
+#---------------------------------------------------------------------------------------------------------------
+@undoable
+def match_ik_to_fk(ik_controls, fk_joints):
+    """
+    Matches IK controls to FK joint positions and calculates the pole vector position.
+    
+    Args:
+        ik_controls (list): List of IK controls where ik_controls[1] is the pole vector and ik_controls[2] is the end control
+        fk_joints (list): List of FK joints
+        pole_distance (float): Distance multiplier for pole vector positioning (default: 0.25)
+    """
+    # Match end IK control to end FK joint
+    cmds.matchTransform(ik_controls[1], fk_joints[2], pos=True, rot=False)
+    
+    # Calculate pole vector position
+    # Get world space positions of the joints
+    start_pos = cmds.xform(fk_joints[2], query=True, worldSpace=True, translation=True)
+    mid_pos = cmds.xform(fk_joints[1], query=True, worldSpace=True, translation=True)
+    end_pos = cmds.xform(fk_joints[0], query=True, worldSpace=True, translation=True)
+
+    # Convert to MVector for calculations
+    start_vec = om.MVector(start_pos)
+    mid_vec = om.MVector(mid_pos)
+    end_vec = om.MVector(end_pos)
+
+    # Calculate the pole vector position
+    start_to_end = end_vec - start_vec
+    start_to_mid = mid_vec - start_vec
+
+    # Calculate the projection manually
+    start_to_end_normalized = start_to_end.normal()
+    projection_length = start_to_mid * start_to_end_normalized
+    projection = start_to_end_normalized * projection_length
+
+    # Calculate the pole vector direction
+    pole_vec = (mid_vec - (start_vec + projection)).normal()
+
+    # Calculate the final pole vector position
+    pole_distance=.25
+    chain_length = (mid_vec - start_vec).length() + (end_vec - mid_vec).length()
+    pole_pos = mid_vec + (pole_vec * chain_length * pole_distance)
+
+    # Create a temporary locator for positioning
+    temp_locator = cmds.spaceLocator(name="temp_pole_locator")[0]
+    cmds.xform(temp_locator, worldSpace=True, translation=pole_pos)
+
+    # Match the pole vector control to the locator
+    cmds.matchTransform(ik_controls[0], temp_locator, position=True)
+
+    # Clean up
+    cmds.delete(temp_locator)
+
+    print(f"IK controls and pole vector have been matched to FK chain.")
+
+@undoable
+def match_fk_to_ik(fk_controls, ik_joints):
+    '''
+    Matches the FK controls to the corresponding IK joints.
+    '''
+    for fk_ctrl, ik_jnt in zip(fk_controls, ik_joints):
+        cmds.matchTransform(fk_ctrl, ik_jnt, pos=False, rot=True)
+    print("FK controls matched to IK joints.")
+#---------------------------------------------------------------------------------------------------------------
+@undoable
+def store_component_position():
+    # Get the active selection
+    selection = cmds.ls(sl=True)
+    
+    # Get the defaultObjectSet
+    default_set = 'defaultObjectSet'
+    
+    # Initialize the stored position
+    stored_position = [0, 0, 0]  # Default to world origin
+    
+    # Check if there's an active selection
+    if selection:
+        # Get the manipulator position
+        manipulator_pos = None
+        current_ctx = cmds.currentCtx()
+        if current_ctx == 'moveSuperContext':
+            manipulator_pos = cmds.manipMoveContext('Move', q=True, position=True)
+        elif current_ctx == 'RotateSuperContext':
+            manipulator_pos = cmds.manipRotateContext('Rotate', q=True, position=True)
+        elif current_ctx == 'scaleSuperContext':
+            manipulator_pos = cmds.manipScaleContext('Scale', q=True, position=True)
+
+        if manipulator_pos:
+            stored_position = manipulator_pos
+        else:
+            cmds.warning("Unable to get manipulator position. Using world origin.")
+    else:
+        cmds.warning("Nothing selected. Using world origin.")
+
+    # Check if the 'Stored Location' attribute exists, if not, create it
+    if not cmds.attributeQuery('Stored_Location', node=default_set, exists=True):
+        cmds.addAttr(default_set, longName='Stored_Location', attributeType='double3')
+        cmds.addAttr(default_set, longName='Stored_Location_X', attributeType='double', parent='Stored_Location')
+        cmds.addAttr(default_set, longName='Stored_Location_Y', attributeType='double', parent='Stored_Location')
+        cmds.addAttr(default_set, longName='Stored_Location_Z', attributeType='double', parent='Stored_Location')
+
+    # Store the position in the custom attribute
+    cmds.setAttr(f'{default_set}.Stored_Location', *stored_position)
+
+    print(f"Position stored in {default_set}.Stored_Location:", stored_position)
+
+@undoable
+def move_objects_to_stored_position():
+    selected_objects = cmds.ls(selection=True, long=True)
+    default_set = 'defaultObjectSet'
+    
+    # Check if the stored position attribute exists
+    if not cmds.attributeQuery('Stored_Location', node=default_set, exists=True):
+        cmds.warning("No stored position found. Please store a position first.")
+        return
+
+    # Get the stored position
+    stored_position = cmds.getAttr(f'{default_set}.Stored_Location')[0]
+
+    # Check if there are any objects selected
+    if not selected_objects:
+        cmds.warning("Please select at least one object to move.")
+        return
+
+    # Loop through the selected objects and move them to the stored position
+    for obj in selected_objects:
+        # Get the current world space rotate pivot of the object
+        current_position = cmds.xform(obj, query=True, worldSpace=True, rotatePivot=True)
+        
+        # Calculate the difference between the stored position and current position
+        offset = [stored_position[i] - current_position[i] for i in range(3)]
+        
+        # Move the object by the calculated offset
+        cmds.move(offset[0], offset[1], offset[2], obj, relative=True, worldSpace=True)
+    
+    cmds.select(selected_objects)
+    print(f"Moved {len(selected_objects)} object(s) to stored position: {stored_position}")
+#---------------------------------------------------------------------------------------------------------------
+def match_move():
+    mel.eval('''MatchTranslation;''')
+
+def match_rotate():
+    mel.eval('''MatchRotation;''')
+
+def match_scale():
+    mel.eval('''MatchScaling;''')
+
+def match_all():
+    mel.eval('''MatchTransform;''')
