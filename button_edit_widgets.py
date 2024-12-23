@@ -16,6 +16,7 @@ from . import custom_button as CB
 from . import ui as UI
 from . import utils as UT
 from . import picker_button as PB
+from . import custom_slider as CS
 from functools import partial
 
 def create_button_edit_widgets(parent):
@@ -38,6 +39,9 @@ def create_button_edit_widgets(parent):
 
     # Connect rename functionality
     #rename_edit.returnPressed.connect(lambda: rename_selected_buttons(parent, rename_edit.text()))
+    def set_margin_space(layout,margin,space):
+        layout.setContentsMargins(margin,margin,margin,margin)
+        layout.setSpacing(space)
 
     # Opacity slider
     opacity_widget = QtWidgets.QWidget()
@@ -45,29 +49,23 @@ def create_button_edit_widgets(parent):
     opacity_layout = QtWidgets.QHBoxLayout(opacity_widget)
     opacity_layout.setContentsMargins(2, 4, 2, 4)
     opacity_layout.setSpacing(4)
-    opacity_label = QtWidgets.QLabel("Opacity:")
-    opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-    opacity_slider.setStyleSheet("""
-    QSlider {
-        background-color: None;
-        height: 10px;
-    }
-    QSlider::groove:horizontal {
-        height: 4px;
-        background: #444444;
-        border-radius: 2px;
-    }
-    QSlider::handle:horizontal {
-        background: #888888;
-        border: 1px solid #555555;
-        width: 10px;
-        margin: -5px 0;
-        border-radius: 5px;
-    }
-    """)
+    #------------------------------------------------------------------------------------------------------------------------------------------------------
+    #-Opcity Slider
+    opacity_frame = QtWidgets.QFrame()
+    opacity_frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+    opacity_frame.setFixedHeight(24)
+    opacity_frame.setStyleSheet(f'''QFrame {{border: 0px solid gray; padding: 0px; margin: 0px; border-radius: 12px; background-color: rgba(35, 35, 35, .8);}}''')
+    opacity_frame_col = QtWidgets.QHBoxLayout(opacity_frame)
+    set_margin_space(opacity_frame_col, 4, 2)
+
+    opacity_slider = CS.CustomSlider(min_value=0, max_value=100, float_precision=0, height=16, radius=8,prefix='Button Opacity: ',suffix='%', color='#444444')
+    opacity_slider.setValue(100)
+
+    opacity_frame_col.addWidget(opacity_slider)
+    #------------------------------------------------------------------------------------------------------------------------------------------------------
+
     opacity_slider.setRange(0, 100)
-    opacity_layout.addWidget(opacity_label)
-    opacity_layout.addWidget(opacity_slider)
+    opacity_layout.addWidget(opacity_frame)
     widgets['opacity_widget'] = opacity_widget
     widgets['opacity_slider'] = opacity_slider
     #layout.layout().addWidget(opacity_widget)
@@ -81,7 +79,7 @@ def create_button_edit_widgets(parent):
     transform_layout.setAlignment(QtCore.Qt.AlignLeft)
     transform_layout.setContentsMargins(2, 2, 2, 2)
     transform_layout.setSpacing(4)
-    transform_prop= CB.CustomRadioButton("", fill=True, width=1, height=8, color="#6c9809")
+    transform_prop= CB.CustomRadioButton("", fill=True, width=8, height=8, color="#6c9809")
     transform_w_label = QtWidgets.QLabel("W:")
     transform_w_edit = CLE.IntegerLineEdit(min_value=0, max_value=1000, increment=1, width=None, height=18)
     transform_h_label = QtWidgets.QLabel("H:")

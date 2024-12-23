@@ -12,11 +12,13 @@ except ImportError:
     from shiboken2 import wrapInstance
 
 import math
+import re
 from . import utils as UT
 from . import custom_line_edit as CLE
 from . import custom_button as CB
 from . import data_management as DM
 from . import ui as UI
+from . import script_manager as SM
 
 class ButtonClipboard:
     _instance = None
@@ -52,7 +54,10 @@ class ButtonClipboard:
                     'width': button.width,
                     'height': button.height,
                     'radius': button.radius.copy(),
-                    'relative_position': button.scene_position - center
+                    'relative_position': button.scene_position - center,
+                    'assigned_objects': button.assigned_objects.copy(),
+                    'mode': button.mode,
+                    'script_data': button.script_data.copy()
                 })
 
     def get_last_attributes(self):
@@ -81,7 +86,7 @@ class SelectionManagerWidget(QtWidgets.QWidget):
         self.frame.setFixedWidth(200)
         self.frame.setStyleSheet("""
             QFrame {
-                background-color: rgba(30, 30, 30, .9);
+                background-color: rgba(36, 36, 36, .9);
                 border: 1px solid #444444;
                 border-radius: 4px;
             }
@@ -92,17 +97,17 @@ class SelectionManagerWidget(QtWidgets.QWidget):
         
         # Title bar with draggable area and close button
         self.title_bar = QtWidgets.QWidget()
-        self.title_bar.setFixedHeight(24)
-        self.title_bar.setStyleSheet("background: transparent; border: none;")
+        self.title_bar.setFixedHeight(30)
+        self.title_bar.setStyleSheet("background: rgba(30, 30, 30, .9); border: none; border-radius: 3px;")
         title_layout = QtWidgets.QHBoxLayout(self.title_bar)
-        title_layout.setContentsMargins(6, 0, 0, 0)
+        title_layout.setContentsMargins(6, 6, 6, 6)
         title_layout.setSpacing(6)
         
         self.title_label = QtWidgets.QLabel("Selection Manager")
         self.title_label.setStyleSheet("color: #dddddd; background: transparent;")
         title_layout.addWidget(self.title_label)
         
-        self.close_button = QtWidgets.QPushButton("×")
+        self.close_button = QtWidgets.QPushButton("✕")
         self.close_button.setFixedSize(16, 16)
         self.close_button.setStyleSheet("""
             QPushButton {
@@ -155,7 +160,7 @@ class SelectionManagerWidget(QtWidgets.QWidget):
         self.list_frame = QtWidgets.QFrame()
         self.list_frame.setStyleSheet("""
             QFrame {
-                background-color: rgba(25, 25, 25, .9);
+                background-color: #1e1e1e;
                 border-radius: 2px;
             }
         """)
@@ -170,10 +175,15 @@ class SelectionManagerWidget(QtWidgets.QWidget):
                 background-color: transparent;
                 border: none;
                 color: #dddddd;
+                outline: 0;
+            }
+                QListWidget::item:focus {
+                border: none;  /* Remove focus border */
+                outline: none;  /* Remove focus outline */
             }
             QListWidget::item {
                 padding: 3px;
-                border-radius: 2px;
+                border-radius: 0px;
             }
             QListWidget::item:selected {
                 background-color: #2c4759;
@@ -217,11 +227,23 @@ class SelectionManagerWidget(QtWidgets.QWidget):
             self.move(global_pos + QtCore.QPoint(10, 0))
     
     def refresh_list(self):
+        """Refresh the list with human-readable object names, stripping namespaces"""
         self.selection_list.clear()
         if self.picker_button:
-            for obj in self.picker_button.assigned_objects:
-                item = QtWidgets.QListWidgetItem(obj.split('|')[-1])
-                self.selection_list.addItem(item)
+            for uuid in self.picker_button.assigned_objects:
+                try:
+                    # Get current node name from UUID
+                    nodes = cmds.ls(uuid, long=True)
+                    if nodes:
+                        # Strip namespace by taking the last part after any ':'
+                        short_name = nodes[0].split('|')[-1].split(':')[-1]
+                        item = QtWidgets.QListWidgetItem(short_name)
+                        # Store the UUID as item data for removal
+                        item.setData(QtCore.Qt.UserRole, uuid)
+                        self.selection_list.addItem(item)
+                except Exception as e:
+                    # Handle case where object no longer exists
+                    continue
                 
     def add_selection(self):
         if self.picker_button:
@@ -229,14 +251,15 @@ class SelectionManagerWidget(QtWidgets.QWidget):
             self.refresh_list()
             
     def remove_selection(self):
+        """Remove selected objects using stored UUIDs"""
         if self.picker_button:
             selected_items = self.selection_list.selectedItems()
-            selected_names = [item.text() for item in selected_items]
+            selected_uuids = [item.data(QtCore.Qt.UserRole) for item in selected_items]
             
-            # Remove selected objects from picker button
+            # Remove selected objects from picker button using UUIDs
             self.picker_button.assigned_objects = [
-                obj for obj in self.picker_button.assigned_objects 
-                if obj.split('|')[-1] not in selected_names
+                uuid for uuid in self.picker_button.assigned_objects 
+                if uuid not in selected_uuids
             ]
             
             self.picker_button.update_tooltip()
@@ -257,12 +280,32 @@ class SelectionManagerWidget(QtWidgets.QWidget):
         if event.button() == QtCore.Qt.LeftButton:
             self.dragging = False
 
-class AttributeManagerWidget(QtWidgets.QWidget):
+class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
     def __init__(self, parent=None):
-        super(AttributeManagerWidget, self).__init__(parent)
+        super(ScriptSyntaxHighlighter, self).__init__(parent)
+        
+        # Create format for namespace token
+        self.ns_format = QtGui.QTextCharFormat()
+        self.ns_format.setForeground(QtGui.QColor("#91CB08"))  # Bright green color
+        self.ns_format.setFontWeight(QtGui.QFont.Bold)
+        
+    def highlightBlock(self, text):
+        # Find all occurrences of '@ns', even when directly followed by text
+        for match in re.finditer(r'@ns(?![a-zA-Z0-9_])|@ns(?=[a-zA-Z0-9_])', text):
+            self.setFormat(match.start(), 3, self.ns_format)
+
+class ScriptManagerWidget(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super(ScriptManagerWidget, self).__init__(parent)
         self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint | QtCore.Qt.Tool)
         self.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        
+        # Setup resizing parameters
+        self.resizing = False
+        self.resize_edge = None
+        self.resize_range = 8  # Pixels from edge where resizing is active
+        self.setMinimumSize(300, 300)  # Set minimum size
         
         # Setup main layout
         self.main_layout = QtWidgets.QVBoxLayout(self)
@@ -271,10 +314,10 @@ class AttributeManagerWidget(QtWidgets.QWidget):
         
         # Create main frame
         self.frame = QtWidgets.QFrame()
-        self.frame.setFixedWidth(300)  # Increased width for better code editing
+        self.frame.setMinimumWidth(300)
         self.frame.setStyleSheet("""
             QFrame {
-                background-color: rgba(30, 30, 30, .9);
+                background-color: rgba(36, 36, 36, .9);
                 border: 1px solid #444444;
                 border-radius: 4px;
             }
@@ -285,17 +328,18 @@ class AttributeManagerWidget(QtWidgets.QWidget):
         
         # Title bar with draggable area and close button
         self.title_bar = QtWidgets.QWidget()
-        self.title_bar.setFixedHeight(24)
-        self.title_bar.setStyleSheet("background: transparent; border: none;")
+        self.title_bar.setFixedHeight(30)
+        self.title_bar.setStyleSheet("background: rgba(30, 30, 30, .9); border: none; border-radius: 3px;")
         title_layout = QtWidgets.QHBoxLayout(self.title_bar)
-        title_layout.setContentsMargins(6, 0, 0, 0)
+        title_layout.setContentsMargins(6, 6, 6, 6)
         title_layout.setSpacing(6)
         
-        self.title_label = QtWidgets.QLabel("Python Code Editor")
+        self.title_label = QtWidgets.QLabel("Script Manager (Python)")
         self.title_label.setStyleSheet("color: #dddddd; background: transparent;")
+        title_layout.addSpacing(4)
         title_layout.addWidget(self.title_label)
         
-        self.close_button = QtWidgets.QPushButton("×")
+        self.close_button = QtWidgets.QPushButton("✕")
         self.close_button.setFixedSize(16, 16)
         self.close_button.setStyleSheet("""
             QPushButton {
@@ -310,61 +354,118 @@ class AttributeManagerWidget(QtWidgets.QWidget):
             }
         """)
         title_layout.addWidget(self.close_button)
+        
+        # Language selection
+        self.language_layout = QtWidgets.QHBoxLayout()
+        self.language_layout.setAlignment(QtCore.Qt.AlignLeft)
+        self.python_button = CB.CustomRadioButton("Python", fill=False, width=60, height=16, group=True)
+        self.mel_button = CB.CustomRadioButton("MEL", fill=False, width=40, height=16, group=True)
+        self.python_button.group('script_language')
+        self.mel_button.group('script_language')
+        self.language_layout.addWidget(self.python_button)
+        self.language_layout.addWidget(self.mel_button)
 
-        # Code Editor
-        self.code_editor = QtWidgets.QPlainTextEdit()
-        self.code_editor.setFixedHeight(200)
-        self.code_editor.setStyleSheet("""
+        # Editor style
+        editor_style = """
             QPlainTextEdit {
                 background-color: #1e1e1e;
                 color: #dddddd;
-                border: 1px solid #444444;
+                border: 0px solid #444444;
                 border-radius: 3px;
                 padding: 5px;
                 font-family: Consolas, Monaco, monospace;
                 selection-background-color: #264f78;
             }
-        """)
+        """
+        
+        # Create stacked widget for editors
+        self.editor_stack = QtWidgets.QStackedWidget()
+        self.editor_stack.setMinimumHeight(200)
+        
+        # Python editor with syntax highlighting
+        self.python_editor = QtWidgets.QPlainTextEdit()
+        self.python_editor.setStyleSheet(editor_style)
+        self.python_highlighter = ScriptSyntaxHighlighter(self.python_editor.document())
+        
+        # MEL editor with syntax highlighting
+        self.mel_editor = QtWidgets.QPlainTextEdit()
+        self.mel_editor.setStyleSheet(editor_style)
+        self.mel_highlighter = ScriptSyntaxHighlighter(self.mel_editor.document())
+        
+        # Add editors to stack
+        self.editor_stack.addWidget(self.python_editor)
+        self.editor_stack.addWidget(self.mel_editor)
 
         # Apply Button
         self.apply_button = QtWidgets.QPushButton("Apply")
         self.apply_button.setFixedHeight(24)
         self.apply_button.setStyleSheet("""
             QPushButton {
-                background-color: #5e7b19;
+                background-color: #5285a6;
                 color: white;
                 border: none;
                 border-radius: 3px;
                 padding: 2px 10px;
             }
             QPushButton:hover {
-                background-color: #6c9009;
+                background-color: #77c2f2;
             }
         """)
         
-        # Add all layouts to main layout
+        # Add widgets to layout
         self.frame_layout.addWidget(self.title_bar)
-        self.frame_layout.addWidget(self.code_editor)
+        self.frame_layout.addLayout(self.language_layout)
+        self.frame_layout.addWidget(self.editor_stack)
         self.frame_layout.addWidget(self.apply_button)
         self.main_layout.addWidget(self.frame)
         
         # Connect signals
         self.close_button.clicked.connect(self.close)
         self.apply_button.clicked.connect(self.execute_code)
+        self.python_button.toggled.connect(self.update_language_selection)
+        self.mel_button.toggled.connect(self.update_language_selection)
         
-        # Window dragging
+        # Setup event handling for dragging and resizing
         self.dragging = False
         self.offset = None
         self.title_bar.mousePressEvent = self.title_bar_mouse_press
         self.title_bar.mouseMoveEvent = self.title_bar_mouse_move
         self.title_bar.mouseReleaseEvent = self.title_bar_mouse_release
         
-        # Store state
+        # Install event filter for the frame
+        self.frame.setMouseTracking(True)
+        self.frame.installEventFilter(self)
+        
         self.picker_button = None
-
+        
     def set_picker_button(self, button):
+        """Modified to ensure proper initialization of script data for individual buttons"""
         self.picker_button = button
-        self.code_editor.setPlainText(button.attribute_data.get('code', ''))
+        script_data = button.script_data if isinstance(button.script_data, dict) else {}
+        
+        # Create default script data if not properly formatted
+        if not script_data:
+            script_data = {
+                'type': 'python',
+                'python_code': '',
+                'mel_code': '',
+                'code': ''  # For backwards compatibility
+            }
+            
+        # Set the editors' content from button-specific data
+        self.python_editor.setPlainText(script_data.get('python_code', ''))
+        self.mel_editor.setPlainText(script_data.get('mel_code', ''))
+        
+        # Set the correct language button based on stored type
+        script_type = script_data.get('type', 'python')
+        if script_type == 'python':
+            self.python_button.setChecked(True)
+        else:
+            self.mel_button.setChecked(True)
+        
+        # Make sure to update the button's script data
+        button.script_data = script_data
+        
         self.position_window()
 
     def position_window(self):
@@ -378,15 +479,143 @@ class AttributeManagerWidget(QtWidgets.QWidget):
                 global_pos = canvas.mapToGlobal(canvas_pos.toPoint())
                 self.move(global_pos + QtCore.QPoint(button_geometry.width() + 10, 0))
 
+    def update_language_selection(self, checked):
+        if checked:  # Only respond to the button being checked
+            is_python = self.python_button.isChecked()
+            self.title_label.setText("Script Manager (Python)" if is_python else "Script Manager (MEL)")
+            self.editor_stack.setCurrentIndex(0 if is_python else 1)
+            
     def execute_code(self):
+        """Modified to ensure each button gets its own script data"""
         if self.picker_button:
-            code = self.code_editor.toPlainText()
-            # Store the code in the button's attribute data
-            self.picker_button.attribute_data = {'code': code}
+            # Create fresh script data for this button
+            script_data = {
+                'type': 'python' if self.python_button.isChecked() else 'mel',
+                'python_code': self.python_editor.toPlainText(),
+                'mel_code': self.mel_editor.toPlainText(),
+                'code': self.python_editor.toPlainText() if self.python_button.isChecked() else self.mel_editor.toPlainText()
+            }
+            
+            # Update the button's script data
+            self.picker_button.script_data = script_data
             self.picker_button.changed.emit(self.picker_button)
-            # Close the window
             self.close()
+    #---------------------------------------------------------------------------------------
+    def eventFilter(self, obj, event):
+        if obj == self.frame:
+            if event.type() == QtCore.QEvent.MouseMove:
+                if not self.resizing:
+                    pos = self.mapFromGlobal(self.frame.mapToGlobal(event.pos()))
+                    if self.is_in_resize_range(pos):
+                        self.update_cursor(pos)
+                    else:
+                        self.unsetCursor()
+                return False
+            elif event.type() == QtCore.QEvent.Leave:
+                if not self.resizing:
+                    self.unsetCursor()
+                return True
+        return super().eventFilter(obj, event)
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self.resize_edge = self.get_resize_edge(event.pos())
+            if self.resize_edge:
+                self.resizing = True
+                self.resize_start_pos = event.globalPos()
+                self.initial_size = self.size()
+                self.initial_pos = self.pos()
+            else:
+                self.resizing = False
     
+    def mouseMoveEvent(self, event):
+        if event.buttons() == QtCore.Qt.LeftButton and self.resizing and self.resize_edge:
+            delta = event.globalPos() - self.resize_start_pos
+            new_geometry = self.geometry()
+            
+            if 'left' in self.resize_edge:
+                new_width = max(self.minimumWidth(), self.initial_size.width() - delta.x())
+                new_x = self.initial_pos.x() + delta.x()
+                if new_width >= self.minimumWidth():
+                    new_geometry.setLeft(new_x)
+                
+            if 'right' in self.resize_edge:
+                new_width = max(self.minimumWidth(), self.initial_size.width() + delta.x())
+                new_geometry.setWidth(new_width)
+                
+            if 'top' in self.resize_edge:
+                new_height = max(self.minimumHeight(), self.initial_size.height() - delta.y())
+                new_y = self.initial_pos.y() + delta.y()
+                if new_height >= self.minimumHeight():
+                    new_geometry.setTop(new_y)
+                
+            if 'bottom' in self.resize_edge:
+                new_height = max(self.minimumHeight(), self.initial_size.height() + delta.y())
+                new_geometry.setHeight(new_height)
+            
+            self.setGeometry(new_geometry)
+        
+        elif not self.resizing:
+            if self.is_in_resize_range(event.pos()):
+                self.update_cursor(event.pos())
+            else:
+                self.unsetCursor()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self.resizing = False
+            self.resize_edge = None
+            self.unsetCursor()
+
+    def is_in_resize_range(self, pos):
+        width = self.width()
+        height = self.height()
+        edge_size = self.resize_range
+
+        return (pos.x() <= edge_size or 
+                pos.x() >= width - edge_size or 
+                pos.y() <= edge_size or 
+                pos.y() >= height - edge_size)
+    
+    def get_resize_edge(self, pos):
+        width = self.width()
+        height = self.height()
+        edge_size = self.resize_range
+        
+        is_top = pos.y() <= edge_size
+        is_bottom = pos.y() >= height - edge_size
+        is_left = pos.x() <= edge_size
+        is_right = pos.x() >= width - edge_size
+        
+        if is_top and is_left: return 'top_left'
+        if is_top and is_right: return 'top_right'
+        if is_bottom and is_left: return 'bottom_left'
+        if is_bottom and is_right: return 'bottom_right'
+        if is_top: return 'top'
+        if is_bottom: return 'bottom'
+        if is_left: return 'left'
+        if is_right: return 'right'
+        return None
+
+    def update_cursor(self, pos):
+        edge = self.get_resize_edge(pos)
+        cursor = QtCore.Qt.ArrowCursor
+        
+        if edge:
+            cursor_map = {
+                'top': QtCore.Qt.SizeVerCursor,
+                'bottom': QtCore.Qt.SizeVerCursor,
+                'left': QtCore.Qt.SizeHorCursor,
+                'right': QtCore.Qt.SizeHorCursor,
+                'top_left': QtCore.Qt.SizeFDiagCursor,
+                'bottom_right': QtCore.Qt.SizeFDiagCursor,
+                'top_right': QtCore.Qt.SizeBDiagCursor,
+                'bottom_left': QtCore.Qt.SizeBDiagCursor
+            }
+            cursor = cursor_map.get(edge, QtCore.Qt.ArrowCursor)
+        
+        self.setCursor(cursor)
+    #---------------------------------------------------------------------------------------
     # Window dragging methods
     def title_bar_mouse_press(self, event):
         if event.button() == QtCore.Qt.LeftButton:
@@ -435,8 +664,8 @@ class PickerButton(QtWidgets.QWidget):
         self.update_cursor()
         self.assigned_objects = []  
 
-        self.mode = 'select'  # 'select' or 'attribute'
-        self.attribute_data = {}  # Store attribute data
+        self.mode = 'select'  # 'select' or 'script'
+        self.script_data = {}  # Store script data
 
         self.update_tooltip()
         
@@ -569,8 +798,8 @@ class PickerButton(QtWidgets.QWidget):
                         
                         canvas.apply_final_selection(event.modifiers() & QtCore.Qt.ShiftModifier)
                     else:
-                        # Attribute mode behavior
-                        self.execute_attribute_command()
+                        # script mode behavior
+                        self.execute_script_command()
                 
                 event.accept()
         elif event.button() == QtCore.Qt.RightButton:
@@ -654,11 +883,24 @@ class PickerButton(QtWidgets.QWidget):
             self.update()
     #---------------------------------------------------------------------------------------
     def update_tooltip(self):
-        #base_tooltip = f"Label: {self.label}\nID: {self.unique_id}"
+        """Update tooltip using node names resolved from UUIDs, stripping namespaces"""
         base_tooltip = f"(Assigned Objects):"
         if self.assigned_objects:
-            objects_str = "\n- " + "\n- ".join(obj.split('|')[-1] for obj in self.assigned_objects)
-            base_tooltip += objects_str
+            try:
+                object_names = []
+                for uuid in self.assigned_objects:
+                    try:
+                        node = cmds.ls(uuid, long=True)[0]
+                        # Strip namespace by taking the last part after any ':'
+                        short_name = node.split('|')[-1].split(':')[-1]
+                        object_names.append(short_name)
+                    except:
+                        # Handle case where object no longer exists
+                        continue
+                objects_str = "\n- " + "\n- ".join(object_names)
+                base_tooltip += objects_str
+            except:
+                base_tooltip += "\nError resolving object names"
         self.setToolTip(base_tooltip)
 
     def show_selection_manager(self):
@@ -672,12 +914,12 @@ class PickerButton(QtWidgets.QWidget):
         self.selection_manager.move(pos + QtCore.QPoint(10, 0))
         self.selection_manager.show()
 
-    def show_attribute_manager(self):
-        if not hasattr(self, 'attribute_manager'):
-            self.attribute_manager = AttributeManagerWidget()
+    def show_script_manager(self):
+        if not hasattr(self, 'script_manager'):
+            self.script_manager = ScriptManagerWidget()
         
-        self.attribute_manager.set_picker_button(self)
-        self.attribute_manager.show()
+        self.script_manager.set_picker_button(self)
+        self.script_manager.show()
 
     def show_context_menu(self, pos):
         menu = QtWidgets.QMenu()
@@ -942,17 +1184,17 @@ class PickerButton(QtWidgets.QWidget):
         select_action.setChecked(self.mode == 'select')
         select_action.triggered.connect(lambda: self.set_mode('select'))
         
-        attribute_action = QtWidgets.QAction("Attribute Mode", self)
-        attribute_action.setCheckable(True)
-        attribute_action.setChecked(self.mode == 'attribute')
-        attribute_action.triggered.connect(lambda: self.set_mode('attribute'))
+        script_action = QtWidgets.QAction("Script Mode", self)
+        script_action.setCheckable(True)
+        script_action.setChecked(self.mode == 'script')
+        script_action.triggered.connect(lambda: self.set_mode('script'))
         
         mode_group = QtWidgets.QActionGroup(self)
         mode_group.addAction(select_action)
-        mode_group.addAction(attribute_action)
+        mode_group.addAction(script_action)
         
         mode_menu.addAction(select_action)
-        mode_menu.addAction(attribute_action)
+        mode_menu.addAction(script_action)
         menu.addMenu(mode_menu)
         
         # Copy, Paste and Delete Actions
@@ -961,10 +1203,31 @@ class PickerButton(QtWidgets.QWidget):
             copy_action = menu.addAction(QtGui.QIcon(":/copyUV.png"), "Copy")
             copy_action.triggered.connect(self.copy_selected_buttons)
             
-            paste_attr_action = menu.addAction(QtGui.QIcon(":/pasteUV.png"), "Paste Attributes")
-            paste_attr_action.triggered.connect(self.paste_attributes)
-            paste_attr_action.setEnabled(bool(ButtonClipboard.instance().get_last_attributes()))
-
+            # Create Paste submenu
+            paste_menu = QtWidgets.QMenu("Paste", menu)
+            paste_menu.setStyleSheet(menu.styleSheet())
+            
+            paste_all_action = paste_menu.addAction("Paste All")
+            paste_all_action.triggered.connect(lambda: self.paste_attributes('all'))
+            
+            paste_dimension_action = paste_menu.addAction("Paste Dimension")
+            paste_dimension_action.triggered.connect(lambda: self.paste_attributes('dimension'))
+            
+            paste_function_action = paste_menu.addAction("Paste Function")
+            paste_function_action.triggered.connect(lambda: self.paste_attributes('function'))
+            
+            paste_text_action = paste_menu.addAction("Paste Text")
+            paste_text_action.triggered.connect(lambda: self.paste_attributes('text'))
+            
+            # Enable/disable paste actions based on clipboard content
+            has_clipboard = bool(ButtonClipboard.instance().get_last_attributes())
+            paste_all_action.setEnabled(has_clipboard)
+            paste_dimension_action.setEnabled(has_clipboard)
+            paste_function_action.setEnabled(has_clipboard)
+            paste_text_action.setEnabled(has_clipboard)
+            
+            menu.addMenu(paste_menu)
+            
             delete_action = menu.addAction(QtGui.QIcon(":/delete.png"), "Delete")
             delete_action.triggered.connect(self.delete_selected_buttons)
         
@@ -985,9 +1248,9 @@ class PickerButton(QtWidgets.QWidget):
                     len(self.parent().get_selected_buttons()) == 1
                 )
             else:
-                # Attribute Mode menu items
-                attribute_manager_action = menu.addAction("Attribute Manager")
-                attribute_manager_action.triggered.connect(self.show_attribute_manager)
+                # Script Mode menu items
+                script_manager_action = menu.addAction("Script Manager")
+                script_manager_action.triggered.connect(self.show_script_manager)
         
         menu.addSeparator()
 
@@ -1003,34 +1266,79 @@ class PickerButton(QtWidgets.QWidget):
             if selected_buttons:
                 ButtonClipboard.instance().copy_buttons(selected_buttons)
 
-    def paste_attributes(self):
+    def paste_attributes(self, paste_type='all'):
+        """Enhanced paste method that handles different types of paste operations"""
         canvas = self.parent()
         if canvas and canvas.edit_mode:
             attributes = ButtonClipboard.instance().get_last_attributes()
             if attributes:
                 selected_buttons = canvas.get_selected_buttons()
                 for button in selected_buttons:
-                    button.label = attributes['label']
-                    button.color = attributes['color']
-                    button.opacity = attributes['opacity']
-                    button.width = attributes['width']
-                    button.height = attributes['height']
-                    button.radius = attributes['radius'].copy()
+                    if paste_type == 'all':
+                        # Paste everything
+                        button.label = attributes['label']
+                        button.color = attributes['color']
+                        button.opacity = attributes['opacity']
+                        button.width = attributes['width']
+                        button.height = attributes['height']
+                        button.radius = attributes['radius'].copy()
+                        button.assigned_objects = attributes.get('assigned_objects', []).copy()
+                        button.mode = attributes.get('mode', 'select')
+                        button.script_data = attributes.get('script_data', {}).copy()
+                    elif paste_type == 'dimension':
+                        # Paste only dimensions
+                        button.width = attributes['width']
+                        button.height = attributes['height']
+                        button.radius = attributes['radius'].copy()
+                    elif paste_type == 'function':
+                        # Paste only functionality
+                        button.assigned_objects = attributes.get('assigned_objects', []).copy()
+                        button.mode = attributes.get('mode', 'select')
+                        button.script_data = attributes.get('script_data', {}).copy()
+                    elif paste_type == 'text':
+                        # Paste only the label text
+                        button.label = attributes['label']
+                    
                     button.update()
+                    button.update_tooltip()
                     button.changed.emit(button)
     #---------------------------------------------------------------------------------------
-    def set_attribute_data(self, data):
-        self.attribute_data = data
+    def set_script_data(self, data):
+        self.script_data = data
         self.changed.emit(self)
 
-    def execute_attribute_command(self):
-        if self.mode == 'attribute' and self.attribute_data:
-            code = self.attribute_data.get('code', '')
+    def execute_script_command(self):
+        """Execute the script with namespace token handling"""
+        if self.mode == 'script' and self.script_data:
+            script_type = self.script_data.get('type', 'python')
+            
+            # Get the appropriate code based on type
+            if script_type == 'python':
+                code = self.script_data.get('python_code', self.script_data.get('code', ''))
+            else:
+                code = self.script_data.get('mel_code', self.script_data.get('code', ''))
+            
             if code:
                 try:
-                    exec(code)
+                    # Get current namespace from picker window
+                    main_window = self.window()
+                    if isinstance(main_window, UI.AnimPickerWindow):
+                        current_ns = main_window.namespace_dropdown.currentText()
+                        ns_prefix = f"{current_ns}:" if current_ns and current_ns != 'None' else ""
+                        
+                        # Replace '@ns' at start of identifier
+                        modified_code = re.sub(r'@ns([a-zA-Z0-9_])', fr'{ns_prefix}\1', code)
+                        # Replace '@ns' when it's by itself
+                        modified_code = re.sub(r'@ns(?![a-zA-Z0-9_])', f'"{ns_prefix}"', modified_code)
+                        
+                        # Execute the modified code
+                        if script_type == 'python':
+                            exec(modified_code)
+                        else:
+                            import maya.mel as mel
+                            mel.eval(modified_code)
                 except Exception as e:
-                    cmds.warning(f"Error executing code: {str(e)}")
+                    cmds.warning(f"Error executing {script_type} code: {str(e)}")
     #---------------------------------------------------------------------------------------
     def set_size(self, width, height):
         self.width = width
@@ -1122,13 +1430,12 @@ class PickerButton(QtWidgets.QWidget):
                 main_window.update_buttons_for_current_tab()
     #---------------------------------------------------------------------------------------
     def add_selected_objects(self):
-        selected = cmds.ls(selection=True, long=True)
+        """Store UUIDs of selected objects instead of long names"""
+        selected = cmds.ls(selection=True, uuid=True)
         if selected:
-            # Strip namespaces from the objects
-            stripped_objects = [obj.split(':')[-1] for obj in selected]
-            self.assigned_objects = list(set(self.assigned_objects + stripped_objects))
+            self.assigned_objects = list(set(self.assigned_objects + selected))
             self.update_tooltip()
-            self.changed.emit(self)  # Notify about the change to update data
+            self.changed.emit(self)
 
     def remove_all_objects(self):
         self.assigned_objects = []

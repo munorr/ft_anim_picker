@@ -72,10 +72,16 @@ class animation_tool_layout:
         ts = 11 # text size
         bh = 20 # button height
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-        reset_move_button = CB.CustomButton(text='Move', icon=':delete.png', color='#262626', size=14, tooltip="Resets the moved object values to Origin.",text_size=ts, height=bh)
-        reset_rotate_button = CB.CustomButton(text='Rotate', icon=':delete.png', color='#262626', size=14, tooltip="Resets the rotated object values to Origin.",text_size=ts, height=bh)
-        reset_scale_button = CB.CustomButton(text='Scale', icon=':delete.png', color='#262626', size=14, tooltip="Resets the scaled object values to Origin.",text_size=ts, height=bh)
-        reset_all_button = CB.CustomButton(text='All', icon=':delete.png', size=14, color='#262626', tooltip="Resets all the object transform to Origin.",text_size=ts, height=bh)
+        #reset_move_button = CB.CustomButton(text='Move', icon=':delete.png', color='#262626', size=14, tooltip="Resets the moved object values to Origin.",text_size=ts, height=bh)
+        #reset_rotate_button = CB.CustomButton(text='Rotate', icon=':delete.png', color='#262626', size=14, tooltip="Resets the rotated object values to Origin.",text_size=ts, height=bh)
+        #reset_scale_button = CB.CustomButton(text='Scale', icon=':delete.png', color='#262626', size=14, tooltip="Resets the scaled object values to Origin.",text_size=ts, height=bh)
+        reset_transform_button = CB.CustomButton(text='Reset', color='#262626', size=14, tooltip="Resets the object transform to Origin.",
+                                                 text_size=ts, height=bh,ContextMenu=True, onlyContext=True)
+        reset_transform_button.addToMenu("Move", reset_move, icon='delete.png', position=(0,0))
+        reset_transform_button.addToMenu("Rotate", reset_rotate, icon='delete.png', position=(1,0))
+        reset_transform_button.addToMenu("Scale", reset_scale, icon='delete.png', position=(2,0))
+
+        reset_all_button = CB.CustomButton(text='Reset All', icon=':delete.png', size=14, color='#262626', tooltip="Resets all the object transform to Origin.",text_size=ts, height=bh)
 
         timeLine_key_button = CB.CustomButton(text='Key', color='#d62e22', tooltip="Sets key frame.",text_size=ts, height=bh)
         timeLine_delete_key_button = CB.CustomButton(text='Key', icon=':delete.png', color='#262626', size=14, tooltip="Deletes keys from the given start frame to the current frame.",text_size=ts, height=bh)
@@ -83,9 +89,9 @@ class animation_tool_layout:
         timeLine_paste_key_button = CB.CustomButton(text='Paste', color='#1699CA', tooltip="Paste copied key(s).",text_size=ts, height=bh)
         timeLine_pasteInverse_key_button = CB.CustomButton(text='Paste Inverse', color='#9416CA', tooltip="Paste Inverted copied keys(s).",text_size=ts, height=bh)
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-        reset_move_button.singleClicked.connect(reset_move)
-        reset_rotate_button.singleClicked.connect(reset_rotate)
-        reset_scale_button.singleClicked.connect(reset_scale)
+        #reset_move_button.singleClicked.connect(reset_move)
+        #reset_rotate_button.singleClicked.connect(reset_rotate)
+        #reset_scale_button.singleClicked.connect(reset_scale)
         reset_all_button.singleClicked.connect(reset_all)
 
         timeLine_key_button.singleClicked.connect(set_key)
@@ -94,9 +100,10 @@ class animation_tool_layout:
         timeLine_paste_key_button.singleClicked.connect(paste_keys)
         timeLine_pasteInverse_key_button.singleClicked.connect(paste_inverse)
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-        self.col1.addWidget(reset_move_button)
-        self.col1.addWidget(reset_rotate_button)
-        self.col1.addWidget(reset_scale_button)
+        #self.col1.addWidget(reset_move_button)
+        #self.col1.addWidget(reset_rotate_button)
+        #self.col1.addWidget(reset_scale_button)
+        self.col1.addWidget(reset_transform_button)
         self.col1.addWidget(reset_all_button)
 
         self.col1.addSpacing(4)

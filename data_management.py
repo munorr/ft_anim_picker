@@ -11,7 +11,9 @@ class PickerDataManager:
                 'image_path': None,
                 'image_opacity': 1.0,
                 'image_scale': 1.0,
-                'namespace': 'None'
+                'background_value': 20,
+                'namespace': 'None',
+                'show_dots': True
             }
         })
     })
@@ -114,14 +116,29 @@ class PickerDataManager:
         button_data['assigned_objects'] = button_data.get('assigned_objects', [])
         button_data['mode'] = button_data.get('mode', 'select')
         
-        # Properly handle attribute data initialization
-        if 'attribute_data' not in button_data:
-            button_data['attribute_data'] = {}
-        elif button_data['attribute_data']:
-            # Ensure value is properly typed based on attribute type
-            attr_type = button_data['attribute_data'].get('type')
-            attr_value = button_data['attribute_data'].get('value')
-            #attr_value = float(attr_value) 
+        # Properly handle script data initialization
+        if 'script_data' not in button_data:
+            button_data['script_data'] = {
+                'type': 'python',
+                'python_code': '',
+                'mel_code': '',
+                'code': ''
+            }
+        elif button_data['script_data']:
+            # Ensure all script data fields are present
+            if isinstance(button_data['script_data'], dict):
+                script_data = button_data['script_data']
+                script_data.setdefault('type', 'python')
+                script_data.setdefault('python_code', script_data.get('code', '') if script_data.get('type') == 'python' else '')
+                script_data.setdefault('mel_code', script_data.get('code', '') if script_data.get('type') == 'mel' else '')
+                script_data.setdefault('code', script_data.get('python_code' if script_data['type'] == 'python' else 'mel_code', ''))
+            else:
+                button_data['script_data'] = {
+                    'type': 'python',
+                    'python_code': str(button_data['script_data']),
+                    'mel_code': '',
+                    'code': str(button_data['script_data'])
+                }
 
         data['tabs'][tab_name]['buttons'].append(button_data)
         cls.save_data(data)
@@ -150,6 +167,20 @@ class PickerDataManager:
             data['tabs'][tab_name]['image_path'] = image_path
             data['tabs'][tab_name]['image_opacity'] = image_opacity
             data['tabs'][tab_name]['image_scale'] = image_scale
+            cls.save_data(data)
+
+    @classmethod
+    def update_axes_visibility(cls, tab_name, show_axes):
+        data = cls.get_data()
+        if tab_name in data['tabs']:
+            data['tabs'][tab_name]['show_axes'] = show_axes
+            cls.save_data(data)
+
+    @classmethod
+    def update_dots_visibility(cls, tab_name, show_dots):
+        data = cls.get_data()
+        if tab_name in data['tabs']:
+            data['tabs'][tab_name]['show_dots'] = show_dots
             cls.save_data(data)
 
     @classmethod

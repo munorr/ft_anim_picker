@@ -28,7 +28,7 @@ from . import button_edit_widgets as BEW
 from . import tool_functions as TF
 from . fade_away_logic import FadeAway
 
-anim_picker_version = 'v1_2_1'
+anim_picker_version = 'v1_2_3'
 
 class AnimPickerWindow(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -76,7 +76,6 @@ class AnimPickerWindow(QtWidgets.QWidget):
             {'widget': self.canvas_frame, 'exclude': [self.canvas_frame_row]}, # Keep the canvas content visible
             {'widget': self.tools_EF, 'hide_in_minimal': False},
             {'widget': self.canvas_tab_frame, 'hide_in_minimal': True},
-            {'widget': self.image_opacity_slider, 'hide_in_minimal': True},
             {'widget': self.namespace_dropdown, 'hide_in_minimal': True},
             {'widget': self.close_button, 'hide_in_minimal': True},
         ]
@@ -124,18 +123,23 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.util_frame_col.addSpacing(4)
         self.util_frame_col.addWidget(self.icon_image)
 
-        file_util = CB.CustomButton(text='File', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,cmColor='#333333',tooltip='File Utilities')
-        file_util.addToMenu("Load Picker", self.load_picker, icon='loadPreset.png')
-        file_util.addToMenu("Store Picker", self.store_picker, icon='save.png')
+        file_util = CB.CustomButton(text='File', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
+                                    cmColor='#333333',tooltip='File Utilities', flat=True)
         
-        edit_util = CB.CustomButton(text='Edit', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,cmColor='#333333',tooltip='Edit Utilities')
-        edit_util.addToMenu("Edit Mode", self.toggle_edit_mode, icon='setEdEditMode.png')
-        edit_util.addToMenu("Minimal Mode", self.fade_manager.toggle_minimal_mode, icon='eye.png')
-        edit_util.addToMenu("Toggle Fade Away", self.fade_manager.toggle_fade_away, icon='eye.png')
+        file_util.addToMenu("Load Picker", self.load_picker, icon='loadPreset.png', position=(0,0))
+        file_util.addToMenu("Store Picker", self.store_picker, icon='save.png', position=(1,0))
+        
+        edit_util = CB.CustomButton(text='Edit', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
+                                    cmColor='#333333',tooltip='Edit Utilities', flat=True)
+        
+        edit_util.addToMenu("Edit Mode", self.toggle_edit_mode, icon='setEdEditMode.png', position=(0,0))
+        edit_util.addToMenu("Minimal Mode", self.fade_manager.toggle_minimal_mode, icon='eye.png', position=(1,0))
+        edit_util.addToMenu("Toggle Fade Away", self.fade_manager.toggle_fade_away, icon='eye.png', position=(2,0))
 
-        config_util = CB.CustomButton(text='Config', height=20, width=60, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa')
-        help_util = CB.CustomButton(text='Help', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,cmColor='#333333',tooltip='Help')
-
+        info_util = CB.CustomButton(text='Info', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
+                                    cmColor='#333333',tooltip='Help', flat=True)
+        
+        info_util.addToMenu(f"Anim Picker [{anim_picker_version}]", self.info, icon='info.png', position=(0,0))
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         #-Close button
         self.close_button = QtWidgets.QPushButton("✕", self)
@@ -148,7 +152,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.util_frame_col.addWidget(file_util)
         self.util_frame_col.addWidget(edit_util)
         #self.util_frame_col.addWidget(config_util)
-        self.util_frame_col.addWidget(help_util)
+        self.util_frame_col.addWidget(info_util)
         self.util_frame_col.addStretch(1)
         self.util_frame_col.addWidget(self.close_button)
         self.util_frame_col.addSpacing(2)
@@ -165,6 +169,8 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.bottom_col = QtWidgets.QHBoxLayout()
         self.bottom_col.setAlignment(QtCore.Qt.AlignRight)
 
+        #------------------------------------------------------------------------------------------------------------------------------------------------------
+        #------------------------------------------------------------------------------------------------------------------------------------------------------
         self.canvas_frame = QtWidgets.QFrame()
         self.canvas_frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         #self.canvas_frame.setFixedHeight(20)
@@ -240,14 +246,15 @@ class AnimPickerWindow(QtWidgets.QWidget):
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         
         #-Edit Frame
+        efw = 180 #edit fixed width
         self.edit_frame = QtWidgets.QFrame()
         self.edit_frame.setStyleSheet('QFrame {background-color: rgba(40, 40, 40, .8); border: 0px solid #333333;}')
-        self.edit_frame.setFixedWidth(150)
+        self.edit_frame.setFixedWidth(efw - 10)
         
         # Create a scroll area
         self.edit_scroll_area = QtWidgets.QScrollArea()
         self.edit_scroll_area.setWidgetResizable(True)
-        self.edit_scroll_area.setFixedWidth(160)  # Set a fixed width for the scroll area
+        self.edit_scroll_area.setFixedWidth(efw)  # Set a fixed width for the scroll area
         self.edit_scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.edit_scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOn)
         #self.edit_scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
@@ -279,7 +286,6 @@ class AnimPickerWindow(QtWidgets.QWidget):
 
 
         #-EDIT LAYOUT ------------------->
-        efw = 140 #edit fixed width
         self.edit_layout = QtWidgets.QVBoxLayout(self.edit_frame)
         self.edit_layout.setAlignment(QtCore.Qt.AlignTop|QtCore.Qt.AlignCenter)
         els = 6 #edit layout spacing
@@ -296,7 +302,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         self.add_button_EF = EF.ExpandableFrame(title='Add Button', color='#222222', border=1, border_color='#333333') 
         self.add_button_EF.toggle_expand()
-        self.add_button_EF.setFixedWidth(efw)
+        self.add_button_EF.setFixedWidth(efw-20)
         self.add_picker_button = CB.CustomButton(text='Add Button', height=24, radius=4,color='#5285a6')
 
         p_button_grid1 = QtWidgets.QGridLayout()
@@ -315,19 +321,21 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.button_selection_count = 0
         self.edit_button_EF = EF.ExpandableFrame(title=f'Button <span style="color: #494949; font-size: 11px;">({self.button_selection_count})</span>', color='#222222', border=1, border_color='#333333') 
         self.edit_button_EF.toggle_expand()
-        self.edit_button_EF.setFixedWidth(efw)
+        self.edit_button_EF.setFixedWidth(efw-20)
         self.edit_value_layout = QtWidgets.QVBoxLayout()
         
         #BEW.create_button_edit_widgets(self.edit_value_layout)
         self.add_picker_button = CB.CustomButton(text='Add Button', height=24, radius=4,color='#5285a6',tooltip='Add Button to the current tab')
         self.edit_button_EF.addWidget(self.add_picker_button)
         self.edit_button_EF.addLayout(self.edit_value_layout)
+
+
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         #-Canvas EF
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         self.edit_canvas_EF = EF.ExpandableFrame(title='Canvas', color='#222222', border=1, border_color='#333333') 
         self.edit_canvas_EF.toggle_expand()
-        self.edit_canvas_EF.setFixedWidth(efw)
+        self.edit_canvas_EF.setFixedWidth(efw-20)
         self.add_image = CB.CustomButton(text='Add Image', height=24, radius=4,color='#5285a6',tooltip='Add Image to the current tab')
         self.remove_image = CB.CustomButton(text='Remove Image', height=24, radius=4,color='#5a5a5a',tooltip='Remove Image from the current tab')
 
@@ -340,8 +348,11 @@ class AnimPickerWindow(QtWidgets.QWidget):
         
         self.toggle_axes = CB.CustomRadioButton('Toggle Axes', height=None,color='#5285a6',fill=False)
         self.toggle_axes.setChecked(True)
+
+        self.toggle_dots = CB.CustomRadioButton('Toggle Dots', height=None,color='#5285a6',fill=False)
+        self.toggle_dots.setChecked(True)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
-        #-Canvas Util Frame
+        #-Opcity Slider
         self.bg_opacity_frame = QtWidgets.QFrame()
         self.bg_opacity_frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.bg_opacity_frame.setFixedHeight(24)
@@ -349,21 +360,34 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.bg_opacity_frame_col = QtWidgets.QHBoxLayout(self.bg_opacity_frame)
         set_margin_space(self.bg_opacity_frame_col, 4, 2)
 
-        self.image_opacity_slider = CS.CustomSlider(min_value=0, max_value=100, float_precision=0, height=16, radius=8,prefix='Opacity: ',suffix='%', color='#444444')
+        self.image_opacity_slider = CS.CustomSlider(min_value=0, max_value=100, float_precision=0, height=16, radius=8,prefix='Image Opacity: ',suffix='%', color='#444444')
         self.image_opacity_slider.setValue(100)
 
-        
         self.bg_opacity_frame_col.addWidget(self.image_opacity_slider)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
+        #-Background Value Slider
+        self.bg_value_frame = QtWidgets.QFrame()
+        self.bg_value_frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.bg_value_frame.setFixedHeight(24)
+        self.bg_value_frame.setStyleSheet(f'''QFrame {{border: 0px solid gray; padding: 0px; margin: 0px; border-radius: 12px; background-color: rgba(35, 35, 35, .8);}}''')
+        self.bg_value_frame_col = QtWidgets.QHBoxLayout(self.bg_value_frame)
+        set_margin_space(self.bg_value_frame_col, 4, 2)
 
+        self.bg_value_slider = CS.CustomSlider(min_value=0, max_value=100, float_precision=0, height=16, radius=8,prefix='BG Value: ',suffix='%', color='#444444')
+        self.bg_value_slider.setValue(50)
+
+        self.bg_value_frame_col.addWidget(self.bg_value_slider)
+        #------------------------------------------------------------------------------------------------------------------------------------------------------
         self.edit_canvas_EF.addWidget(self.add_image)
         self.edit_canvas_EF.addWidget(self.remove_image)
         self.edit_canvas_EF.content_layout.addSpacing(10)
         self.edit_canvas_EF.addWidget(self.bg_opacity_frame)
+        self.edit_canvas_EF.addWidget(self.bg_value_frame)
         self.edit_canvas_EF.addLayout(self.image_scale_layout)
         self.edit_canvas_EF.addWidget(self.toggle_axes)
+        self.edit_canvas_EF.addWidget(self.toggle_dots)
         
-        self.toggle_edit_mode_button = CB.CustomButton(text='Apply', height=24, width=160, radius=4,color='#5e7b19', tooltip='Apply changes')
+        self.toggle_edit_mode_button = CB.CustomButton(text='Apply', height=24, width=efw, radius=4,color='#5e7b19', tooltip='Apply changes')
         self.toggle_edit_mode_button.clicked.connect(self.toggle_edit_mode)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         #------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -391,7 +415,10 @@ class AnimPickerWindow(QtWidgets.QWidget):
         
     def em(self):
         print('Funtion not assigned')
-    
+
+    def info(self):
+        print(f'Floating Tools Anim Picker {anim_picker_version}')
+
     def toggle_edit_mode(self):
         self.edit_mode = not self.edit_mode
 
@@ -501,12 +528,17 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.image_opacity_slider.valueChanged.connect(self.update_image_opacity)
         self.add_picker_button.clicked.connect(self.add_new_picker_button)
         self.toggle_axes.toggled.connect(self.toggle_axes_visibility)
+        self.toggle_dots.toggled.connect(self.toggle_dots_visibility)
         if self.tab_system.current_tab:
             current_canvas = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
             current_canvas.clicked.connect(self.clear_line_edit_focus)
             current_canvas.button_selection_changed.connect(self.update_edit_widgets_delayed)
             #current_canvas.button_selection_changed.connect(self.update_edit_widgets) 
         self.namespace_dropdown.currentTextChanged.connect(self.on_namespace_changed)
+        self.bg_value_slider.valueChanged.connect(self.update_background_value)
+
+        self.toggle_axes.toggled.connect(self.toggle_axes_visibility)
+        self.toggle_dots.toggled.connect(self.toggle_dots_visibility)
         #self.tools_EF.expandedSignal.connect(self.on_tools_frame_expanded)
         #self.tools_EF.collapsedSignal.connect(self.on_tools_frame_collapsed)
     #----------------------------------------------------------------------------------------------------------------------------------------
@@ -523,7 +555,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
             try:
                 from . import picker_io
                 picker_io.store_picker_data(file_path)
-                cmds.warning(f"Picker data successfully saved to {file_path}")
+                cmds.inViewMessage(amg=f"Picker data successfully saved to {file_path}", pos='midCenter', fade=True)
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "Error", str(e))
 
@@ -540,8 +572,14 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 picker_io.load_picker_data(file_path)
                 # Refresh the UI to show the loaded data
                 self.tab_system.setup_tabs()
+                
+                # Switch to the first tab if available
+                if self.tab_system.tabs:
+                    first_tab = next(iter(self.tab_system.tabs))
+                    self.tab_system.switch_tab(first_tab)
+                
                 self.create_buttons()
-                cmds.warning(f"Picker data successfully loaded from {file_path}")
+                cmds.inViewMessage(amg=f"Picker data successfully Imported", pos='midCenter', fade=True)
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "Error", str(e))
     #----------------------------------------------------------------------------------------------------------------------------------------
@@ -549,8 +587,21 @@ class AnimPickerWindow(QtWidgets.QWidget):
     #----------------------------------------------------------------------------------------------------------------------------------------
     def toggle_axes_visibility(self, checked):
         if self.tab_system.current_tab:
-            current_canvas = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
+            current_tab = self.tab_system.current_tab
+            current_canvas = self.tab_system.tabs[current_tab]['canvas']
             current_canvas.set_show_axes(checked)
+            
+            # Update the database
+            DM.PickerDataManager.update_axes_visibility(current_tab, checked)
+
+    def toggle_dots_visibility(self, checked):
+        if self.tab_system.current_tab:
+            current_tab = self.tab_system.current_tab
+            current_canvas = self.tab_system.tabs[current_tab]['canvas']
+            current_canvas.set_show_dots(checked)
+            
+            # Update the database
+            DM.PickerDataManager.update_dots_visibility(current_tab, checked)
 
     def setup_shortcuts(self):
         self.focus_shortcut = QShortcut(QtGui.QKeySequence("F"), self)
@@ -641,17 +692,16 @@ class AnimPickerWindow(QtWidgets.QWidget):
             # Get the widget under the cursor
             child_widget = self.childAt(event.pos())
             
-            # Check if we're clicking on the canvas frame or any of its children
+            # Check if we're clicking on any special widgets
             current_widget = child_widget
             while current_widget:
-                if isinstance(current_widget, PC.PickerCanvas):
-                    event.accept()
-                    return
-                if isinstance(current_widget, PB.PickerButton):
+                if isinstance(current_widget, (PC.PickerCanvas, PB.PickerButton, 
+                                            TS.TabButton, CB.CustomRadioButton)):
                     event.accept()
                     return
                 current_widget = current_widget.parent()
             
+            # If we get here, we're not clicking on any special widgets
             # Handle resize and drag operations
             self.oldPos = event.globalPos()
             self.resize_edge = self.get_resize_edge(event.pos())
@@ -662,11 +712,22 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 self.initial_pos = self.pos()
             else:
                 self.resizing = False
-                
-        UT.maya_main_window().activateWindow()
+                    
+            UT.maya_main_window().activateWindow()
 
     def mouseMoveEvent(self, event):
         if event.buttons() == QtCore.Qt.LeftButton:
+            # First check if we're interacting with special widgets
+            child_widget = self.childAt(event.pos())
+            current_widget = child_widget
+            while current_widget:
+                if isinstance(current_widget, (PC.PickerCanvas, PB.PickerButton, 
+                                            TS.TabButton, CB.CustomRadioButton)):
+                    event.accept()
+                    return
+                current_widget = current_widget.parent()
+
+            # Handle resize/move operations only if not on special widgets
             if self.resizing and self.resize_edge:
                 delta = event.globalPos() - self.resize_start_pos
                 new_geometry = self.geometry()
@@ -983,8 +1044,16 @@ class AnimPickerWindow(QtWidgets.QWidget):
             button.assigned_objects = button_data.get("assigned_objects", [])
             button.mode = button_data.get("mode", "select")
             
-            # Handle attribute data
-            button.attribute_data = button_data.get("attribute_data", {})
+            # Handle script data with language type
+            script_data = button_data.get("script_data", {})
+            if isinstance(script_data, dict):
+                button.script_data = script_data
+            else:
+                # Convert legacy script data to new format
+                button.script_data = {
+                    'code': str(script_data),
+                    'type': 'python'  # Default to python for legacy data
+                }
             
             button.scene_position = QtCore.QPointF(*button_data["position"])
             button.update_tooltip()
@@ -1018,7 +1087,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
                     "radius": button.radius,
                     "assigned_objects": button.assigned_objects,
                     "mode": button.mode,  # Add mode
-                    "attribute_data": button.attribute_data  # Add attribute data
+                    "script_data": button.script_data  # Add script data
                 }
                 # Update existing button or add new one
                 updated = False
@@ -1053,10 +1122,13 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 'canvas': PC.PickerCanvas(self),
                 'buttons': [],
                 'image_path': None,
-                'image_opacity': 1.0
+                'image_opacity': 1.0,
+                'background_value': 18 # Default to 18% 
             }
         elif 'buttons' not in self.tab_system.tabs[tab_name]:
             self.tab_system.tabs[tab_name]['buttons'] = []
+        elif 'background_value' not in self.tab_system.tabs[tab_name]:
+            self.tab_system.tabs[tab_name]['background_value'] = 20  # Add if missing
 
     def setup_tab_system(self):
         self.tab_system = TS.TabSystem(self.canvas_tab_frame_col, self.addTabButton)
@@ -1179,18 +1251,35 @@ class AnimPickerWindow(QtWidgets.QWidget):
         current_canvas = self.tab_system.tabs[tab_name]['canvas']
         self.canvas_frame_row.addWidget(current_canvas)
 
-        # Set the background image and opacity
+        # Load tab data and update canvas settings
         tab_data = DM.PickerDataManager.get_tab_data(tab_name)
+        
+        # Set axes visibility
+        show_axes = tab_data.get('show_axes', True)  # Default to True if not specified
+        current_canvas.set_show_axes(show_axes)
+        self.toggle_axes.setChecked(show_axes)
+
+        # Set dots visibility
+        show_dots = tab_data.get('show_dots', True)  # Default to True if not specified
+        current_canvas.set_show_dots(show_dots)
+        self.toggle_dots.setChecked(show_dots)
+
+        # Get and set background value
+        background_value = tab_data.get('background_value', 20)  # Default to 20%
+        self.bg_value_slider.setValue(background_value)
+        current_canvas.set_background_value(background_value)
+
+        # Set other canvas properties (image, opacity, scale)
         image_path = tab_data.get('image_path')
         image_opacity = tab_data.get('image_opacity', 1.0)
         image_scale = tab_data.get('image_scale', 1.0)
         
         if image_path:
             current_canvas.set_background_image(image_path)
-            current_canvas.set_image_scale(image_scale)  # Set the scale
+            current_canvas.set_image_scale(image_scale)
             self.remove_image.setEnabled(True)
             self.tab_system.tabs[tab_name]['image_path'] = image_path
-            self.image_scale_factor.setText(str(image_scale))  # Update scale factor input
+            self.image_scale_factor.setText(str(image_scale))
         else:
             current_canvas.set_background_image(None)
             self.remove_image.setEnabled(False)
@@ -1198,7 +1287,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
 
         current_canvas.set_image_opacity(image_opacity)
         self.tab_system.tabs[tab_name]['image_opacity'] = image_opacity
-        self.tab_system.tabs[tab_name]['image_scale'] = image_scale  # Store scale
+        self.tab_system.tabs[tab_name]['image_scale'] = image_scale
         self.image_opacity_slider.setValue(int(image_opacity * 100))
 
         current_canvas.update()
@@ -1298,6 +1387,18 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 current_opacity,
                 scale
             )
+    
+    def update_background_value(self, value):
+        """Update the canvas background value when the slider changes"""
+        if self.tab_system.current_tab:
+            current_tab = self.tab_system.current_tab
+            canvas = self.tab_system.tabs[current_tab]['canvas']
+            canvas.set_background_value(value)
+            
+            # Store the background value in the tab data
+            tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+            tab_data['background_value'] = value
+            DM.PickerDataManager.update_tab_data(current_tab, tab_data)
     #----------------------------------------------------------------------------------------------------------------------------------------
     # [Picker Button Edit Funtions]  
     #----------------------------------------------------------------------------------------------------------------------------------------

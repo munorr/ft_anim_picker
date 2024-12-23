@@ -157,6 +157,7 @@ class PickerCanvas(QtWidgets.QWidget):
         self.setAutoFillBackground(True)
 
         self.show_axes = True
+        self.show_dots = True 
         # Background properties
         self.background_color = QtGui.QColor(50, 50, 50, 255)
         self.dot_color = QtGui.QColor(40, 40, 40, 255)
@@ -290,9 +291,8 @@ class PickerCanvas(QtWidgets.QWidget):
         self.update_hud_counts()
 
     def apply_final_selection(self, add_to_selection=False):
-        """Apply final selection and trigger Maya selection updates"""
+        """Apply final selection using UUIDs and handle Maya selection with namespace support"""
         if not self.edit_mode:
-            # When not in edit mode, handle Maya selection
             maya_sel = set()
             missing_objects = set()
             
@@ -306,44 +306,65 @@ class PickerCanvas(QtWidgets.QWidget):
                     final_selections.add(button)
 
             # Store current Maya selection
-            current_maya_selection = set(cmds.ls(selection=True) or [])
+            current_maya_selection = set(cmds.ls(selection=True, uuid=True) or [])
             
             # Collect objects that would be selected
-            new_maya_selection = set()
+            new_maya_selection = []  # Change to list to maintain order
             for button in final_selections:
                 if button.assigned_objects:
                     main_window = self.window()
                     if isinstance(main_window, UI.AnimPickerWindow):
                         current_namespace = main_window.namespace_dropdown.currentText()
-                        if current_namespace and current_namespace != 'None':
-                            namespaced_objects = [f"{current_namespace}:{obj}" for obj in button.assigned_objects]
-                        else:
-                            namespaced_objects = button.assigned_objects
-                            
-                        for obj in namespaced_objects:
-                            if cmds.objExists(obj):
-                                new_maya_selection.add(obj)
-                            else:
-                                nice_name = '- ' + obj.split('|')[-1].split(':')[-1]
-                                missing_objects.add(nice_name)
+                        
+                        for uuid in button.assigned_objects:
+                            try:
+                                # Get current node name from UUID
+                                nodes = cmds.ls(uuid, long=True)
+                                if nodes:
+                                    node = nodes[0]
+                                    base_name = node.split('|')[-1].split(':')[-1]
+                                    
+                                    if current_namespace and current_namespace != 'None':
+                                        # Handle namespace
+                                        namespaced_node = f"{current_namespace}:{base_name}"
+                                        # Only add if the node exists in the current namespace
+                                        if cmds.objExists(namespaced_node):
+                                            new_maya_selection.append(namespaced_node)
+                                        else:
+                                            missing_objects.add(f"- {base_name} in namespace {current_namespace}")
+                                    else:
+                                        # Handle no namespace case
+                                        if cmds.objExists(base_name):
+                                            new_maya_selection.append(base_name)
+                                        else:
+                                            missing_objects.add(f"- {base_name}")
+                                else:
+                                    # Object no longer exists
+                                    missing_objects.add(f"- {uuid}")
+                            except Exception as e:
+                                continue
 
             # Only perform Maya selection if there's an actual change
-            if new_maya_selection != current_maya_selection:
+            if new_maya_selection:
                 cmds.undoInfo(openChunk=True)
                 try:
                     if not add_to_selection:
                         cmds.select(clear=True)
-                    if new_maya_selection:
-                        cmds.select(list(new_maya_selection), add=True)
+                    # Select all objects at once
+                    cmds.select(new_maya_selection, add=True)
                 finally:
                     cmds.undoInfo(closeChunk=True)
+            elif not add_to_selection:
+                # Clear selection if no objects to select and not adding
+                cmds.select(clear=True)
 
             # Show dialog if there are missing objects
             if missing_objects:
                 missing_list = '\n'.join(sorted(missing_objects))
-                message = f"The following objects were not found:\n{missing_list}\n \n [Try reconnecting the object(s) or check the namespace]"
-                cmds.confirmDialog(title="Missing Objects", message=message, button=['OK'], 
-                                defaultButton='OK', dismissString='OK', icon='warning')
+                message = f"The following objects were not found:\n{missing_list}\n\n[Objects may be missing in the current namespace]"
+                cmds.confirmDialog(title="Missing Objects", message=message, 
+                                button=['OK'], defaultButton='OK', 
+                                dismissString='OK', icon='warning')
                         
             # Update button visual states
             for button in self.buttons:
@@ -402,17 +423,47 @@ class PickerCanvas(QtWidgets.QWidget):
             self.update_hud_counts()
 
     def update_button_positions(self):
+        """Optimized button position updating with visibility culling"""
         visible_rect = self.rect()
+        visible_scene_rect = QtCore.QRectF(
+            self.canvas_to_scene_coords(QtCore.QPointF(visible_rect.left(), visible_rect.top())),
+            self.canvas_to_scene_coords(QtCore.QPointF(visible_rect.right(), visible_rect.bottom()))
+        ).normalized()
+        
+        # Add margin to prevent popping at edges (1.5x the size of the visible area)
+        margin = visible_scene_rect.width() * 0.25
+        visible_scene_rect.adjust(-margin, -margin, margin, margin)
+        
         for button in self.buttons:
-            canvas_pos = self.scene_to_canvas_coords(button.scene_position)
-            if visible_rect.contains(canvas_pos.toPoint()):
-                button_width = button.width * self.zoom_factor
-                button_height = button.height * self.zoom_factor
-                x = canvas_pos.x() - button_width / 2
-                y = canvas_pos.y() - button_height / 2
-                button.setGeometry(int(x), int(y), int(button_width), int(button_height))
+            # Quick visibility test in scene coordinates
+            button_pos = button.scene_position
+            button_width = button.width
+            button_height = button.height
+            button_rect = QtCore.QRectF(
+                button_pos.x() - button_width/2,
+                button_pos.y() - button_height/2,
+                button_width,
+                button_height
+            )
+            
+            # Only process buttons that are potentially visible
+            if visible_scene_rect.intersects(button_rect):
+                canvas_pos = self.scene_to_canvas_coords(button_pos)
+                scaled_width = button_width * self.zoom_factor
+                scaled_height = button_height * self.zoom_factor
+                x = canvas_pos.x() - scaled_width / 2
+                y = canvas_pos.y() - scaled_height / 2
+                
+                # Use integer positions for better performance
+                button.setGeometry(
+                    int(x), 
+                    int(y), 
+                    int(scaled_width), 
+                    int(scaled_height)
+                )
                 button.show()
             else:
+                # Hide buttons outside the visible area
                 button.hide()
 
     def update_button_data(self, button, deleted=False):
@@ -448,26 +499,86 @@ class PickerCanvas(QtWidgets.QWidget):
         return self.canvas_to_scene_coords(center)
     #------------------------------------------------------------------------------
     def setup_dot_texture(self):
+        # Create a higher resolution texture for smoother dots
         texture_size = self.dot_spacing
-        texture = QtGui.QImage(texture_size, texture_size, QtGui.QImage.Format_ARGB32)
-        texture.fill(QtCore.Qt.transparent)
+        # Use a higher resolution for the texture
+        scale_factor = 4
+        hi_res_size = texture_size * scale_factor
         
-        painter = QtGui.QPainter(texture)
+        # Create a high resolution temporary image for anti-aliased drawing
+        hi_res_texture = QtGui.QImage(hi_res_size, hi_res_size, QtGui.QImage.Format_ARGB32)
+        hi_res_texture.fill(QtCore.Qt.transparent)
+        
+        # Set up painter for high resolution drawing
+        painter = QtGui.QPainter(hi_res_texture)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+        
+        # Calculate scaled dot size
+        scaled_dot_size = self.dot_size * scale_factor
+        
+        # Create gradient for smoother appearance
+        gradient = QtGui.QRadialGradient(
+            hi_res_size // 2,
+            hi_res_size // 2,
+            scaled_dot_size // 2
+        )
+        
+        # Define gradient stops for smoother edges
+        dot_color = self.dot_color
+        gradient.setColorAt(0.0, dot_color)
+        gradient.setColorAt(0.7, dot_color)  # Maintain solid color for most of the dot
+        gradient.setColorAt(1.0, QtGui.QColor(dot_color.red(), dot_color.green(), dot_color.blue(), 0))
+        
+        # Draw the dot with gradient
         painter.setPen(QtCore.Qt.NoPen)
-        painter.setBrush(self.dot_color)
+        painter.setBrush(gradient)
         painter.drawEllipse(
-            texture_size // 2 - self.dot_size // 2, 
-            texture_size // 2 - self.dot_size // 2, 
-            self.dot_size, 
-            self.dot_size
+            (hi_res_size - scaled_dot_size) // 2,
+            (hi_res_size - scaled_dot_size) // 2,
+            scaled_dot_size,
+            scaled_dot_size
         )
         painter.end()
         
-        self.dot_texture = QtGui.QBrush(QtGui.QPixmap.fromImage(texture))
+        # Scale down to final size with smooth transform
+        final_texture = hi_res_texture.scaled(
+            texture_size,
+            texture_size,
+            QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation
+        )
+        
+        # Create brush from the final texture
+        self.dot_texture = QtGui.QBrush(QtGui.QPixmap.fromImage(final_texture))
     
     def set_show_axes(self, show):
         """Set whether to show the axes lines"""
         self.show_axes = show
+        self.update()
+    
+    def set_show_dots(self, show):
+        """Set whether to show the background dots"""
+        self.show_dots = show
+        self.update()
+    
+    def toggle_dots(self, show):
+        """Toggle the visibility of background dots"""
+        self.show_dots = show
+        self.update()
+
+    def set_background_value(self, value):
+        """Set the background color value where 0 is black and 100 is white"""
+        # Convert percentage to RGB value (0-255)
+        bg_value = int((value / 100.0) * 255)
+        self.background_color = QtGui.QColor(bg_value, bg_value, bg_value)
+        
+        # Set dot color to be 10% darker than background
+        dot_value = max(0, int(bg_value * 0.8))  # Ensure value doesn't go below 0
+        self.dot_color = QtGui.QColor(dot_value, dot_value, dot_value)
+        
+        # Update dot texture with new color
+        self.setup_dot_texture()
         self.update()
 
     def set_background_image(self, image_path):
@@ -661,12 +772,15 @@ class PickerCanvas(QtWidgets.QWidget):
                 unique_id = main_window.generate_unique_id(current_tab)
                 new_button = PB.PickerButton(button_data['label'], self, unique_id=unique_id)
                 
-                # Apply copied attributes
+                # Apply all copied attributes including functionality
                 new_button.color = button_data['color']
                 new_button.opacity = button_data['opacity']
                 new_button.width = button_data['width']
                 new_button.height = button_data['height']
                 new_button.radius = button_data['radius'].copy()
+                new_button.assigned_objects = button_data['assigned_objects'].copy()
+                new_button.mode = button_data.get('mode', 'select')
+                new_button.script_data = button_data.get('script_data', {}).copy()
                 
                 # Position relative to cursor point
                 new_button.scene_position = scene_pos + button_data['relative_position']
@@ -675,8 +789,8 @@ class PickerCanvas(QtWidgets.QWidget):
                 self.add_button(new_button)
                 new_buttons.append(new_button)
                 
-                # Update database
-                button_data = {
+                # Update database with complete button data
+                button_data_for_db = {
                     "id": unique_id,
                     "label": new_button.label,
                     "color": new_button.color,
@@ -685,12 +799,14 @@ class PickerCanvas(QtWidgets.QWidget):
                     "width": new_button.width,
                     "height": new_button.height,
                     "radius": new_button.radius,
-                    "assigned_objects": []
+                    "assigned_objects": new_button.assigned_objects,
+                    "mode": new_button.mode,
+                    "script_data": new_button.script_data
                 }
                 
                 # Update PickerDataManager
                 tab_data = DM.PickerDataManager.get_tab_data(current_tab)
-                tab_data['buttons'].append(button_data)
+                tab_data['buttons'].append(button_data_for_db)
                 DM.PickerDataManager.update_tab_data(current_tab, tab_data)
             
             self.update_button_positions()
@@ -711,13 +827,20 @@ class PickerCanvas(QtWidgets.QWidget):
 
         # Apply zoom
         self.zoom_factor *= zoom_factor
+        
+        # Limit zoom range for better performance
+        self.zoom_factor = max(0.01, min(self.zoom_factor, 100.0))
 
         # Get new scene position and adjust pan to maintain mouse position
         new_scene_pos = self.canvas_to_scene_coords(mouse_pos)
         self.pan_offset += (new_scene_pos - old_scene_pos) * self.zoom_factor
 
+        # Batch updates
+        self.setUpdatesEnabled(False)
         self.update()
         self.update_button_positions()
+        self.setUpdatesEnabled(True)
+        
         UT.maya_main_window().activateWindow()
 
     def mouseDoubleClickEvent(self, event):
@@ -817,11 +940,17 @@ class PickerCanvas(QtWidgets.QWidget):
             self.update_visual_selection(selection_rect, event.modifiers() & QtCore.Qt.ShiftModifier)
             event.accept()
         elif event.buttons() == QtCore.Qt.MiddleButton and self.last_pan_pos:
+            # Batch updates during pan
+            self.setUpdatesEnabled(False)
+            
             delta = event.pos() - self.last_pan_pos
             self.pan_offset += QtCore.QPointF(delta.x(), delta.y())
             self.last_pan_pos = event.pos()
+            
             self.update()
             self.update_button_positions()
+            
+            self.setUpdatesEnabled(True)
         else:
             super().mouseMoveEvent(event)
         event.accept()
@@ -878,11 +1007,11 @@ class PickerCanvas(QtWidgets.QWidget):
             painter.fillRect(self.rect(), self.background_color)
 
             # Draw static dot pattern only in normal mode
-            painter.save()
-            painter.setOpacity(0.5)
-            painter.fillRect(self.rect(), self.dot_texture)
-            painter.restore()
-
+            if self.show_dots:
+                painter.save()
+                painter.setOpacity(0.5)
+                painter.fillRect(self.rect(), self.dot_texture)
+                painter.restore()
         # Set up transform for canvas elements
         painter.save()
         center = QtCore.QPointF(self.width() / 2, self.height() / 2)
