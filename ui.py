@@ -26,6 +26,7 @@ from . import custom_line_edit as CLE
 from . import data_management as DM
 from . import button_edit_widgets as BEW
 from . import tool_functions as TF
+from . import custom_dialog as CD
 from . fade_away_logic import FadeAway
 
 anim_picker_version = 'v1_2_4'
@@ -86,7 +87,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
     def setup_ui(self):
         # Allow window to be resized
         self.setMinimumSize(260, 260)
-        self.setGeometry(1220,210,350,450)
+        self.setGeometry(1150,260,350,450)
 
         def set_margin_space(layout,margin,space):
             layout.setContentsMargins(margin,margin,margin,margin)
@@ -126,15 +127,18 @@ class AnimPickerWindow(QtWidgets.QWidget):
         file_util = CB.CustomButton(text='File', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
                                     cmColor='#333333',tooltip='File Utilities', flat=True)
         
-        file_util.addToMenu("Load Picker", self.load_picker, icon='loadPreset.png', position=(0,0))
-        file_util.addToMenu("Store Picker", self.store_picker, icon='save.png', position=(1,0))
+        file_util.addMenuLabel("File Utilities",position=(0,0))
+        file_util.addToMenu("Load Picker", self.load_picker, icon='loadPreset.png', position=(1,0))
+        file_util.addToMenu("Store Picker", self.store_picker, icon='save.png', position=(2,0))
         
         edit_util = CB.CustomButton(text='Edit', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
                                     cmColor='#333333',tooltip='Edit Utilities', flat=True)
         
         edit_util.addToMenu("Edit Mode", self.toggle_edit_mode, icon='setEdEditMode.png', position=(0,0))
-        edit_util.addToMenu("Minimal Mode", self.fade_manager.toggle_minimal_mode, icon='eye.png', position=(1,0))
-        edit_util.addToMenu("Toggle Fade Away", self.fade_manager.toggle_fade_away, icon='eye.png', position=(2,0))
+        #edit_util.addMenuLabel("Window Apparance",position=(1,0))
+        #edit_util.addMenuSeparator((1,0))
+        edit_util.addToMenu("Minimal Mode", self.fade_manager.toggle_minimal_mode, icon='eye.png', position=(2,0))
+        edit_util.addToMenu("Toggle Fade Away", self.fade_manager.toggle_fade_away, icon='eye.png', position=(3,0))
 
         info_util = CB.CustomButton(text='Info', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
                                     cmColor='#333333',tooltip='Help', flat=True)
@@ -387,7 +391,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.edit_canvas_EF.addWidget(self.toggle_axes)
         self.edit_canvas_EF.addWidget(self.toggle_dots)
         
-        self.toggle_edit_mode_button = CB.CustomButton(text='Apply', height=24, width=efw, radius=4,color='#5e7b19', tooltip='Apply changes')
+        self.toggle_edit_mode_button = CB.CustomButton(text='Exit Edit Mode', height=24, width=efw, radius=4,color='#5e7b19', tooltip='Apply changes')
         self.toggle_edit_mode_button.clicked.connect(self.toggle_edit_mode)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         #------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1180,6 +1184,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         
         self.create_buttons()
         current_canvas.update()
+        UT.maya_main_window().activateWindow()
 
     def on_tab_renamed(self, old_name, new_name):
         # Update the tab data in our local structure

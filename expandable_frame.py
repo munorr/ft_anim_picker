@@ -82,7 +82,7 @@ class ExpandableFrame(QFrame):
         self.header_widget.clicked.connect(self.toggle_expand)
     
     def expand_button_style(self, button):
-        bc = '#cccccc'
+        bc = UT.rgba_value(self.color, 2)
         button.setStyleSheet(f'''QPushButton {{ background-color: {bc if self.is_expanded else 'transparent'}; 
                                          color: white; border: {'0px solid #ffffff' if self.is_expanded else f'1px solid {bc}'}; border-radius: 3px }}''')
     

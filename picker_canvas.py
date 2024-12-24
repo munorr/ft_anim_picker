@@ -15,6 +15,7 @@ from . import picker_button as PB
 from . import custom_button as CB
 from . import tool_functions as TF
 from . import data_management as DM
+from . import custom_dialog as CD
 
 class HUDWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -291,25 +292,39 @@ class PickerCanvas(QtWidgets.QWidget):
         self.update_hud_counts()
 
     def apply_final_selection(self, add_to_selection=False):
-        """Apply final selection using UUIDs and handle Maya selection with namespace support"""
+        """Apply final selection using UUIDs and handle Maya selection"""
         if not self.edit_mode:
-            maya_sel = set()
             missing_objects = set()
             
-            # First collect what would be selected
-            final_selections = set()
-            for button in self.buttons:
-                if button in self.buttons_in_current_drag:
-                    if button.is_selected:
-                        final_selections.add(button)
-                elif add_to_selection and button.is_selected:
-                    final_selections.add(button)
-
-            # Store current Maya selection
-            current_maya_selection = set(cmds.ls(selection=True, uuid=True) or [])
+            # Track deselected buttons from current drag
+            deselected_buttons = {button for button in self.buttons_in_current_drag 
+                                if not button.is_selected}
             
-            # Collect objects that would be selected
-            new_maya_selection = []  # Change to list to maintain order
+            # Get the last clicked button from current drag
+            last_clicked = next(reversed(list(self.buttons_in_current_drag)), None)
+            
+            # Build ordered selection list
+            final_selections = []
+            # Add previously selected buttons if in shift mode
+            if add_to_selection:
+                for button in self.buttons:
+                    if button.is_selected and button not in self.buttons_in_current_drag:
+                        final_selections.append(button)
+            
+            # Add newly clicked buttons
+            for button in self.buttons_in_current_drag:
+                if button.is_selected and button != last_clicked:
+                    final_selections.append(button)
+                    
+            # Add last clicked button at the end
+            if last_clicked and last_clicked.is_selected:
+                final_selections.append(last_clicked)
+
+            # Get current Maya selection
+            current_selection = set(cmds.ls(selection=True, uuid=True) or [])
+            new_selection = []
+                
+            # Process buttons in order
             for button in final_selections:
                 if button.assigned_objects:
                     main_window = self.window()
@@ -318,55 +333,78 @@ class PickerCanvas(QtWidgets.QWidget):
                         
                         for uuid in button.assigned_objects:
                             try:
-                                # Get current node name from UUID
                                 nodes = cmds.ls(uuid, long=True)
                                 if nodes:
                                     node = nodes[0]
-                                    base_name = node.split('|')[-1].split(':')[-1]
-                                    
                                     if current_namespace and current_namespace != 'None':
-                                        # Handle namespace
+                                        base_name = node.split('|')[-1].split(':')[-1]
                                         namespaced_node = f"{current_namespace}:{base_name}"
-                                        # Only add if the node exists in the current namespace
                                         if cmds.objExists(namespaced_node):
-                                            new_maya_selection.append(namespaced_node)
-                                        else:
-                                            missing_objects.add(f"- {base_name} in namespace {current_namespace}")
-                                    else:
-                                        # Handle no namespace case
-                                        if cmds.objExists(base_name):
-                                            new_maya_selection.append(base_name)
+                                            new_selection.append(uuid)
                                         else:
                                             missing_objects.add(f"- {base_name}")
+                                    else:
+                                        new_selection.append(uuid)
                                 else:
-                                    # Object no longer exists
                                     missing_objects.add(f"- {uuid}")
                             except Exception as e:
                                 continue
 
-            # Only perform Maya selection if there's an actual change
-            if new_maya_selection:
-                cmds.undoInfo(openChunk=True)
-                try:
-                    if not add_to_selection:
-                        cmds.select(clear=True)
-                    # Select all objects at once
-                    cmds.select(new_maya_selection, add=True)
-                finally:
-                    cmds.undoInfo(closeChunk=True)
-            elif not add_to_selection:
-                # Clear selection if no objects to select and not adding
-                cmds.select(clear=True)
+            # Remove deselected objects from current Maya selection
+            if add_to_selection:
+                objects_to_remove = set()
+                for button in deselected_buttons:
+                    if button.assigned_objects:
+                        objects_to_remove.update(button.assigned_objects)
+                current_selection = current_selection - objects_to_remove
 
-            # Show dialog if there are missing objects
+            # Perform Maya selection
+            cmds.undoInfo(openChunk=True)
+            try:
+                if not add_to_selection:
+                    cmds.select(clear=True)
+                else:
+                    # Deselect objects from deselected buttons
+                    for button in deselected_buttons:
+                        for uuid in button.assigned_objects:
+                            try:
+                                nodes = cmds.ls(uuid, long=True)
+                                if nodes:
+                                    cmds.select(nodes[0], deselect=True)
+                            except:
+                                continue
+
+                if new_selection:
+                    nodes_to_select = []
+                    for uuid in new_selection:
+                        try:
+                            nodes = cmds.ls(uuid, long=True)
+                            if nodes:
+                                nodes_to_select.append(nodes[0])
+                        except:
+                            continue
+                    if nodes_to_select:
+                        cmds.select(nodes_to_select, add=True)
+                        # Make last node active
+                        if nodes_to_select:
+                            cmds.select(nodes_to_select[-1], toggle=True)
+                            cmds.select(nodes_to_select[-1], add=True)
+            finally:
+                cmds.undoInfo(closeChunk=True)
+
             if missing_objects:
-                missing_list = '\n'.join(sorted(missing_objects))
-                message = f"The following objects were not found:\n{missing_list}\n\n[Objects may be missing in the current namespace]"
-                cmds.confirmDialog(title="Missing Objects", message=message, 
-                                button=['OK'], defaultButton='OK', 
-                                dismissString='OK', icon='warning')
+                parent_widget = self.parentWidget()
+                dialog = CD.CustomDialog(parent_widget,title="Missing Objects", size=(250, -1), info_box=True)
+                message_label = QtWidgets.QLabel("The following objects were not found:")
+                details_label = QtWidgets.QLabel('\n'.join(sorted(f"<b><font color='#00ade6'>{objects}</font></b>" for objects in missing_objects)))
+                note_label = QtWidgets.QLabel("[Objects may have been deleted or renamed]")
+                
+                dialog.add_widget(message_label)
+                dialog.add_widget(details_label)
+                dialog.add_widget(note_label)
+                dialog.add_button_box()
+                dialog.exec_()
                         
-            # Update button visual states
             for button in self.buttons:
                 button.update()
         
@@ -716,6 +754,16 @@ class PickerCanvas(QtWidgets.QWidget):
             paste_buttons_action = menu.addAction(QtGui.QIcon(":/pasteUV.png"), "Paste Button")
             paste_buttons_action.triggered.connect(lambda: self.paste_buttons_at_position(position))
             paste_buttons_action.setEnabled(bool(PB.ButtonClipboard.instance().get_all_buttons()))
+
+            edit_mode_action = menu.addAction(QtGui.QIcon(":/fileTextureEdit.png"),"Exit Edit Mode")
+            main_window = self.window()
+            if isinstance(main_window, UI.AnimPickerWindow):
+                edit_mode_action.triggered.connect(main_window.toggle_edit_mode)
+        else:
+            edit_mode_action = menu.addAction(QtGui.QIcon(":/setEdEditMode.png"),"Edit Picker")
+            main_window = self.window()
+            if isinstance(main_window, UI.AnimPickerWindow):
+                edit_mode_action.triggered.connect(main_window.toggle_edit_mode)
         
         if menu.actions():
             menu.exec_(self.mapToGlobal(position))

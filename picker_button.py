@@ -350,9 +350,6 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
                     for match in re.finditer(pattern, text):
                         self.setFormat(match.start(), len(match.group()), self.special_format_02)
         
-        
-        
-
 class ScriptManagerWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super(ScriptManagerWidget, self).__init__(parent)
@@ -364,9 +361,9 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.resizing = False
         self.resize_edge = None
         self.resize_range = 8  # Pixels from edge where resizing is active
-        self.setMinimumSize(300, 300)  # Set minimum size
+          # Set minimum size
         self.setGeometry(0,0,400,300)
-        
+        self.setMinimumSize(305, 300)
         # Setup main layout
         self.main_layout = QtWidgets.QVBoxLayout(self)
         self.main_layout.setContentsMargins(4, 4, 4, 4)
@@ -430,14 +427,16 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.python_function_preset_button = CB.CustomButton(text='', icon=':addClip.png', size=14, height=20, width=20, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', 
                                                              ContextMenu=True, onlyContext= True, cmColor='#333333',tooltip='Python function presets', flat=True)
         
-        self.python_function_preset_button.addToMenu('Match IK to FK', self.python_preset_function_01, position=(0,0))
-        self.python_function_preset_button.addToMenu('Match FK to IK', self.python_preset_function_02, position=(1,0))
+        self.python_function_preset_button.addMenuLabel('Presets Commands',position=(0,0))
+        self.python_function_preset_button.addToMenu('Set Attribute', self.ppf_set_attribute, position=(1,0))
+        self.python_function_preset_button.addToMenu('Match IK to FK', self.ppf_match_ik_to_fk, position=(2,0))
+        self.python_function_preset_button.addToMenu('Match FK to IK', self.ppf_match_fk_to_ik, position=(3,0))
 
         self.mel_function_preset_button = CB.CustomButton(text='', icon=':addClip.png', size=14, height=20, width=20, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', 
                                                           ContextMenu=True, onlyContext= True, cmColor='#333333',tooltip='Python function presets', flat=True)
         
-        self.mel_function_preset_button.addToMenu('Mel Function 1', self.mel_preset_function_01, position=(0,0))
-        self.mel_function_preset_button.addToMenu('Mel Function 2', self.mel_preset_function_02, position=(1,0))
+        self.mel_function_preset_button.addMenuLabel('Presets Commands',position=(0,0))
+        self.mel_function_preset_button.addToMenu('Set Attribute', self.mpf_set_attribute, position=(1,0))
 
         self.function_preset_stack.addWidget(self.python_function_preset_button)
         self.function_preset_stack.addWidget(self.mel_function_preset_button)
@@ -597,7 +596,9 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         
         self.picker_button = None
     #--------------------------------------------------------------------------------------------------------------------
-    def python_preset_function_01(self): # Match IK to FK
+    # Preset Functions
+    #--------------------------------------------------------------------------------------------------------------------
+    def ppf_match_ik_to_fk(self): # Match IK to FK
         preset_code = '''#Replace the ik_controls and fk_joints with your own names
 ik_controls = ['@nsik_pole_ctrl', '@nsik_arm_or_leg_ctrl'] 
 fk_joints = ['@nsfk_upper_arm_or_leg_jnt', '@nsfk_elbow_or_knee_jnt', '@nsfk_wrist_or_ankle_jnt'] 
@@ -610,7 +611,7 @@ fk_joints = ['@nsfk_upper_arm_or_leg_jnt', '@nsfk_elbow_or_knee_jnt', '@nsfk_wri
         else:
             self.python_editor.setPlainText(preset_code)
 
-    def python_preset_function_02(self): # Match FK to IK
+    def ppf_match_fk_to_ik(self): # Match FK to IK
         preset_code = '''#Replace the fk_controls and ik_joints with your own names
 fk_controls = ['@nsfk_upper_arm_or_leg_ctrl', '@nsfk_elbow_or_knee_ctrl', '@nsfk_wrist_or_ankle_ctrl'] 
 ik_joints = ['@nsik_upper_arm_or_leg_jnt', '@nsik_elbow_or_knee_jnt', '@nsik_wrist_or_ankle_jnt'] 
@@ -622,14 +623,32 @@ ik_joints = ['@nsik_upper_arm_or_leg_jnt', '@nsik_elbow_or_knee_jnt', '@nsik_wri
             self.python_editor.setPlainText(current_text + '\n' + preset_code)
         else:
             self.python_editor.setPlainText(preset_code)
+    
+    def ppf_set_attribute(self): # Match FK to IK
+        preset_code = '''#Replace the Object, Attribute and Attribute Value with your own names
+cmds.setAttr("@nsObject.Attribute", AttributeValue)'''
+        
+        # Get current text and append new code with a newline if there's existing content
+        current_text = self.python_editor.toPlainText()
+        if current_text:
+            self.python_editor.setPlainText(current_text + '\n' + preset_code)
+        else:
+            self.python_editor.setPlainText(preset_code)
     #--------------------------------------------------------------------------------------------------------------------
     def mel_preset_function_01(self):
         print('Mel Preset Function 01')
 
-    def mel_preset_function_02(self):
-        print('Mel Preset Function 02')
+    def mpf_set_attribute(self): # Match FK to IK
+        preset_code = '''#Replace the Object, Attribute and Attribute Value with your own names
+setAttr "@nsObject.Attribute" Attribute Value;'''
+        
+        # Get current text and append new code with a newline if there's existing content
+        current_text = self.mel_editor.toPlainText()
+        if current_text:
+            self.mel_editor.setPlainText(current_text + '\n' + preset_code)
+        else:
+            self.mel_editor.setPlainText(preset_code)
     #--------------------------------------------------------------------------------------------------------------------
-
     def set_picker_button(self, button):
         """Modified to ensure proper initialization of script data for individual buttons"""
         self.picker_button = button
@@ -669,7 +688,7 @@ ik_joints = ['@nsik_upper_arm_or_leg_jnt', '@nsik_elbow_or_knee_jnt', '@nsik_wri
             if canvas:
                 canvas_pos = canvas.scene_to_canvas_coords(scene_pos)
                 global_pos = canvas.mapToGlobal(canvas_pos.toPoint())
-                self.move(global_pos + QtCore.QPoint(button_geometry.width() + 10, 0))
+                self.move(global_pos) #+ QtCore.QPoint(button_geometry.width() + 10, 0))
 
     def update_language_selection(self, checked):
         if checked:  # Only respond to the button being checked
@@ -861,6 +880,7 @@ class PickerButton(QtWidgets.QWidget):
         self.script_data = {}  # Store script data
 
         self.update_tooltip()
+        
         
     @property
     def scene_position(self):
@@ -1127,7 +1147,7 @@ class PickerButton(QtWidgets.QWidget):
             }
             QMenu::item {
                 background-color: transparent;
-                padding: 3px 10px 3px 3px; ;
+                padding: 3px 15px 3px 3px; ;
                 margin: 3px 0px  ;
                 border-radius: 3px;
             }
@@ -1155,16 +1175,16 @@ class PickerButton(QtWidgets.QWidget):
         
         mode_menu.addAction(select_action)
         mode_menu.addAction(script_action)
-        menu.addMenu(mode_menu)
+        
         
         # Copy, Paste and Delete Actions
         #---------------------------------------------------------------------------------------
         if self.edit_mode:
-            copy_action = menu.addAction(QtGui.QIcon(":/copyUV.png"), "Copy")
+            copy_action = menu.addAction(QtGui.QIcon(":/copyUV.png"), "Copy Button")
             copy_action.triggered.connect(self.copy_selected_buttons)
             
             # Create Paste submenu
-            paste_menu = QtWidgets.QMenu("Paste", menu)
+            paste_menu = QtWidgets.QMenu("Paste Options", menu)
             paste_menu.setStyleSheet(menu.styleSheet())
             
             paste_all_action = paste_menu.addAction("Paste All")
@@ -1188,7 +1208,7 @@ class PickerButton(QtWidgets.QWidget):
             
             menu.addMenu(paste_menu)
             
-            delete_action = menu.addAction(QtGui.QIcon(":/delete.png"), "Delete")
+            delete_action = menu.addAction(QtGui.QIcon(":/delete.png"), "Delete Button")
             delete_action.triggered.connect(self.delete_selected_buttons)
         
         else:
@@ -1212,6 +1232,7 @@ class PickerButton(QtWidgets.QWidget):
                 script_manager_action = menu.addAction("Script Manager")
                 script_manager_action.triggered.connect(self.show_script_manager)
         
+        menu.addMenu(mode_menu)
         menu.addSeparator()
 
         menu.exec_(self.mapToGlobal(pos))

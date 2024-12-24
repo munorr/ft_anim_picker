@@ -11,6 +11,7 @@ except ImportError:
 
 from .import picker_canvas as PC
 from . import data_management as DM 
+from . import custom_dialog as CD
 from collections import OrderedDict
 
 class TabButton(QtWidgets.QPushButton):
@@ -220,19 +221,40 @@ class TabSystem(QtCore.QObject):
                 self.switch_tab(tab_name)
 
     def add_new_tab(self):
-        new_tab_name, ok = QtWidgets.QInputDialog.getText(None, "New Tab", "Enter tab name:")
+        '''new_tab_name, ok = QtWidgets.QInputDialog.getText(None, "New Tab", "Enter tab name:")
         if ok and new_tab_name:
             self.add_tab(new_tab_name, switch=True)
             
             # Update PickerToolData
-            DM.PickerDataManager.add_tab(new_tab_name)
+            DM.PickerDataManager.add_tab(new_tab_name)'''
+        
+        # Get the parent widget (the window/widget containing the tab system)
+        parent_widget = self.tab_layout.parentWidget()
+        dialog = CD.CustomDialog(parent_widget, "New Tab", (180, 100))
+        dialog.add_widget(QtWidgets.QLabel("Enter tab name:"))
+        input_field = QtWidgets.QLineEdit()
+        dialog.add_widget(input_field)
+        dialog.add_button_box()
+
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            new_tab_name = input_field.text()
+            if new_tab_name:
+                self.add_tab(new_tab_name, switch=True)
+                DM.PickerDataManager.add_tab(new_tab_name)
 
     def rename_tab(self, button):
         old_name = button.text()
-        new_name, ok = QtWidgets.QInputDialog.getText(None, "Rename Tab", "Enter new tab name:", text=old_name)
-        if ok and new_name and new_name != old_name:
-            if new_name not in self.tabs:
-                # Create a new OrderedDict to preserve the order
+        parent_widget = self.tab_layout.parentWidget()
+        
+        dialog = CD.CustomDialog(parent_widget, "Rename Tab", (180, 100))
+        dialog.add_widget(QtWidgets.QLabel("Enter new tab name:"))
+        input_field = QtWidgets.QLineEdit(old_name)
+        dialog.add_widget(input_field)
+        dialog.add_button_box()
+
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            new_name = input_field.text()
+            if new_name and new_name != old_name and new_name not in self.tabs:
                 new_tabs = OrderedDict()
                 for tab_name, tab_data in self.tabs.items():
                     if tab_name == old_name:
@@ -241,48 +263,50 @@ class TabSystem(QtCore.QObject):
                         new_tabs[tab_name] = tab_data
                 self.tabs = new_tabs
 
-                # Update the button
                 button.setText(new_name)
                 button.setFixedWidth(button.calculate_button_width(new_name))
-                
-                # Disconnect old signal and connect new one
                 button.tab_clicked.disconnect()
                 button.tab_clicked.connect(lambda: self.switch_tab(new_name))
-                
-                # Update the tab_name attribute of the button
                 button.tab_name = new_name
                 
                 if self.current_tab == old_name:
                     self.current_tab = new_name
                 
-                # Update PickerToolData
                 DM.PickerDataManager.rename_tab(old_name, new_name)
-                
-                # Emit signal for tab renamed
                 self.tab_renamed.emit(old_name, new_name)
-                
-                # Update the UI to reflect the new order
                 self.update_tab_order()
 
     def delete_tab(self, button):
         tab_name = button.text()
-        if len(self.tabs) > 1:
-            confirm = QtWidgets.QMessageBox.question(None, "Confirm Delete", f"Are you sure you want to delete the tab '{tab_name}'?")
-            if confirm == QtWidgets.QMessageBox.Yes:
-                del self.tabs[tab_name]
-                self.tab_layout.removeWidget(button)
-                button.deleteLater()
-                if self.current_tab == tab_name:
-                    self.current_tab = next(iter(self.tabs))
-                self.update_tab_buttons()
-                
-                # Update PickerToolData
-                DM.PickerDataManager.delete_tab(tab_name)
-                
-                # Emit signal for tab deleted
-                self.tab_deleted.emit(tab_name)
-        else:
-            QtWidgets.QMessageBox.warning(None, "Cannot Delete", "You must have at least one tab.")
+        parent_widget = self.tab_layout.parentWidget()
+        
+        if len(self.tabs) <= 1:
+            dialog = CD.CustomDialog(parent_widget, "Cannot Delete", (200, 100))
+            dialog.add_widget(QtWidgets.QLabel("You must have at least one tab."))
+            accept_button, _ = dialog.add_button_box()
+            accept_button.setText("OK")
+            dialog.exec_()
+            return
+
+        dialog = CD.CustomDialog(parent_widget, "Confirm Delete", (180, 80))
+        label = QtWidgets.QLabel(f"Delete tab <b><font color='#00ade6'>'{tab_name}'</font></b>?")
+        label.setAlignment(QtCore.Qt.AlignCenter)
+        dialog.add_widget(label)
+        accept_button, close_button = dialog.add_button_box()
+        accept_button.setText("Yes")
+        close_button.setText("No")
+
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            del self.tabs[tab_name]
+            self.tab_layout.removeWidget(button)
+            button.deleteLater()
+            
+            if self.current_tab == tab_name:
+                self.current_tab = next(iter(self.tabs))
+            
+            self.update_tab_buttons()
+            DM.PickerDataManager.delete_tab(tab_name)
+            self.tab_deleted.emit(tab_name)
     #-----------------------------------------------------------------------------------
     def reorder_tabs(self):
         new_order = OrderedDict()
@@ -354,8 +378,35 @@ class TabSystem(QtCore.QObject):
 
     def show_tab_context_menu(self, pos, button):
         menu = QtWidgets.QMenu()
-        rename_action = menu.addAction("Rename")
-        delete_action = menu.addAction("Delete")
+        menu.setWindowFlags(menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
+        menu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        menu.setStyleSheet('''
+            QMenu {
+                background-color: rgba(30, 30, 30, .9);
+                border: 1px solid #444444;
+                border-radius: 3px;
+                padding: 5px 7px;
+            }
+            QMenu::item {
+                background-color: transparent;
+                padding: 3px 10px 3px 3px; ;
+                margin: 3px 0px  ;
+                border-radius: 3px;
+            }
+            QMenu::item:selected {
+                background-color: #2c4759;
+            }
+            QMenu::item:disabled {
+                padding-left: 0px;
+                color: #888888;
+            }''')
+        
+        #label = menu.addAction("Tab Options")
+        #label.setEnabled(False)
+        
+        #menu.addSeparator()
+        rename_action = menu.addAction(QtGui.QIcon(":/renamePreset.png"),"Rename Tab")
+        delete_action = menu.addAction(QtGui.QIcon(":/delete.png"),"Delete Tab")
 
         action = menu.exec_(button.mapToGlobal(pos))
 

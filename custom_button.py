@@ -15,90 +15,59 @@ class TwoColumnMenu(QtWidgets.QMenu):
         super().__init__(parent)
         self.grid_widget = QtWidgets.QWidget(self)
         self.grid_layout = QtWidgets.QGridLayout(self.grid_widget)
-        gls = 6 # grid layout spacing
+        gls = 6
         self.grid_layout.setSpacing(gls)
         self.grid_layout.setContentsMargins(gls, gls, gls, gls)
 
         self.bg_color = "rgba(35, 35, 35, 1)"
-        # Add the grid widget to the menu using a QWidgetAction
         widget_action = QtWidgets.QWidgetAction(self)
         widget_action.setDefaultWidget(self.grid_widget)
         self.addAction(widget_action)
         
-        # Apply styling
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         
         self.grid_widget.setStyleSheet(f'''
-                QWidget {{
-                    background-color: {self.bg_color};
-                                            border: 1px solid #444444;
-                    border-radius: 3px;
-                    padding:  4px 6px;
-                }}''')
-            #self.context_menu.exec_(self.mapToGlobal(pos))
+            QWidget {{
+                background-color: {self.bg_color};
+                border: 1px solid #444444;
+                border-radius: 3px;
+                padding: 4px 6px;
+            }}''')
 
-    def rebuild_grid(self, actions):
-        # Clear existing items
-        for i in reversed(range(self.grid_layout.count())): 
-            self.grid_layout.itemAt(i).widget().setParent(None)
-        
-        # Separate positioned and unpositioned items
-        positioned = []
-        unpositioned = []
-        max_row = max_col = -1
-        
-        for item in actions:
-            if len(item) == 4:  # Item with position, rowSpan, and colSpan
-                action, position, rowSpan, colSpan = item
-            else:  # Unpositioned item
-                action = item
-                position = None
-                rowSpan = 1
-                colSpan = 1
-                
-            if position is not None:
-                positioned.append((action, position, rowSpan, colSpan))
-                max_row = max(max_row, position[0] + rowSpan - 1)
-                max_col = max(max_col, position[1] + colSpan - 1)
-            else:
-                unpositioned.append((action, rowSpan, colSpan))
-        
-        # Place positioned items first
-        for action, pos, rowSpan, colSpan in positioned:
-            button = self._create_menu_button(action)
-            self.grid_layout.addWidget(button, pos[0], pos[1], rowSpan, colSpan)
-        
-        # Find available positions for unpositioned items
-        if unpositioned:
-            next_row = 0 if max_row == -1 else max_row + 1
-            next_col = 0
-            
-            for action, rowSpan, colSpan in unpositioned:
-                button = self._create_menu_button(action)
-                # If this item would overflow the columns, move to next row
-                if next_col + colSpan > 2:
-                    next_col = 0
-                    next_row += 1
-                self.grid_layout.addWidget(button, next_row, next_col, rowSpan, colSpan)
-                next_col += colSpan
-                if next_col >= 2:
-                    next_col = 0
-                    next_row += rowSpan
-        
-        self.grid_widget.adjustSize()
-        self.adjustSize()
-        
-    # In the TwoColumnMenu class, update the _create_menu_button method:
+    def _create_separator(self):
+        separator = QtWidgets.QFrame()
+        #separator.setFrameShape(QtWidgets.QFrame.HLine)
+        separator.setFixedHeight(1)
+        separator.setStyleSheet("""
+            QFrame {
+                background-color: #333333;
+                margin: 0px 10px;
+            }
+        """)
+        return separator
+    
+    def _create_menu_label(self, text):
+        label = QtWidgets.QLabel(text)
+        label.setStyleSheet(f'''
+            QLabel {{
+                color: #666666;
+                background-color: transparent;
+                border: none;
+                padding: 0px 10px;
+            }}
+        ''')
+        label.setFixedHeight(self.parent().cmHeight)
+        return label
+
     def _create_menu_button(self, action):
         button = QtWidgets.QPushButton(action.text())
         if action.icon():
             button.setIcon(action.icon())
         
-        # Create a wrapper function to handle both closing the menu and triggering the action
         def button_clicked():
-            self.close()  # Close the menu first
-            action.triggered.emit()  # Then trigger the action
+            self.close()
+            action.triggered.emit()
         
         button.clicked.connect(button_clicked)
         
@@ -117,6 +86,60 @@ class TwoColumnMenu(QtWidgets.QMenu):
         ''')
         button.setFixedHeight(self.parent().cmHeight)
         return button
+
+    def rebuild_grid(self, items):
+        for i in reversed(range(self.grid_layout.count())): 
+            self.grid_layout.itemAt(i).widget().setParent(None)
+        
+        positioned = []
+        unpositioned = []
+        max_row = max_col = -1
+        
+        for item in items:
+            if isinstance(item, tuple):
+                if item[0] == 'separator':
+                    _, position = item
+                    positioned.append(('separator', None, position, 1, 2))
+                    max_row = max(max_row, position[0])
+                elif len(item) == 2:  # Label with position
+                    label_text, position = item
+                    positioned.append(('label', label_text, position, 1, 1))
+                    max_row = max(max_row, position[0])
+                    max_col = max(max_col, position[1])
+                elif len(item) == 4:  # Action with position and spans
+                    action, position, rowSpan, colSpan = item
+                    positioned.append(('action', action, position, rowSpan, colSpan))
+                    max_row = max(max_row, position[0] + rowSpan - 1)
+                    max_col = max(max_col, position[1] + colSpan - 1)
+            else:  # Unpositioned action
+                unpositioned.append(('action', item, 1, 1))
+
+        for item_type, item, pos, rowSpan, colSpan in positioned:
+            if item_type == 'separator':
+                widget = self._create_separator()
+            elif item_type == 'label':
+                widget = self._create_menu_label(item)
+            else:
+                widget = self._create_menu_button(item)
+            self.grid_layout.addWidget(widget, pos[0], pos[1], rowSpan, colSpan)
+        
+        if unpositioned:
+            next_row = 0 if max_row == -1 else max_row + 1
+            next_col = 0
+            
+            for item_type, item, rowSpan, colSpan in unpositioned:
+                widget = self._create_menu_button(item)
+                if next_col + colSpan > 2:
+                    next_col = 0
+                    next_row += 1
+                self.grid_layout.addWidget(widget, next_row, next_col, rowSpan, colSpan)
+                next_col += colSpan
+                if next_col >= 2:
+                    next_col = 0
+                    next_row += rowSpan
+
+        self.grid_widget.adjustSize()
+        self.adjustSize()
 
 class CustomButton(QtWidgets.QPushButton):
     singleClicked = QtCore.Signal()
@@ -213,6 +236,27 @@ class CustomButton(QtWidgets.QPushButton):
         font_metrics = QtGui.QFontMetrics(QtWidgets.QApplication.font())
         text_width = font_metrics.horizontalAdvance(text)
         return text_width + padding
+
+    def addMenuSeparator(self, position=None):
+        """
+        Add a separator line to the context menu.
+        Args:
+            position (tuple, optional): (row) position in the grid
+        """
+        if self.context_menu:
+            self.menu_actions.append(('separator', position))
+            self.context_menu.rebuild_grid(self.menu_actions)
+
+    def addMenuLabel(self, text, position=None):
+        """
+        Add a label to the context menu.
+        Args:
+            text (str): Text to display in the menu
+            position (tuple, optional): (row, column) position in the grid
+        """
+        if self.context_menu:
+            self.menu_actions.append((text, position))
+            self.context_menu.rebuild_grid(self.menu_actions)
 
     def addToMenu(self, name, function, icon=None, position=None, rowSpan=1, colSpan=1):
         """

@@ -145,7 +145,7 @@ class FadeAway(QObject):
                 # Handle special case for tools EF
                 if target_widget == self.parent.tools_EF:
                     # Make the util frame partialy transparent in minimal mode
-                    target_widget.set_alpha(0.3 if self.minimal_mode_enabled else 0.8)
+                    target_widget.set_alpha(0.2 if self.minimal_mode_enabled else 0.8)
 
 
                 # Set opacity for the main widget

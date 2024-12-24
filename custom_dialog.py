@@ -10,8 +10,9 @@ except ImportError:
     from shiboken2 import wrapInstance
 
 class CustomDialog(QtWidgets.QDialog):
-    def __init__(self, parent=None, title="", size=(250, 150)):
+    def __init__(self, parent=None, title="", size=(250, 150), info_box = False):
         super(CustomDialog, self).__init__(parent)
+        self.info_box = info_box
         self.setWindowTitle(title)
         self.setFixedSize(*size)
         self.setStyleSheet('''
@@ -21,6 +22,7 @@ class CustomDialog(QtWidgets.QDialog):
             }
             QLabel, QRadioButton {
                 color: white;
+                background-color: transparent;
             }
             QLineEdit {
                 background-color: #4d4d4d;
@@ -47,6 +49,13 @@ class CustomDialog(QtWidgets.QDialog):
             QPushButton#closeButton:hover {
                 background-color: #ff0000;
             }
+            }
+            QPushButton#okayButton {
+                background-color: #444444;
+            }
+            QPushButton#okayButton:hover {
+                background-color: #555555;
+            }
             QComboBox {
                 background-color: #444444;
                 color: white;
@@ -69,18 +78,29 @@ class CustomDialog(QtWidgets.QDialog):
         self.layout.addWidget(widget)
 
     def add_button_box(self):
-        button_layout = QtWidgets.QHBoxLayout()
-        accept_button = QtWidgets.QPushButton("Accept")
-        close_button = QtWidgets.QPushButton("Close")
-        accept_button.setObjectName("acceptButton")
-        close_button.setObjectName("closeButton")
-        #accept_button.setFixedWidth(80)
-        #close_button.setFixedWidth(80)
-        button_layout.addWidget(accept_button)
-        button_layout.addWidget(close_button)
-        self.layout.addStretch()
-        self.layout.addLayout(button_layout)
-        accept_button.clicked.connect(self.accept)
-        close_button.clicked.connect(self.reject)
-        return accept_button, close_button
+        if self.info_box:
+            button_layout = QtWidgets.QHBoxLayout()
+            okay_button = QtWidgets.QPushButton("Okay")
+            okay_button.setObjectName("okayButton")
+            #button_layout.addStretch()
+            button_layout.addWidget(okay_button)
+            self.layout.addStretch()
+            self.layout.addLayout(button_layout)
+            okay_button.clicked.connect(self.accept)
+            return okay_button
+        else:
+            button_layout = QtWidgets.QHBoxLayout()
+            accept_button = QtWidgets.QPushButton("Accept")
+            close_button = QtWidgets.QPushButton("Close")
+            accept_button.setObjectName("acceptButton")
+            close_button.setObjectName("closeButton")
+            #accept_button.setFixedWidth(80)
+            #close_button.setFixedWidth(80)
+            button_layout.addWidget(accept_button)
+            button_layout.addWidget(close_button)
+            self.layout.addStretch()
+            self.layout.addLayout(button_layout)
+            accept_button.clicked.connect(self.accept)
+            close_button.clicked.connect(self.reject)
+            return accept_button, close_button
     
