@@ -87,7 +87,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
     def setup_ui(self):
         # Allow window to be resized
         self.setMinimumSize(260, 260)
-        self.setGeometry(1150,260,350,450)
+        self.setGeometry(1150,280,350,450)
 
         def set_margin_space(layout,margin,space):
             layout.setContentsMargins(margin,margin,margin,margin)

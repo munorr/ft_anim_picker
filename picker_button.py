@@ -1,5 +1,6 @@
 from functools import partial
 import maya.cmds as cmds
+import maya.mel as mel
 try:
     from PySide6 import QtWidgets, QtCore, QtGui
     from PySide6.QtGui import QColor
@@ -309,7 +310,7 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
             r'@match_ik_to_fk\s*\([^)]*\)',  # Match @match_ik_to_fk() with any parameters
             r'@match_fk_to_ik\s*\([^)]*\)',   # Match @match_fk_to_ik() with any parameters
         ]
-        special_patterns_02 = [r'@ns(?![a-zA-Z0-9_])|@ns(?=[a-zA-Z0-9_])',]  # Original @ns pattern
+        special_patterns_02 = [r'@ns\.'] # Original @ns pattern
         
         # Apply highlighting for special patterns
         for pattern in special_patterns:
@@ -600,8 +601,8 @@ class ScriptManagerWidget(QtWidgets.QWidget):
     #--------------------------------------------------------------------------------------------------------------------
     def ppf_match_ik_to_fk(self): # Match IK to FK
         preset_code = '''#Replace the ik_controls and fk_joints with your own names
-ik_controls = ['@nsik_pole_ctrl', '@nsik_arm_or_leg_ctrl'] 
-fk_joints = ['@nsfk_upper_arm_or_leg_jnt', '@nsfk_elbow_or_knee_jnt', '@nsfk_wrist_or_ankle_jnt'] 
+ik_controls = ['@ns.ik_pole_ctrl', '@ns.ik_arm_or_leg_ctrl'] 
+fk_joints = ['@ns.fk_upper_arm_or_leg_jnt', '@ns.fk_elbow_or_knee_jnt', '@ns.fk_wrist_or_ankle_jnt'] 
 @match_ik_to_fk(ik_controls, fk_joints)'''
         
         # Get current text and append new code with a newline if there's existing content
@@ -613,8 +614,8 @@ fk_joints = ['@nsfk_upper_arm_or_leg_jnt', '@nsfk_elbow_or_knee_jnt', '@nsfk_wri
 
     def ppf_match_fk_to_ik(self): # Match FK to IK
         preset_code = '''#Replace the fk_controls and ik_joints with your own names
-fk_controls = ['@nsfk_upper_arm_or_leg_ctrl', '@nsfk_elbow_or_knee_ctrl', '@nsfk_wrist_or_ankle_ctrl'] 
-ik_joints = ['@nsik_upper_arm_or_leg_jnt', '@nsik_elbow_or_knee_jnt', '@nsik_wrist_or_ankle_jnt'] 
+fk_controls = ['@ns.fk_upper_arm_or_leg_ctrl', '@ns.fk_elbow_or_knee_ctrl', '@ns.fk_wrist_or_ankle_ctrl'] 
+ik_joints = ['@ns.ik_upper_arm_or_leg_jnt', '@ns.ik_elbow_or_knee_jnt', '@ns.ik_wrist_or_ankle_jnt'] 
 @match_fk_to_ik(fk_controls, ik_joints)'''
         
         # Get current text and append new code with a newline if there's existing content
@@ -626,7 +627,7 @@ ik_joints = ['@nsik_upper_arm_or_leg_jnt', '@nsik_elbow_or_knee_jnt', '@nsik_wri
     
     def ppf_set_attribute(self): # Match FK to IK
         preset_code = '''#Replace the Object, Attribute and Attribute Value with your own names
-cmds.setAttr("@nsObject.Attribute", AttributeValue)'''
+cmds.setAttr("@ns.Object.Attribute", AttributeValue)'''
         
         # Get current text and append new code with a newline if there's existing content
         current_text = self.python_editor.toPlainText()
@@ -640,7 +641,7 @@ cmds.setAttr("@nsObject.Attribute", AttributeValue)'''
 
     def mpf_set_attribute(self): # Match FK to IK
         preset_code = '''#Replace the Object, Attribute and Attribute Value with your own names
-setAttr "@nsObject.Attribute" Attribute Value;'''
+setAttr "@ns.Object.Attribute" Attribute Value;'''
         
         # Get current text and append new code with a newline if there's existing content
         current_text = self.mel_editor.toPlainText()
@@ -1308,8 +1309,8 @@ class PickerButton(QtWidgets.QWidget):
                         ns_prefix = f"{current_ns}:" if current_ns and current_ns != 'None' else ""
                         
                         # Replace '@ns' tokens
-                        modified_code = re.sub(r'@ns([a-zA-Z0-9_])', fr'{ns_prefix}\1', code)
-                        modified_code = re.sub(r'@ns(?![a-zA-Z0-9_])', f'"{ns_prefix}"', modified_code)
+                        modified_code = re.sub(r'@ns\.([a-zA-Z0-9_])', fr'{ns_prefix}\1', code)  # Replace @ns. followed by identifier
+                        modified_code = re.sub(r'@ns\.(?!\w)', f'"{ns_prefix}"', modified_code)
                         
                         # Replace match function tokens with actual function calls
                         modified_code = re.sub(
