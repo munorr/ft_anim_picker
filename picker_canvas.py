@@ -342,7 +342,10 @@ class PickerCanvas(QtWidgets.QWidget):
                                         if cmds.objExists(namespaced_node):
                                             new_selection.append(uuid)
                                         else:
-                                            missing_objects.add(f"- {base_name}")
+                                            if cmds.objExists(base_name):
+                                                new_selection.append(base_name)
+                                            else:
+                                                missing_objects.add(f"- {base_name}")
                                     else:
                                         new_selection.append(uuid)
                                 else:
