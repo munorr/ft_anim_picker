@@ -29,7 +29,7 @@ from . import tool_functions as TF
 from . import custom_dialog as CD
 from . fade_away_logic import FadeAway
 
-anim_picker_version = 'v1_2_4'
+anim_picker_version = 'v1_2_5'
 
 class AnimPickerWindow(QtWidgets.QWidget):
     def __init__(self, parent=None):
