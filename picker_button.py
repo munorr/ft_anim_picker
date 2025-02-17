@@ -1288,7 +1288,8 @@ class PickerButton(QtWidgets.QWidget):
     def set_script_data(self, data):
         self.script_data = data
         self.changed.emit(self)
-
+        self.update_tooltip()
+        
     def execute_script_command(self):
         """Execute the script with namespace and match function token handling"""
         if self.mode == 'script' and self.script_data:

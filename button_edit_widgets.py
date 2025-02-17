@@ -203,21 +203,29 @@ def create_button_edit_widgets(parent):
 
     # Color widget
     color_widget = QtWidgets.QWidget()
-    color_widget.setStyleSheet(('background-color:rgb(60,60,60,.6);'))
+    color_widget.setStyleSheet(('background-color:#222222;'))
     color_layout = QtWidgets.QGridLayout(color_widget)
     color_layout.setSpacing(5)
     color_layout.setContentsMargins(3, 5, 3, 5)
-    color_palette = [
+    '''color_palette = [
         "#828282", "#ffca0d", "#1accc7", "#f977f8", "#82b60b", 
         "#4e4e4e", "#ff7f0c", "#38578a", "#c347a5", "#567b02", 
         "#1b1b1b", "#f82929", "#18263d", "#552549", "#324801", 
         
+    ]'''
+    color_palette = [
+    "#000000", "#3F3F3F", "#999999", "#9B0028", "#00045F",  
+    "#0000FF", "#004618", "#250043", "#C700C7", "#894733",  
+    "#3E221F", "#992500", "#FF0000", "#00FF00", "#004199",  
+    "#FFFFFF", "#FFFF00", "#63DCFF", "#43FFA2", "#FFAFAF",  
+    "#E3AC79", "#FFFF62", "#009953", "#D9916C", "#DFC74D",  
+    "#A1CE46", "#3AC093", "#40D1B8", "#399DCD", "#9B6BCD"  
     ]
     color_buttons = []
     for i, color in enumerate(color_palette):
         color_button = QtWidgets.QPushButton()
-        color_button.setFixedSize(18, 18)
-        color_button.setStyleSheet(f"""QPushButton {{background-color: {color}; border: 0px solid #444444 ; border-radius: 3px;}} 
+        color_button.setFixedSize(20, 20)
+        color_button.setStyleSheet(f"""QPushButton {{background-color: {color}; border: 0px solid #222222 ; border-radius: 10px;}} 
                                         QPushButton:hover {{background-color: {UT.rgba_value(color, 1.2, alpha=1)};}}""")
         color_layout.addWidget(color_button, i // 5, i % 5)
         color_buttons.append(color_button)

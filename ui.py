@@ -143,7 +143,8 @@ class AnimPickerWindow(QtWidgets.QWidget):
         info_util = CB.CustomButton(text='Info', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
                                     cmColor='#333333',tooltip='Help', flat=True)
         
-        info_util.addToMenu(f"Anim Picker [{anim_picker_version}]", self.info, icon='info.png', position=(0,0))
+        info_util.addMenuLabel(f"Anim Picker{anim_picker_version}",position=(0,0))
+        info_util.addToMenu(f"Manual", self.info, icon='info.png', position=(1,0))
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         #-Close button
         self.close_button = QtWidgets.QPushButton("✕", self)
@@ -421,6 +422,8 @@ class AnimPickerWindow(QtWidgets.QWidget):
         print('Funtion not assigned')
 
     def info(self):
+        # Opens link to Manual
+        cmds.launch(web='https://munorr.com/tools/ft-anim-picker/')
         print(f'Floating Tools Anim Picker {anim_picker_version}')
 
     def toggle_edit_mode(self):

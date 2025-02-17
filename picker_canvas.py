@@ -340,7 +340,7 @@ class PickerCanvas(QtWidgets.QWidget):
                                         base_name = node.split('|')[-1].split(':')[-1]
                                         namespaced_node = f"{current_namespace}:{base_name}"
                                         if cmds.objExists(namespaced_node):
-                                            new_selection.append(uuid)
+                                            new_selection.append(namespaced_node)
                                         else:
                                             if cmds.objExists(base_name):
                                                 new_selection.append(base_name)
