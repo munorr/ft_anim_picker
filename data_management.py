@@ -40,7 +40,39 @@ class PickerDataManager:
                         data['tabs'][tab]['buttons'] = []
                     if 'namespace' not in data['tabs'][tab]:
                         data['tabs'][tab]['namespace'] = 'None'
+                    
+                    # Convert assigned objects to new format for each button
+                    for button in data['tabs'][tab]['buttons']:
+                        if 'assigned_objects' in button:
+                            if not button['assigned_objects']:  # If empty list
+                                button['assigned_objects'] = []
+                            else:
+                                # Check format of first object to determine if conversion needed
+                                first_obj = button['assigned_objects'][0] if button['assigned_objects'] else None
+                                if not isinstance(first_obj, dict):
+                                    # Convert old format to new format
+                                    converted_objects = []
+                                    for obj in button['assigned_objects']:
+                                        try:
+                                            nodes = cmds.ls(obj, long=True)
+                                            if nodes:
+                                                converted_objects.append({
+                                                    'uuid': obj,
+                                                    'long_name': nodes[0]
+                                                })
+                                            else:
+                                                converted_objects.append({
+                                                    'uuid': obj,
+                                                    'long_name': ''
+                                                })
+                                        except:
+                                            continue
+                                    button['assigned_objects'] = converted_objects
+                
+                # Save converted data back to storage
+                cls.save_data(data)
                 return data
+                
             except json.JSONDecodeError:
                 cmds.warning("Invalid data in PickerToolData. Resetting to default.")
                 cls.save_data(cls.DEFAULT_DATA)
@@ -113,7 +145,38 @@ class PickerDataManager:
         button_data['width'] = button_data.get('width', 80)
         button_data['height'] = button_data.get('height', 30)
         button_data['radius'] = button_data.get('radius', [3, 3, 3, 3])
-        button_data['assigned_objects'] = button_data.get('assigned_objects', [])
+        #button_data['assigned_objects'] = button_data.get('assigned_objects', [])
+
+        # Handle assigned_objects in old or new format
+        if 'assigned_objects' in button_data:
+            if not button_data['assigned_objects']:
+                button_data['assigned_objects'] = []
+            else:
+                # Check if conversion needed
+                first_obj = button_data['assigned_objects'][0] if button_data['assigned_objects'] else None
+                if not isinstance(first_obj, dict):
+                    converted_objects = []
+                    for obj in button_data['assigned_objects']:
+                        try:
+                            nodes = cmds.ls(obj, long=True)
+                            if nodes:
+                                converted_objects.append({
+                                    'uuid': obj,
+                                    'long_name': nodes[0]
+                                })
+                            else:
+                                converted_objects.append({
+                                    'uuid': obj,
+                                    'long_name': ''
+                                })
+                        except:
+                            continue
+                    button_data['assigned_objects'] = converted_objects
+        else:
+            button_data['assigned_objects'] = []
+        
+        button_data['mode'] = button_data.get('mode', 'select')
+
         button_data['mode'] = button_data.get('mode', 'select')
         
         # Properly handle script data initialization

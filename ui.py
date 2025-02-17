@@ -1616,7 +1616,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
             widgets['opacity_widget'].setStyleSheet('border: 0px solid #444444;')
             widgets['transform_widget'].setStyleSheet('border: 0px solid #444444;')
             widgets['radius_widget'].setStyleSheet('border: 0px solid #444444;')
-            widgets['color_widget'].setStyleSheet('border: 0px solid #444444;')
+            widgets['color_widget'].setStyleSheet('border: 0px solid #444444; background-color: #222222;')
 
         for widget in widgets.values():
             if isinstance(widget, (QtWidgets.QWidget, QtWidgets.QLayout)):

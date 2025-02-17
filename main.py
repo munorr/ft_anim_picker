@@ -6,19 +6,47 @@ except ImportError:
 from . import ui as UI
 from . import utils as UT
 
+class PickerWindowManager:
+    _instance = None
+    _picker_widgets = []
+    
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = PickerWindowManager()
+        return cls._instance
+    
+    def create_window(self):
+        # Create new picker widget
+        picker_widget = UI.AnimPickerWindow(parent=UT.maya_main_window())
+        picker_widget.setObjectName(f"floatingTool_{len(self._picker_widgets)}")
+        
+        # Store reference to widget
+        self._picker_widgets.append(picker_widget)
+        
+        # Connect close event
+        picker_widget.destroyed.connect(lambda: self.remove_widget(picker_widget))
+        
+        # Show widget
+        picker_widget.show()
+        UT.maya_main_window().activateWindow()
+        
+        return picker_widget
+    
+    def remove_widget(self, widget):
+        if widget in self._picker_widgets:
+            self._picker_widgets.remove(widget)
+    
+    def close_all_windows(self):
+        for widget in self._picker_widgets[:]:  # Create copy of list to avoid modification during iteration
+            widget.close()
+            widget.deleteLater()
+        self._picker_widgets.clear()
+
 def ft_anim_picker_window():
-    try:
-        if hasattr(UT.maya_main_window(), '_picker_widget'):
-            UT.maya_main_window()._picker_widget.close()
-            UT.maya_main_window()._picker_widget.deleteLater()
-    except:
-        pass
+    """Create a new instance of the animation picker window"""
+    manager = PickerWindowManager.get_instance()
+    return manager.create_window()
 
-    picker_widget = UI.AnimPickerWindow(parent=UT.maya_main_window())
-    picker_widget.setObjectName("floatingTool")
-    #picker_widget.move(1280, 700)
-    picker_widget.show()
-    UT.maya_main_window()._picker_widget= picker_widget
-    UT.maya_main_window().activateWindow()
-
+#if __name__ == "__main__":
 ft_anim_picker_window()

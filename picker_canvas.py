@@ -292,7 +292,7 @@ class PickerCanvas(QtWidgets.QWidget):
         self.update_hud_counts()
 
     def apply_final_selection(self, add_to_selection=False):
-        """Apply final selection using UUIDs and handle Maya selection"""
+        """Apply final selection with improved object lookup fallback"""
         if not self.edit_mode:
             missing_objects = set()
             
@@ -331,25 +331,39 @@ class PickerCanvas(QtWidgets.QWidget):
                     if isinstance(main_window, UI.AnimPickerWindow):
                         current_namespace = main_window.namespace_dropdown.currentText()
                         
-                        for uuid in button.assigned_objects:
+                        for obj_data in button.assigned_objects:
                             try:
-                                nodes = cmds.ls(uuid, long=True)
-                                if nodes:
-                                    node = nodes[0]
-                                    if current_namespace and current_namespace != 'None':
-                                        base_name = node.split('|')[-1].split(':')[-1]
-                                        namespaced_node = f"{current_namespace}:{base_name}"
-                                        if cmds.objExists(namespaced_node):
-                                            new_selection.append(namespaced_node)
-                                        else:
-                                            if cmds.objExists(base_name):
-                                                new_selection.append(base_name)
-                                            else:
-                                                missing_objects.add(f"- {base_name}")
-                                    else:
-                                        new_selection.append(uuid)
+                                uuid = obj_data['uuid']
+                                long_name = obj_data['long_name']
+                                base_name = long_name.split('|')[-1].split(':')[-1]
+                                resolved_node = None
+                                
+                                # First try to resolve by UUID
+                                try:
+                                    nodes = cmds.ls(uuid, long=True)
+                                    if nodes:
+                                        resolved_node = nodes[0]
+                                except:
+                                    pass
+                                
+                                # If UUID fails, try the long name
+                                if not resolved_node and cmds.objExists(long_name):
+                                    resolved_node = long_name
+                                
+                                # If both UUID and long name fail, try base name with current namespace
+                                if not resolved_node and current_namespace and current_namespace != 'None':
+                                    namespaced_node = f"{current_namespace}:{base_name}"
+                                    if cmds.objExists(namespaced_node):
+                                        resolved_node = namespaced_node
+                                    elif cmds.objExists(base_name):
+                                        resolved_node = base_name
+                                
+                                # If we found the node, add it to selection
+                                if resolved_node:
+                                    new_selection.append(resolved_node)
                                 else:
-                                    missing_objects.add(f"- {uuid}")
+                                    missing_objects.add(f"- {base_name}")
+                                    
                             except Exception as e:
                                 continue
 
@@ -358,7 +372,18 @@ class PickerCanvas(QtWidgets.QWidget):
                 objects_to_remove = set()
                 for button in deselected_buttons:
                     if button.assigned_objects:
-                        objects_to_remove.update(button.assigned_objects)
+                        for obj_data in button.assigned_objects:
+                            try:
+                                # Try UUID first
+                                uuid = obj_data['uuid']
+                                nodes = cmds.ls(uuid, long=True)
+                                if nodes:
+                                    objects_to_remove.add(nodes[0])
+                                # Fallback to long name
+                                elif cmds.objExists(obj_data['long_name']):
+                                    objects_to_remove.add(obj_data['long_name'])
+                            except:
+                                continue
                 current_selection = current_selection - objects_to_remove
 
             # Perform Maya selection
@@ -369,35 +394,31 @@ class PickerCanvas(QtWidgets.QWidget):
                 else:
                     # Deselect objects from deselected buttons
                     for button in deselected_buttons:
-                        for uuid in button.assigned_objects:
+                        for obj_data in button.assigned_objects:
                             try:
+                                # Try UUID first
+                                uuid = obj_data['uuid']
                                 nodes = cmds.ls(uuid, long=True)
                                 if nodes:
                                     cmds.select(nodes[0], deselect=True)
+                                # Fallback to long name
+                                elif cmds.objExists(obj_data['long_name']):
+                                    cmds.select(obj_data['long_name'], deselect=True)
                             except:
                                 continue
 
                 if new_selection:
-                    nodes_to_select = []
-                    for uuid in new_selection:
-                        try:
-                            nodes = cmds.ls(uuid, long=True)
-                            if nodes:
-                                nodes_to_select.append(nodes[0])
-                        except:
-                            continue
-                    if nodes_to_select:
-                        cmds.select(nodes_to_select, add=True)
-                        # Make last node active
-                        if nodes_to_select:
-                            cmds.select(nodes_to_select[-1], toggle=True)
-                            cmds.select(nodes_to_select[-1], add=True)
+                    cmds.select(new_selection, add=True)
+                    # Make last node active
+                    if new_selection:
+                        cmds.select(new_selection[-1], toggle=True)
+                        cmds.select(new_selection[-1], add=True)
             finally:
                 cmds.undoInfo(closeChunk=True)
 
             if missing_objects:
                 parent_widget = self.parentWidget()
-                dialog = CD.CustomDialog(parent_widget,title="Missing Objects", size=(250, -1), info_box=True)
+                dialog = CD.CustomDialog(parent_widget, title="Missing Objects", size=(250, -1), info_box=True)
                 message_label = QtWidgets.QLabel("The following objects were not found:")
                 details_label = QtWidgets.QLabel('\n'.join(sorted(f"<b><font color='#00ade6'>{objects}</font></b>" for objects in missing_objects)))
                 note_label = QtWidgets.QLabel("[Objects may have been deleted or renamed]")
@@ -411,8 +432,8 @@ class PickerCanvas(QtWidgets.QWidget):
             for button in self.buttons:
                 button.update()
         
-        self.button_selection_changed.emit()
-        self.update_hud_counts()
+            self.button_selection_changed.emit()
+            self.update_hud_counts()
 
     def clear_selection(self):
         selection_changed = False

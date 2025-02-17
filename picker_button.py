@@ -1097,22 +1097,41 @@ class PickerButton(QtWidgets.QWidget):
             self.update()
     #---------------------------------------------------------------------------------------
     def update_tooltip(self):
-        """Update tooltip using node names resolved from UUIDs, stripping namespaces"""
+        """Update tooltip with improved object lookup"""
         base_tooltip = f"(Assigned Objects):"
         if self.assigned_objects:
             try:
                 object_names = []
-                for uuid in self.assigned_objects:
+                for obj_data in self.assigned_objects:
                     try:
-                        node = cmds.ls(uuid, long=True)[0]
-                        # Strip namespace by taking the last part after any ':'
-                        short_name = node.split('|')[-1].split(':')[-1]
-                        object_names.append(short_name)
+                        resolved_node = None
+                        
+                        # Try UUID first
+                        uuid = obj_data['uuid']
+                        try:
+                            nodes = cmds.ls(uuid, long=True)
+                            if nodes:
+                                resolved_node = nodes[0]
+                        except:
+                            pass
+                        
+                        # If UUID fails, try long name
+                        if not resolved_node and cmds.objExists(obj_data['long_name']):
+                            resolved_node = obj_data['long_name']
+                        
+                        if resolved_node:
+                            # Strip namespace by taking the last part after any ':'
+                            short_name = resolved_node.split('|')[-1].split(':')[-1]
+                            object_names.append(short_name)
                     except:
                         # Handle case where object no longer exists
                         continue
-                objects_str = "\n- " + "\n- ".join(object_names)
-                base_tooltip += objects_str
+                        
+                if object_names:
+                    objects_str = "\n- " + "\n- ".join(object_names)
+                    base_tooltip += objects_str
+                else:
+                    base_tooltip += "\n(No valid objects found)"
             except:
                 base_tooltip += "\nError resolving object names"
         self.setToolTip(base_tooltip)
@@ -1424,12 +1443,52 @@ class PickerButton(QtWidgets.QWidget):
                 main_window.update_buttons_for_current_tab()
     #---------------------------------------------------------------------------------------
     def add_selected_objects(self):
-        """Store UUIDs of selected objects instead of long names"""
-        selected = cmds.ls(selection=True, uuid=True)
+        """Store both UUID and long name for selected objects"""
+        selected = cmds.ls(selection=True, long=True)
         if selected:
-            self.assigned_objects = list(set(self.assigned_objects + selected))
+            # Create a list of {uuid, long_name} pairs for selected objects
+            new_objects = []
+            for obj in selected:
+                try:
+                    uuid = cmds.ls(obj, uuid=True)[0]
+                    new_objects.append({
+                        'uuid': uuid,
+                        'long_name': obj
+                    })
+                except:
+                    continue
+                    
+            # Add new objects to existing list, avoiding duplicates by UUID
+            existing_uuids = {obj['uuid'] for obj in self.assigned_objects}
+            self.assigned_objects.extend([obj for obj in new_objects if obj['uuid'] not in existing_uuids])
             self.update_tooltip()
             self.changed.emit(self)
+    
+    def convert_assigned_objects(self, objects):
+        """Convert old format (UUID only) to new format (UUID + long name)"""
+        converted_objects = []
+        for obj in objects:
+            # Check if object is already in new format
+            if isinstance(obj, dict) and 'uuid' in obj and 'long_name' in obj:
+                converted_objects.append(obj)
+            else:
+                # Old format - only UUID
+                try:
+                    nodes = cmds.ls(obj, long=True)
+                    if nodes:
+                        converted_objects.append({
+                            'uuid': obj,
+                            'long_name': nodes[0]
+                        })
+                    else:
+                        # If can't resolve UUID, still store it with empty long name
+                        converted_objects.append({
+                            'uuid': obj,
+                            'long_name': ''
+                        })
+                except:
+                    continue
+        return converted_objects
 
     def remove_all_objects(self):
         self.assigned_objects = []
