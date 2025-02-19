@@ -292,7 +292,7 @@ class PickerCanvas(QtWidgets.QWidget):
         self.update_hud_counts()
 
     def apply_final_selection(self, add_to_selection=False):
-        """Apply final selection with improved object lookup fallback"""
+        """Apply final selection with improved object lookup and UUID updating"""
         if not self.edit_mode:
             missing_objects = set()
             
@@ -305,24 +305,23 @@ class PickerCanvas(QtWidgets.QWidget):
             
             # Build ordered selection list
             final_selections = []
-            # Add previously selected buttons if in shift mode
             if add_to_selection:
                 for button in self.buttons:
                     if button.is_selected and button not in self.buttons_in_current_drag:
                         final_selections.append(button)
             
-            # Add newly clicked buttons
             for button in self.buttons_in_current_drag:
                 if button.is_selected and button != last_clicked:
                     final_selections.append(button)
                     
-            # Add last clicked button at the end
             if last_clicked and last_clicked.is_selected:
                 final_selections.append(last_clicked)
 
-            # Get current Maya selection
             current_selection = set(cmds.ls(selection=True, uuid=True) or [])
             new_selection = []
+            
+            # Track if any UUIDs were updated
+            uuid_updates = False
                 
             # Process buttons in order
             for button in final_selections:
@@ -331,41 +330,74 @@ class PickerCanvas(QtWidgets.QWidget):
                     if isinstance(main_window, UI.AnimPickerWindow):
                         current_namespace = main_window.namespace_dropdown.currentText()
                         
+                        updated_objects = []  # Store updated object data
+                        
                         for obj_data in button.assigned_objects:
                             try:
                                 uuid = obj_data['uuid']
                                 long_name = obj_data['long_name']
                                 base_name = long_name.split('|')[-1].split(':')[-1]
                                 resolved_node = None
+                                new_uuid = None
                                 
                                 # First try to resolve by UUID
                                 try:
                                     nodes = cmds.ls(uuid, long=True)
                                     if nodes:
                                         resolved_node = nodes[0]
+                                        new_uuid = uuid  # UUID is still valid
                                 except:
                                     pass
                                 
-                                # If UUID fails, try the long name
-                                if not resolved_node and cmds.objExists(long_name):
-                                    resolved_node = long_name
+                                # If UUID fails, try the long name and update UUID if found
+                                if not resolved_node and long_name:
+                                    # Try exact long name first
+                                    if cmds.objExists(long_name):
+                                        resolved_node = long_name
+                                        try:
+                                            new_uuid = cmds.ls(long_name, uuid=True)[0]
+                                            uuid_updates = True
+                                        except:
+                                            pass
+                                            
+                                    # If that fails and we have a namespace, try with current namespace
+                                    elif current_namespace and current_namespace != 'None':
+                                        namespaced_node = f"{current_namespace}:{base_name}"
+                                        if cmds.objExists(namespaced_node):
+                                            resolved_node = namespaced_node
+                                            try:
+                                                new_uuid = cmds.ls(namespaced_node, uuid=True)[0]
+                                                uuid_updates = True
+                                            except:
+                                                pass
+                                        # Finally try just the base name
+                                        elif cmds.objExists(base_name):
+                                            resolved_node = base_name
+                                            try:
+                                                new_uuid = cmds.ls(base_name, uuid=True)[0]
+                                                uuid_updates = True
+                                            except:
+                                                pass
                                 
-                                # If both UUID and long name fail, try base name with current namespace
-                                if not resolved_node and current_namespace and current_namespace != 'None':
-                                    namespaced_node = f"{current_namespace}:{base_name}"
-                                    if cmds.objExists(namespaced_node):
-                                        resolved_node = namespaced_node
-                                    elif cmds.objExists(base_name):
-                                        resolved_node = base_name
-                                
-                                # If we found the node, add it to selection
+                                # Update object data with new UUID if found
                                 if resolved_node:
                                     new_selection.append(resolved_node)
+                                    updated_objects.append({
+                                        'uuid': new_uuid if new_uuid else uuid,
+                                        'long_name': resolved_node
+                                    })
                                 else:
                                     missing_objects.add(f"- {base_name}")
+                                    # Keep the original data if object not found
+                                    updated_objects.append(obj_data)
                                     
                             except Exception as e:
                                 continue
+                        
+                        # Update button's assigned objects with any new UUIDs
+                        button.assigned_objects = updated_objects
+                        if uuid_updates:
+                            button.changed.emit(button)  # Trigger update in database
 
             # Remove deselected objects from current Maya selection
             if add_to_selection:
@@ -434,6 +466,12 @@ class PickerCanvas(QtWidgets.QWidget):
         
             self.button_selection_changed.emit()
             self.update_hud_counts()
+
+            if uuid_updates:
+                # If we updated any UUIDs, update the picker data
+                main_window = self.window()
+                if isinstance(main_window, UI.AnimPickerWindow):
+                    main_window.update_buttons_for_current_tab()
 
     def clear_selection(self):
         selection_changed = False
@@ -775,9 +813,18 @@ class PickerCanvas(QtWidgets.QWidget):
             add_button_action = menu.addAction(QtGui.QIcon(":/addClip.png"), "Add Button")
             add_button_action.triggered.connect(lambda: self.add_button_at_position(position))
             
+            # Get clipboard state to determine if paste actions should be enabled
+            has_clipboard = bool(PB.ButtonClipboard.instance().get_all_buttons())
+            
+            # Create regular paste action
             paste_buttons_action = menu.addAction(QtGui.QIcon(":/pasteUV.png"), "Paste Button")
-            paste_buttons_action.triggered.connect(lambda: self.paste_buttons_at_position(position))
-            paste_buttons_action.setEnabled(bool(PB.ButtonClipboard.instance().get_all_buttons()))
+            paste_buttons_action.triggered.connect(lambda: self.paste_buttons_at_position(position, mirror=False))
+            paste_buttons_action.setEnabled(has_clipboard)
+            
+            # Create mirrored paste action
+            paste_mirror_action = menu.addAction(QtGui.QIcon(":/pasteUV.png"), "Paste Mirror")
+            paste_mirror_action.triggered.connect(lambda: self.paste_buttons_at_position(position, mirror=True))
+            paste_mirror_action.setEnabled(has_clipboard)
 
             edit_mode_action = menu.addAction(QtGui.QIcon(":/fileTextureEdit.png"),"Exit Edit Mode")
             main_window = self.window()
@@ -828,7 +875,7 @@ class PickerCanvas(QtWidgets.QWidget):
             self.update_button_positions()
             self.update()
 
-    def paste_buttons_at_position(self, position):
+    def paste_buttons_at_position(self, position, mirror=False):
         scene_pos = self.canvas_to_scene_coords(QtCore.QPointF(position))
         copied_buttons = PB.ButtonClipboard.instance().get_all_buttons()
         
@@ -854,8 +901,13 @@ class PickerCanvas(QtWidgets.QWidget):
                 new_button.mode = button_data.get('mode', 'select')
                 new_button.script_data = button_data.get('script_data', {}).copy()
                 
-                # Position relative to cursor point
-                new_button.scene_position = scene_pos + button_data['relative_position']
+                # Position relative to cursor point, with mirroring option
+                relative_position = button_data['relative_position']
+                if mirror:
+                    # Mirror the X position (horizontal mirroring)
+                    relative_position = QtCore.QPointF(-relative_position.x(), relative_position.y())
+                    
+                new_button.scene_position = scene_pos + relative_position
                 
                 # Add button to canvas
                 self.add_button(new_button)

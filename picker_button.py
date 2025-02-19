@@ -229,41 +229,93 @@ class SelectionManagerWidget(QtWidgets.QWidget):
             self.move(global_pos + QtCore.QPoint(10, 0))
     
     def refresh_list(self):
-        """Refresh the list with human-readable object names, stripping namespaces"""
+        """Refresh the list with human-readable object names, compatible with new object structure"""
         self.selection_list.clear()
         if self.picker_button:
-            for uuid in self.picker_button.assigned_objects:
+            for obj_data in self.picker_button.assigned_objects:
                 try:
-                    # Get current node name from UUID
-                    nodes = cmds.ls(uuid, long=True)
-                    if nodes:
-                        # Strip namespace by taking the last part after any ':'
-                        short_name = nodes[0].split('|')[-1].split(':')[-1]
-                        item = QtWidgets.QListWidgetItem(short_name)
-                        # Store the UUID as item data for removal
-                        item.setData(QtCore.Qt.UserRole, uuid)
-                        self.selection_list.addItem(item)
+                    # Handle both old format (just UUID) and new format (dict with UUID and long_name)
+                    if isinstance(obj_data, dict):
+                        uuid = obj_data['uuid']
+                        long_name = obj_data['long_name']
+                        
+                        # Try to resolve current name from UUID first
+                        nodes = cmds.ls(uuid, long=True)
+                        node_name = ""
+                        
+                        if nodes:
+                            # Use UUID resolution if available
+                            node_name = nodes[0]
+                        elif cmds.objExists(long_name):
+                            # Fallback to long name if UUID fails
+                            node_name = long_name
+                        
+                        if node_name:
+                            # Strip namespace by taking the last part after any ':'
+                            short_name = node_name.split('|')[-1].split(':')[-1]
+                            item = QtWidgets.QListWidgetItem(short_name)
+                            # Store the complete object data for removal
+                            item.setData(QtCore.Qt.UserRole, obj_data)
+                            self.selection_list.addItem(item)
+                    else:
+                        # Legacy format - just UUID
+                        uuid = obj_data
+                        nodes = cmds.ls(uuid, long=True)
+                        if nodes:
+                            # Strip namespace by taking the last part after any ':'
+                            short_name = nodes[0].split('|')[-1].split(':')[-1]
+                            item = QtWidgets.QListWidgetItem(short_name)
+                            # Store the UUID as item data for removal
+                            item.setData(QtCore.Qt.UserRole, uuid)
+                            self.selection_list.addItem(item)
                 except Exception as e:
                     # Handle case where object no longer exists
                     continue
                 
     def add_selection(self):
+        """Add selected objects using new object structure"""
         if self.picker_button:
             self.picker_button.add_selected_objects()
             self.refresh_list()
             
     def remove_selection(self):
-        """Remove selected objects using stored UUIDs"""
+        """Remove selected objects using new object structure"""
         if self.picker_button:
             selected_items = self.selection_list.selectedItems()
-            selected_uuids = [item.data(QtCore.Qt.UserRole) for item in selected_items]
             
-            # Remove selected objects from picker button using UUIDs
-            self.picker_button.assigned_objects = [
-                uuid for uuid in self.picker_button.assigned_objects 
-                if uuid not in selected_uuids
-            ]
+            # Extract objects to remove
+            objects_to_remove = []
+            for item in selected_items:
+                item_data = item.data(QtCore.Qt.UserRole)
+                objects_to_remove.append(item_data)
             
+            # Filter out selected objects
+            new_assigned_objects = []
+            for obj_data in self.picker_button.assigned_objects:
+                # Check if this object should be removed
+                should_remove = False
+                
+                for remove_data in objects_to_remove:
+                    if isinstance(obj_data, dict) and isinstance(remove_data, dict):
+                        # Both are dictionaries - new format
+                        if obj_data['uuid'] == remove_data['uuid']:
+                            should_remove = True
+                            break
+                    elif isinstance(obj_data, dict) and not isinstance(remove_data, dict):
+                        # Mixed format - compare UUID only
+                        if obj_data['uuid'] == remove_data:
+                            should_remove = True
+                            break
+                    elif not isinstance(obj_data, dict) and not isinstance(remove_data, dict):
+                        # Both are old format - direct comparison
+                        if obj_data == remove_data:
+                            should_remove = True
+                            break
+                
+                if not should_remove:
+                    new_assigned_objects.append(obj_data)
+            
+            self.picker_button.assigned_objects = new_assigned_objects
             self.picker_button.update_tooltip()
             self.picker_button.changed.emit(self.picker_button)
             self.refresh_list()
@@ -1097,43 +1149,71 @@ class PickerButton(QtWidgets.QWidget):
             self.update()
     #---------------------------------------------------------------------------------------
     def update_tooltip(self):
-        """Update tooltip with improved object lookup"""
+        """Update tooltip with improved object lookup and UUID updating"""
         base_tooltip = f"(Assigned Objects):"
-        if self.assigned_objects:
-            try:
-                object_names = []
-                for obj_data in self.assigned_objects:
+        
+        # Handle empty assigned_objects list
+        if not self.assigned_objects:
+            base_tooltip += "\n(No objects assigned)"
+            self.setToolTip(base_tooltip)
+            return
+            
+        try:
+            object_names = []
+            updated_objects = []  # Store updated object data
+            uuid_updates = False
+            
+            for obj_data in self.assigned_objects:
+                try:
+                    resolved_node = None
+                    new_uuid = None
+                    uuid = obj_data['uuid']
+                    long_name = obj_data['long_name']
+                    
+                    # Try UUID first
                     try:
-                        resolved_node = None
-                        
-                        # Try UUID first
-                        uuid = obj_data['uuid']
+                        nodes = cmds.ls(uuid, long=True)
+                        if nodes:
+                            resolved_node = nodes[0]
+                            new_uuid = uuid  # UUID is still valid
+                    except:
+                        pass
+                    
+                    # If UUID fails, try long name and update UUID if found
+                    if not resolved_node and cmds.objExists(long_name):
+                        resolved_node = long_name
                         try:
-                            nodes = cmds.ls(uuid, long=True)
-                            if nodes:
-                                resolved_node = nodes[0]
+                            new_uuid = cmds.ls(long_name, uuid=True)[0]
+                            uuid_updates = True
                         except:
                             pass
+                    
+                    if resolved_node:
+                        # Strip namespace for display
+                        short_name = resolved_node.split('|')[-1].split(':')[-1]
+                        object_names.append(short_name)
                         
-                        # If UUID fails, try long name
-                        if not resolved_node and cmds.objExists(obj_data['long_name']):
-                            resolved_node = obj_data['long_name']
-                        
-                        if resolved_node:
-                            # Strip namespace by taking the last part after any ':'
-                            short_name = resolved_node.split('|')[-1].split(':')[-1]
-                            object_names.append(short_name)
-                    except:
-                        # Handle case where object no longer exists
-                        continue
-                        
-                if object_names:
-                    objects_str = "\n- " + "\n- ".join(object_names)
-                    base_tooltip += objects_str
-                else:
-                    base_tooltip += "\n(No valid objects found)"
-            except:
-                base_tooltip += "\nError resolving object names"
+                        # Update object data
+                        updated_objects.append({
+                            'uuid': new_uuid if new_uuid else uuid,
+                            'long_name': resolved_node
+                        })
+                except:
+                    continue
+            
+            # Update assigned objects list with only valid objects
+            if uuid_updates or len(updated_objects) != len(self.assigned_objects):
+                self.assigned_objects = updated_objects
+                self.changed.emit(self)
+                    
+            if object_names:
+                objects_str = "\n- " + "\n- ".join(object_names)
+                base_tooltip += objects_str
+            else:
+                base_tooltip += "\n(No valid objects found)"
+        except:
+            base_tooltip += "\nError resolving object names"
+        
         self.setToolTip(base_tooltip)
 
     def show_selection_manager(self):
