@@ -1648,6 +1648,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
                     widgets[widget_name].setValue(value)
                 widgets[widget_name].blockSignals(False)
             
+            widgets['opacity_slider'].updateLabel(updates['opacity_slider'])
             # Update max values for radius widgets
             #max_radius = button.height // 2
             #for radius_widget in ['top_left_radius', 'top_right_radius', 'bottom_right_radius', 'bottom_left_radius']:
