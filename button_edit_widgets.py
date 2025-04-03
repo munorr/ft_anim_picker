@@ -31,7 +31,7 @@ def create_button_edit_widgets(parent):
     rename_label = QtWidgets.QLabel("Rename:")
     rename_edit = QtWidgets.QLineEdit()
     rename_edit.setStyleSheet("background-color: #333333; color: #dddddd; border: 1px solid #444444; border-radius: 3px;padding: 2px;")
-    rename_layout.addWidget(rename_label)
+    #rename_layout.addWidget(rename_label)
     rename_layout.addWidget(rename_edit)
     widgets['rename_widget'] = rename_widget
     widgets['rename_edit'] = rename_edit

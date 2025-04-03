@@ -346,6 +346,9 @@ class PickerCanvas(QtWidgets.QWidget):
                                     if nodes:
                                         resolved_node = nodes[0]
                                         new_uuid = uuid  # UUID is still valid
+
+                                        resolved_node = resolved_node.split(':')[-1]
+                                        print(f"Resolved by UUID: {resolved_node}")
                                 except:
                                     pass
                                 
@@ -357,6 +360,7 @@ class PickerCanvas(QtWidgets.QWidget):
                                         try:
                                             new_uuid = cmds.ls(long_name, uuid=True)[0]
                                             uuid_updates = True
+                                            print(f"Resolved by long name: {resolved_node}")
                                         except:
                                             pass
                                             
@@ -368,6 +372,7 @@ class PickerCanvas(QtWidgets.QWidget):
                                             try:
                                                 new_uuid = cmds.ls(namespaced_node, uuid=True)[0]
                                                 uuid_updates = True
+                                                print(f"Resolved by namespaced node: {resolved_node}")
                                             except:
                                                 pass
                                         # Finally try just the base name
@@ -376,6 +381,7 @@ class PickerCanvas(QtWidgets.QWidget):
                                             try:
                                                 new_uuid = cmds.ls(base_name, uuid=True)[0]
                                                 uuid_updates = True
+                                                print(f"Resolved by base name: {resolved_node}")
                                             except:
                                                 pass
                                 
@@ -386,6 +392,7 @@ class PickerCanvas(QtWidgets.QWidget):
                                         'uuid': new_uuid if new_uuid else uuid,
                                         'long_name': resolved_node
                                     })
+                                    
                                 else:
                                     missing_objects.add(f"- {base_name}")
                                     # Keep the original data if object not found
@@ -440,11 +447,23 @@ class PickerCanvas(QtWidgets.QWidget):
                                 continue
 
                 if new_selection:
-                    cmds.select(new_selection, add=True)
+                    current_namespace = main_window.namespace_dropdown.currentText()
+                    resolved_selection = []
+                    for sel in new_selection:
+                        namespaced_node = f"{current_namespace}:{sel}"
+                        if cmds.objExists(namespaced_node):
+                            #replace selection with namespaced node
+                            resolved_selection.append(namespaced_node)
+                        else:
+                            resolved_selection.append(sel)
+                            print(f"Selecting: {sel}")
+                    
+                    cmds.select(resolved_selection, add=True)
+
                     # Make last node active
                     if new_selection:
-                        cmds.select(new_selection[-1], toggle=True)
-                        cmds.select(new_selection[-1], add=True)
+                        cmds.select(resolved_selection[-1], toggle=True)
+                        cmds.select(resolved_selection[-1], add=True)
             finally:
                 cmds.undoInfo(closeChunk=True)
 
@@ -463,6 +482,7 @@ class PickerCanvas(QtWidgets.QWidget):
                         
             for button in self.buttons:
                 button.update()
+                button.update_tooltip()
         
             self.button_selection_changed.emit()
             self.update_hud_counts()
@@ -1190,3 +1210,4 @@ class PickerCanvas(QtWidgets.QWidget):
                 self.border_radius,
                 self.border_radius
             )
+            

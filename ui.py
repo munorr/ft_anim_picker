@@ -98,9 +98,9 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.main_layout = QtWidgets.QVBoxLayout(self)
         set_margin_space(self.main_layout, mls, mls)
 
-        mfc = 60 #main frame color
+        mfc = 36 #main frame color
         self.main_frame = QtWidgets.QFrame()
-        self.main_frame.setStyleSheet(f'''QFrame {{border: 0px solid gray; border-radius: 4px; background-color: rgba({mfc}, {mfc}, {mfc}, .8);}}''')
+        self.main_frame.setStyleSheet(f'''QFrame {{border: 0px solid gray; border-radius: 4px; background-color: rgba({mfc}, {mfc}, {mfc}, .6);}}''')
         self.main_frame_col = QtWidgets.QVBoxLayout(self.main_frame)
         set_margin_space(self.main_frame_col, mfs, mfs)
 

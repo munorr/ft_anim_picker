@@ -75,16 +75,16 @@ class animation_tool_layout:
         #reset_move_button = CB.CustomButton(text='Move', icon=':delete.png', color='#262626', size=14, tooltip="Resets the moved object values to Origin.",text_size=ts, height=bh)
         #reset_rotate_button = CB.CustomButton(text='Rotate', icon=':delete.png', color='#262626', size=14, tooltip="Resets the rotated object values to Origin.",text_size=ts, height=bh)
         #reset_scale_button = CB.CustomButton(text='Scale', icon=':delete.png', color='#262626', size=14, tooltip="Resets the scaled object values to Origin.",text_size=ts, height=bh)
-        reset_transform_button = CB.CustomButton(text='Reset', color='#262626', size=14, tooltip="Resets the object transform to Origin.",
-                                                 text_size=ts, height=bh,ContextMenu=True, onlyContext=True)
+        reset_transform_button = CB.CustomButton(text='Reset', icon=':delete.png', color='#222222', size=14, tooltip="Resets the object transform to Origin.",
+                                                 text_size=ts, height=bh,ContextMenu=True, onlyContext=False)
         reset_transform_button.addToMenu("Move", reset_move, icon='delete.png', position=(0,0))
         reset_transform_button.addToMenu("Rotate", reset_rotate, icon='delete.png', position=(1,0))
         reset_transform_button.addToMenu("Scale", reset_scale, icon='delete.png', position=(2,0))
 
-        reset_all_button = CB.CustomButton(text='Reset All', icon=':delete.png', size=14, color='#262626', tooltip="Resets all the object transform to Origin.",text_size=ts, height=bh)
+        reset_all_button = CB.CustomButton(text='Reset All', icon=':delete.png', size=14, color='#222222', tooltip="Resets all the object transform to Origin.",text_size=ts, height=bh)
 
         timeLine_key_button = CB.CustomButton(text='Key', color='#d62e22', tooltip="Sets key frame.",text_size=ts, height=bh)
-        timeLine_delete_key_button = CB.CustomButton(text='Key', icon=':delete.png', color='#262626', size=14, tooltip="Deletes keys from the given start frame to the current frame.",text_size=ts, height=bh)
+        timeLine_delete_key_button = CB.CustomButton(text='Key', icon=':delete.png', color='#222222', size=14, tooltip="Deletes keys from the given start frame to the current frame.",text_size=ts, height=bh)
         timeLine_copy_key_button = CB.CustomButton(text='Copy', color='#293F64', tooltip="Copy selected key(s).",text_size=ts, height=bh)
         timeLine_paste_key_button = CB.CustomButton(text='Paste', color='#1699CA', tooltip="Paste copied key(s).",text_size=ts, height=bh)
         timeLine_pasteInverse_key_button = CB.CustomButton(text='Paste Inverse', color='#9416CA', tooltip="Paste Inverted copied keys(s).",text_size=ts, height=bh)
@@ -104,6 +104,7 @@ class animation_tool_layout:
         #reset_move_button.singleClicked.connect(reset_move)
         #reset_rotate_button.singleClicked.connect(reset_rotate)
         #reset_scale_button.singleClicked.connect(reset_scale)
+        reset_transform_button.singleClicked.connect(reset_all)
         reset_all_button.singleClicked.connect(reset_all)
 
         timeLine_key_button.singleClicked.connect(set_key)
@@ -119,7 +120,7 @@ class animation_tool_layout:
         #self.col1.addWidget(reset_rotate_button)
         #self.col1.addWidget(reset_scale_button)
         self.col1.addWidget(reset_transform_button)
-        self.col1.addWidget(reset_all_button)
+        #self.col1.addWidget(reset_all_button)
 
         self.col1.addSpacing(4)
 
@@ -142,149 +143,131 @@ class animation_tool_layout:
 
 @undoable
 def reset_move():
-    cmds.undoInfo(openChunk=True)
-    try:
-        # Get the list of selected objects
-        sel_objs = cmds.ls(sl=True)
+    # Get the list of selected objects
+    sel_objs = cmds.ls(sl=True)
 
-        # Loop through each selected object
-        for obj in sel_objs:
-            # Get the current translate values
-            tx = cmds.getAttr(f"{obj}.tx")
-            ty = cmds.getAttr(f"{obj}.ty")
-            tz = cmds.getAttr(f"{obj}.tz")
-
-            # Check if the attributes are locked
-            tx_locked = cmds.getAttr(f"{obj}.tx", lock=True)
-            ty_locked = cmds.getAttr(f"{obj}.ty", lock=True)
-            tz_locked = cmds.getAttr(f"{obj}.tz", lock=True)
-
-            # Reset the translate values if the attribute is not locked
-            if not tx_locked:
-                cmds.setAttr(f"{obj}.tx", 0)
-
-            if not ty_locked:
-                cmds.setAttr(f"{obj}.ty", 0)
-
-            if not tz_locked:
-                cmds.setAttr(f"{obj}.tz", 0)
-    finally:
-        cmds.undoInfo(closeChunk=True) 
+    # Loop through each selected object
+    for obj in sel_objs:
+        attrs = ['tx', 'ty', 'tz']
+        
+        for attr in attrs:
+            attr_path = f"{obj}.{attr}"
+            
+            # Check if attribute is locked
+            is_locked = cmds.getAttr(attr_path, lock=True)
+            
+            # Check if attribute has non-keyed connections
+            has_non_keyed_connection = False
+            if cmds.connectionInfo(attr_path, isDestination=True):
+                # Get the source of the connection
+                source = cmds.connectionInfo(attr_path, sourceFromDestination=True)
+                
+                # Check if the connection is from an animation curve (keyed)
+                is_keyed = source and "animCurve" in cmds.nodeType(source.split('.')[0])
+                
+                # If there's a connection and it's not from an animation curve
+                has_non_keyed_connection = not is_keyed
+            
+            # Reset the attribute if it's not locked and has no non-keyed connections
+            if not is_locked and not has_non_keyed_connection:
+                cmds.setAttr(attr_path, 0)
 
 @undoable
 def reset_rotate():
-    cmds.undoInfo(openChunk=True)
-    try:
-        # Get the list of selected objects
-        sel_objs = cmds.ls(sl=True)
+    # Get the list of selected objects
+    sel_objs = cmds.ls(sl=True)
 
-        # Loop through each selected object
-        for obj in sel_objs:
-            # Get the current rotate values
-            rx = cmds.getAttr(f"{obj}.rx")
-            ry = cmds.getAttr(f"{obj}.ry")
-            rz = cmds.getAttr(f"{obj}.rz")
+    # Loop through each selected object
+    for obj in sel_objs:
+        attrs = ['rx', 'ry', 'rz']
+        
+        for attr in attrs:
+            attr_path = f"{obj}.{attr}"
+            
+            # Check if attribute is locked
+            is_locked = cmds.getAttr(attr_path, lock=True)
+            
+            # Check if attribute has non-keyed connections
+            has_non_keyed_connection = False
+            if cmds.connectionInfo(attr_path, isDestination=True):
+                # Get the source of the connection
+                source = cmds.connectionInfo(attr_path, sourceFromDestination=True)
+                
+                # Check if the connection is from an animation curve (keyed)
+                is_keyed = source and "animCurve" in cmds.nodeType(source.split('.')[0])
+                
+                # If there's a connection and it's not from an animation curve
+                has_non_keyed_connection = not is_keyed
+            
+            # Reset the attribute if it's not locked and has no non-keyed connections
+            if not is_locked and not has_non_keyed_connection:
+                cmds.setAttr(attr_path, 0)
 
-            # Check if the rotate attributes are locked
-            rx_locked = cmds.getAttr(f"{obj}.rx", lock=True)
-            ry_locked = cmds.getAttr(f"{obj}.ry", lock=True)
-            rz_locked = cmds.getAttr(f"{obj}.rz", lock=True)
-
-            # Reset the rotate values if the attribute is not locked
-            if not rx_locked:
-                cmds.setAttr(f"{obj}.rx", 0)
-            if not ry_locked:
-                cmds.setAttr(f"{obj}.ry", 0)
-            if not rz_locked:
-                cmds.setAttr(f"{obj}.rz", 0)
-    finally:
-        cmds.undoInfo(closeChunk=True)
-
-@undoable   
+@undoable
 def reset_scale():
-    cmds.undoInfo(openChunk=True)
-    try:
-        # Get the list of selected objects
-        sel_objs = cmds.ls(sl=True)
+    # Get the list of selected objects
+    sel_objs = cmds.ls(sl=True)
 
-        # Loop through each selected object
-        for obj in sel_objs:
-            # Get the current scale values
-            sx = cmds.getAttr(f"{obj}.sx")
-            sy = cmds.getAttr(f"{obj}.sy")
-            sz = cmds.getAttr(f"{obj}.sz")
-
-            # Check if the scale attributes are locked
-            sx_locked = cmds.getAttr(f"{obj}.sx", lock=True)
-            sy_locked = cmds.getAttr(f"{obj}.sy", lock=True)
-            sz_locked = cmds.getAttr(f"{obj}.sz", lock=True)
-
-            # Reset the scale values if the attribute is not locked
-            if not sx_locked:
-                cmds.setAttr(f"{obj}.sx", 1)
-            if not sy_locked:
-                cmds.setAttr(f"{obj}.sy", 1)
-            if not sz_locked:
-                cmds.setAttr(f"{obj}.sz", 1)
-    finally:
-        cmds.undoInfo(closeChunk=True) 
+    # Loop through each selected object
+    for obj in sel_objs:
+        attrs = ['sx', 'sy', 'sz']
+        
+        for attr in attrs:
+            attr_path = f"{obj}.{attr}"
+            
+            # Check if attribute is locked
+            is_locked = cmds.getAttr(attr_path, lock=True)
+            
+            # Check if attribute has non-keyed connections
+            has_non_keyed_connection = False
+            if cmds.connectionInfo(attr_path, isDestination=True):
+                # Get the source of the connection
+                source = cmds.connectionInfo(attr_path, sourceFromDestination=True)
+                
+                # Check if the connection is from an animation curve (keyed)
+                is_keyed = source and "animCurve" in cmds.nodeType(source.split('.')[0])
+                
+                # If there's a connection and it's not from an animation curve
+                has_non_keyed_connection = not is_keyed
+            
+            # Reset the attribute if it's not locked and has no non-keyed connections
+            if not is_locked and not has_non_keyed_connection:
+                # Scale attributes need to be set to 1 instead of 0
+                cmds.setAttr(attr_path, 1)
 
 @undoable
 def reset_all():
-    cmds.undoInfo(openChunk=True)
-    try:
-        # Get the list of selected objects
-        sel_objs = cmds.ls(sl=True)
+    # Get the list of selected objects
+    sel_objs = cmds.ls(sl=True)
 
-        # Loop through each selected object
-        for obj in sel_objs:
-            # Get the current translate, rotate, and scale values
-            tx = cmds.getAttr(f"{obj}.tx")
-            ty = cmds.getAttr(f"{obj}.ty")
-            tz = cmds.getAttr(f"{obj}.tz")
-            rx = cmds.getAttr(f"{obj}.rx")
-            ry = cmds.getAttr(f"{obj}.ry")
-            rz = cmds.getAttr(f"{obj}.rz")
-            sx = cmds.getAttr(f"{obj}.sx")
-            sy = cmds.getAttr(f"{obj}.sy")
-            sz = cmds.getAttr(f"{obj}.sz")
-
-            # Check if the attributes are locked
-            tx_locked = cmds.getAttr(f"{obj}.tx", lock=True)
-            ty_locked = cmds.getAttr(f"{obj}.ty", lock=True)
-            tz_locked = cmds.getAttr(f"{obj}.tz", lock=True)
-            rx_locked = cmds.getAttr(f"{obj}.rx", lock=True)
-            ry_locked = cmds.getAttr(f"{obj}.ry", lock=True)
-            rz_locked = cmds.getAttr(f"{obj}.rz", lock=True)
-            sx_locked = cmds.getAttr(f"{obj}.sx", lock=True)
-            sy_locked = cmds.getAttr(f"{obj}.sy", lock=True)
-            sz_locked = cmds.getAttr(f"{obj}.sz", lock=True)
-
-            # Reset the translate values if the attribute is not locked
-            if not tx_locked:
-                cmds.setAttr(f"{obj}.tx", 0)
-            if not ty_locked:
-                cmds.setAttr(f"{obj}.ty", 0)
-            if not tz_locked:
-                cmds.setAttr(f"{obj}.tz", 0)
-
-            # Reset the rotate values if the attribute is not locked
-            if not rx_locked:
-                cmds.setAttr(f"{obj}.rx", 0)
-            if not ry_locked:
-                cmds.setAttr(f"{obj}.ry", 0)
-            if not rz_locked:
-                cmds.setAttr(f"{obj}.rz", 0)
-
-            # Reset the scale values if the attribute is not locked
-            if not sx_locked:
-                cmds.setAttr(f"{obj}.sx", 1)
-            if not sy_locked:
-                cmds.setAttr(f"{obj}.sy", 1)
-            if not sz_locked:
-                cmds.setAttr(f"{obj}.sz", 1)
-    finally:
-        cmds.undoInfo(closeChunk=True) 
+    # Loop through each selected object
+    for obj in sel_objs:
+        # Define the attributes to check
+        attrs = ['tx', 'ty', 'tz', 'rx', 'ry', 'rz', 'sx', 'sy', 'sz']
+        default_values = {'tx': 0, 'ty': 0, 'tz': 0, 'rx': 0, 'ry': 0, 'rz': 0, 'sx': 1, 'sy': 1, 'sz': 1}
+        
+        for attr in attrs:
+            attr_path = f"{obj}.{attr}"
+            
+            # Check if attribute is locked
+            is_locked = cmds.getAttr(attr_path, lock=True)
+            
+            # Check if attribute has non-keyed connections
+            has_non_keyed_connection = False
+            if cmds.connectionInfo(attr_path, isDestination=True):
+                # Get the source of the connection
+                source = cmds.connectionInfo(attr_path, sourceFromDestination=True)
+                
+                # Check if the connection is from an animation curve (keyed)
+                is_keyed = source and "animCurve" in cmds.nodeType(source.split('.')[0])
+                
+                # If there's a connection and it's not from an animation curve
+                has_non_keyed_connection = not is_keyed
+            
+            # Reset the attribute if it's not locked and has no non-keyed connections
+            if not is_locked and not has_non_keyed_connection:
+                cmds.setAttr(attr_path, default_values[attr])
+     
 #---------------------------------------------------------------------------------------------------------------
 def set_key():
     mel.eval("setKeyframe -breakdown 0 -preserveCurveShape 1 -hierarchy none -controlPoints 0 -shape 0;")
