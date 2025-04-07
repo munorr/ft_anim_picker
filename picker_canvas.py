@@ -963,7 +963,14 @@ class PickerCanvas(QtWidgets.QWidget):
             del self.selection_manager
     #------------------------------------------------------------------------------
     def wheelEvent(self, event):
-        zoom_factor = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
+        # Check if Ctrl key is pressed for finer zoom control
+        ctrl_pressed = event.modifiers() & QtCore.Qt.ControlModifier
+        
+        # Use smaller zoom increment when Ctrl is pressed
+        if ctrl_pressed:
+            zoom_factor = 1.05 if event.angleDelta().y() > 0 else 1 / 1.05
+        else:
+            zoom_factor = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
         
         # Get mouse position in scene coordinates before zoom
         mouse_pos = QtCore.QPointF(event.position().x(), event.position().y())

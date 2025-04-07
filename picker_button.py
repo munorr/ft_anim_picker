@@ -361,6 +361,7 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
         special_patterns = [
             r'@match_ik_to_fk\s*\([^)]*\)',  # Match @match_ik_to_fk() with any parameters
             r'@match_fk_to_ik\s*\([^)]*\)',   # Match @match_fk_to_ik() with any parameters
+            r'@TF\.\w+\s*\([^)]*\)',    # Match @TF.function_name() with any parameters
         ]
         special_patterns_02 = [r'@ns\.'] # Original @ns pattern
         
@@ -895,6 +896,7 @@ setAttr "@ns.Object.Attribute" Attribute Value;'''
         if event.button() == QtCore.Qt.LeftButton:
             self.dragging = False
 #--------------------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------------------
 class PickerButton(QtWidgets.QWidget):
     deleted = Signal(object)
     selected = Signal(object, bool)
@@ -931,6 +933,11 @@ class PickerButton(QtWidgets.QWidget):
 
         self.mode = 'select'  # 'select' or 'script'
         self.script_data = {}  # Store script data
+
+        # Pre-render text to pixmap for better performance
+        self.text_pixmap = None
+        self.last_zoom_factor = 0  # Track zoom factor to know when to regenerate the pixmap
+        self.last_size = None      # Track size to know when to regenerate the pixmap
 
         self.update_tooltip()
         
@@ -1006,21 +1013,47 @@ class PickerButton(QtWidgets.QWidget):
                 painter.setPen(pen)
                 painter.drawPath(path)
 
-        # Draw text
+        # Draw text using pre-rendered pixmap
         painter.setOpacity(1.0)  # Reset opacity for text
-        painter.setPen(QtGui.QColor('white'))
-        font = painter.font()
-        font_size = (self.height * 0.5) * zoom_factor
-        font.setPixelSize(int(font_size))
-        painter.setFont(font)
+        
+        # Only regenerate the text pixmap if zoom or size has changed
+        current_size = self.size()
+        if (self.text_pixmap is None or 
+            abs(self.last_zoom_factor - zoom_factor) > 0.1 or 
+            self.last_size != current_size):
+            
+            self.last_zoom_factor = zoom_factor
+            self.last_size = current_size
+            
+            # Create a new pixmap for the text
+            self.text_pixmap = QtGui.QPixmap(current_size)
+            self.text_pixmap.fill(QtCore.Qt.transparent)
+            
+            # Create a temporary painter for the pixmap
+            text_painter = QtGui.QPainter(self.text_pixmap)
+            text_painter.setRenderHint(QtGui.QPainter.Antialiasing)
+            text_painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
+            
+            # Set up font
+            text_painter.setPen(QtGui.QColor('white'))
+            font = text_painter.font()
+            font_size = (self.height * 0.5) * zoom_factor
+            font.setPixelSize(int(font_size))
+            text_painter.setFont(font)
+            
+            # Calculate text rect with padding
+            text_rect = self.rect()
+            bottom_padding = (self.height * 0.1) * zoom_factor  # 10% of height for bottom padding
+            text_rect.adjust(0, 0, 0, -int(bottom_padding))     
+            
+            # Draw text to pixmap
+            text_painter.drawText(text_rect, QtCore.Qt.AlignCenter, self.label)
+            text_painter.end()
+        
+        # Draw the pre-rendered text pixmap
+        if self.text_pixmap and not self.text_pixmap.isNull():
+            painter.drawPixmap(0, 0, self.text_pixmap)
 
-        # Calculate text rect with padding
-        text_rect = self.rect()
-        bottom_padding = (self.height * 0.1) * zoom_factor  # 10% of height for bottom padding
-        text_rect.adjust(0, 0, 0, -int(bottom_padding))
-
-        painter.drawText(text_rect, QtCore.Qt.AlignCenter, self.label)
-    
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
             canvas = self.parent()
@@ -1423,6 +1456,12 @@ class PickerButton(QtWidgets.QWidget):
                             r'import ft_anim_picker.tool_functions as TF\nTF.match_fk_to_ik(\1)',
                             modified_code
                         )
+                        # Handle @TF.function_name(arguments) syntax
+                        modified_code = re.sub(
+                            r'@TF\.([\w_]+)\s*\((.*?)\)',
+                            r'import ft_anim_picker.tool_functions as TF\nTF.\1(\2)',
+                            modified_code
+                        )
                         
                         # Execute the modified code
                         if script_type == 'python':
@@ -1459,6 +1498,8 @@ class PickerButton(QtWidgets.QWidget):
         #if new_label and new_label != self.label:
         self.label = new_label
         self.setToolTip(f"Label: {self.label}\nSelect Set\nID: {self.unique_id}")
+        # Force regeneration of text pixmap
+        self.text_pixmap = None
         self.update()
         self.changed.emit(self)
     
