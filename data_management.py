@@ -202,6 +202,10 @@ class PickerDataManager:
                     'mel_code': '',
                     'code': str(button_data['script_data'])
                 }
+                
+        # Initialize pose data if not present
+        if 'pose_data' not in button_data:
+            button_data['pose_data'] = {}
 
         data['tabs'][tab_name]['buttons'].append(button_data)
         cls.save_data(data)

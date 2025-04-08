@@ -1061,6 +1061,9 @@ class AnimPickerWindow(QtWidgets.QWidget):
                     'code': str(script_data),
                     'type': 'python'  # Default to python for legacy data
                 }
+                
+            # Load pose data if available
+            button.pose_data = button_data.get("pose_data", {})
             
             button.scene_position = QtCore.QPointF(*button_data["position"])
             button.update_tooltip()
@@ -1094,7 +1097,8 @@ class AnimPickerWindow(QtWidgets.QWidget):
                     "radius": button.radius,
                     "assigned_objects": button.assigned_objects,
                     "mode": button.mode,  # Add mode
-                    "script_data": button.script_data  # Add script data
+                    "script_data": button.script_data,  # Add script data
+                    "pose_data": button.pose_data  # Add pose data
                 }
                 # Update existing button or add new one
                 updated = False

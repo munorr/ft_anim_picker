@@ -931,8 +931,9 @@ class PickerButton(QtWidgets.QWidget):
         self.update_cursor()
         self.assigned_objects = []  
 
-        self.mode = 'select'  # 'select' or 'script'
+        self.mode = 'select'  # 'select', 'script', or 'pose'
         self.script_data = {}  # Store script data
+        self.pose_data = {}  # Store pose data
 
         # Pre-render text to pixmap for better performance
         self.text_pixmap = None
@@ -1037,17 +1038,34 @@ class PickerButton(QtWidgets.QWidget):
             # Set up font
             text_painter.setPen(QtGui.QColor('white'))
             font = text_painter.font()
-            font_size = (self.height * 0.5) * zoom_factor
-            font.setPixelSize(int(font_size))
-            text_painter.setFont(font)
             
-            # Calculate text rect with padding
-            text_rect = self.rect()
-            bottom_padding = (self.height * 0.1) * zoom_factor  # 10% of height for bottom padding
-            text_rect.adjust(0, 0, 0, -int(bottom_padding))     
-            
-            # Draw text to pixmap
-            text_painter.drawText(text_rect, QtCore.Qt.AlignCenter, self.label)
+            # In pose mode, font size is based on width and text is at bottom
+            if self.mode == 'pose':
+                font_size = (self.width * 0.25) * zoom_factor  # Smaller font based on width
+                font.setPixelSize(int(font_size))
+                text_painter.setFont(font)
+                
+                # Calculate text rect with padding for bottom alignment
+                text_rect = self.rect()
+                text_height = int(self.height * 0.2)  # Text takes up bottom 20% of button
+                bottom_padding = (self.height * 0.05) * zoom_factor  # 5% of height for bottom padding
+                text_rect.adjust(0, self.height - text_height - int(bottom_padding), 0, -int(bottom_padding))
+                
+                # Draw text to pixmap at bottom
+                text_painter.drawText(text_rect, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignBottom, self.label)
+            else:
+                # Regular mode - font size based on height, centered text
+                font_size = (self.height * 0.5) * zoom_factor
+                font.setPixelSize(int(font_size))
+                text_painter.setFont(font)
+                
+                # Calculate text rect with padding
+                text_rect = self.rect()
+                bottom_padding = (self.height * 0.1) * zoom_factor  # 10% of height for bottom padding
+                text_rect.adjust(0, 0, 0, -int(bottom_padding))     
+                
+                # Draw text to pixmap centered
+                text_painter.drawText(text_rect, QtCore.Qt.AlignCenter, self.label)
             text_painter.end()
         
         # Draw the pre-rendered text pixmap
@@ -1096,9 +1114,12 @@ class PickerButton(QtWidgets.QWidget):
                         self.update()
                         
                         canvas.apply_final_selection(event.modifiers() & QtCore.Qt.ShiftModifier)
-                    else:
+                    elif self.mode == 'script':
                         # script mode behavior
                         self.execute_script_command()
+                    elif self.mode == 'pose':
+                        # pose mode behavior
+                        self.apply_pose()
                 
                 event.accept()
         elif event.button() == QtCore.Qt.RightButton:
@@ -1154,11 +1175,29 @@ class PickerButton(QtWidgets.QWidget):
             # Apply mode change to all selected buttons
             selected_buttons = canvas.get_selected_buttons()
             for button in selected_buttons:
+                # Store original height before changing to pose mode
+                if mode == 'pose' and button.mode != 'pose':
+                    button._original_height = button.height
+                    # Set height to 1.25 times width for pose mode
+                    button.height = button.width * 1.25
+                # Restore original height when changing from pose mode to another mode
+                elif button.mode == 'pose' and mode != 'pose' and hasattr(button, '_original_height'):
+                    button.height = button._original_height
+                
                 button.mode = mode
                 button.update()
                 button.changed.emit(button)
         else:
             # Fallback for single button if no canvas parent
+            # Store original height before changing to pose mode
+            if mode == 'pose' and self.mode != 'pose':
+                self._original_height = self.height
+                # Set height to 1.25 times width for pose mode
+                self.height = self.width * 1.25
+            # Restore original height when changing from pose mode to another mode
+            elif self.mode == 'pose' and mode != 'pose' and hasattr(self, '_original_height'):
+                self.height = self._original_height
+                
             self.mode = mode
             self.update()
             self.changed.emit(self)
@@ -1302,12 +1341,19 @@ class PickerButton(QtWidgets.QWidget):
         script_action.setChecked(self.mode == 'script')
         script_action.triggered.connect(lambda: self.set_mode('script'))
         
+        pose_action = QtWidgets.QAction("Pose Mode", self)
+        pose_action.setCheckable(True)
+        pose_action.setChecked(self.mode == 'pose')
+        pose_action.triggered.connect(lambda: self.set_mode('pose'))
+        
         mode_group = QtWidgets.QActionGroup(self)
         mode_group.addAction(select_action)
         mode_group.addAction(script_action)
+        mode_group.addAction(pose_action)
         
         mode_menu.addAction(select_action)
         mode_menu.addAction(script_action)
+        mode_menu.addAction(pose_action)
         
         
         # Copy, Paste and Delete Actions
@@ -1360,10 +1406,17 @@ class PickerButton(QtWidgets.QWidget):
                 selection_manager_action.setEnabled(
                     len(self.parent().get_selected_buttons()) == 1
                 )
-            else:
+            elif self.mode == 'script':
                 # Script Mode menu items
                 script_manager_action = menu.addAction("Script Manager")
                 script_manager_action.triggered.connect(self.show_script_manager)
+            elif self.mode == 'pose':
+                # Pose Mode menu items
+                add_pose_action = menu.addAction("Add Pose")
+                add_pose_action.triggered.connect(self.add_pose)
+                
+                remove_pose_action = menu.addAction("Remove Pose")
+                remove_pose_action.triggered.connect(self.remove_pose)
         
         menu.addMenu(mode_menu)
         menu.addSeparator()
@@ -1422,6 +1475,123 @@ class PickerButton(QtWidgets.QWidget):
         self.changed.emit(self)
         self.update_tooltip()
         
+    def add_pose(self):
+        """Add current pose of selected objects to the pose data"""
+        import maya.cmds as cmds
+        
+        # Get currently selected objects in Maya
+        selected_objects = cmds.ls(selection=True, long=True)
+        if not selected_objects:
+            QtWidgets.QMessageBox.warning(self, "No Selection", "Please select objects in Maya before adding a pose.")
+            return
+        
+        # First, add the selected objects to the button's assigned objects
+        self.assigned_objects = []  # Clear existing assignments
+        for obj in selected_objects:
+            try:
+                # Get the UUID for the object
+                uuid = cmds.ls(obj, uuid=True)[0]
+                # Add to assigned objects
+                self.assigned_objects.append({
+                    'uuid': uuid,
+                    'long_name': obj
+                })
+            except:
+                continue
+        
+        # Update the tooltip with the new assigned objects
+        self.update_tooltip()
+        
+        # Store the current attribute values for all assigned objects
+        pose_data = {}
+        
+        for obj_data in self.assigned_objects:
+            try:
+                # Get the object from the data
+                obj = obj_data['long_name']
+                
+                if cmds.objExists(obj):
+                    # Get all keyable attributes
+                    attrs = cmds.listAttr(obj, keyable=True) or []
+                    attr_values = {}
+                    
+                    for attr in attrs:
+                        try:
+                            full_attr = f"{obj}.{attr}"
+                            if cmds.objExists(full_attr):
+                                attr_values[attr] = cmds.getAttr(full_attr)
+                        except:
+                            continue
+                            
+                    if attr_values:
+                        pose_data[obj] = attr_values
+            except:
+                continue
+        
+        if pose_data:
+            # Use a simple default name - the button itself represents the pose
+            self.pose_data = {"default": pose_data}  # Replace any existing poses with this one
+            self.changed.emit(self)
+            QtWidgets.QMessageBox.information(self, "Pose Added", "Pose has been added successfully.")
+        else:
+            QtWidgets.QMessageBox.warning(self, "No Data", "Could not capture any attribute data for the selected objects.")
+    
+    def remove_pose(self):
+        """Remove the pose from the pose data"""
+        if not self.pose_data:
+            QtWidgets.QMessageBox.information(self, "No Pose", "There is no pose to remove.")
+            return
+            
+        # Clear the pose data
+        self.pose_data = {}
+        self.changed.emit(self)
+        QtWidgets.QMessageBox.information(self, "Pose Removed", "Pose has been removed.")
+            
+    def apply_pose(self):
+        """Apply the stored pose to the assigned objects"""
+        if not self.pose_data:
+            QtWidgets.QMessageBox.information(self, "No Pose", "There is no pose to apply. Please add a pose first.")
+            return
+        
+        # Get the pose data (we're only using the 'default' pose now)
+        pose_data = self.pose_data.get("default", {})
+        if not pose_data:
+            QtWidgets.QMessageBox.warning(self, "Empty Pose", "Pose does not contain any data.")
+            return
+            
+        # Apply the pose
+        import maya.cmds as cmds
+        
+        # Start an undo chunk
+        cmds.undoInfo(openChunk=True, chunkName="Apply Pose")
+        
+        try:
+            # For each object in the pose data
+            for obj, attr_values in pose_data.items():
+                # Check if the object exists
+                if cmds.objExists(obj):
+                    # Set each attribute
+                    for attr, value in attr_values.items():
+                        try:
+                            full_attr = f"{obj}.{attr}"
+                            if cmds.objExists(full_attr):
+                                # Check if the attribute is locked or connected
+                                if not cmds.getAttr(full_attr, lock=True):
+                                    # Check if it's a multi attribute (array)
+                                    if isinstance(value, list):
+                                        for i, val in enumerate(value):
+                                            cmds.setAttr(f"{full_attr}[{i}]", val)
+                                    else:
+                                        cmds.setAttr(full_attr, value)
+                        except Exception as e:
+                            print(f"Error setting attribute {full_attr}: {e}")
+                            continue
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Error", f"Error applying pose: {e}")
+        finally:
+            # Close the undo chunk
+            cmds.undoInfo(closeChunk=True)
+    
     def execute_script_command(self):
         """Execute the script with namespace and match function token handling"""
         if self.mode == 'script' and self.script_data:
@@ -1474,7 +1644,16 @@ class PickerButton(QtWidgets.QWidget):
     #---------------------------------------------------------------------------------------
     def set_size(self, width, height):
         self.width = width
-        self.height = height
+        
+        # In pose mode, height is always 1.25 times the width
+        if self.mode == 'pose':
+            # Store the provided height as original height for later use
+            self._original_height = height
+            # Force height to be 1.25 times width in pose mode
+            self.height = width * 1.25
+        else:
+            self.height = height
+            
         self.original_size = QtCore.QSize(self.width, self.height)
         self.update()
         self.changed.emit(self)
