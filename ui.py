@@ -497,12 +497,11 @@ class AnimPickerWindow(QtWidgets.QWidget):
         #self.area_01_col.addWidget(self.edit_scroll_area)
         self.area_01_col.addLayout(self.edit_row)
 
-        self.edit_row.addWidget(self.toggle_edit_mode_button)
-        self.toggle_edit_mode_button.setVisible(self.edit_mode)
-
         self.edit_row.addWidget(self.edit_scroll_area)
         self.edit_scroll_area.setVisible(self.edit_mode)
 
+        self.edit_row.addWidget(self.toggle_edit_mode_button)
+        self.toggle_edit_mode_button.setVisible(self.edit_mode)
         #self.toggle_edit_mode_button.setVisible(self.edit_mode)
 
         # Add layouts to main layout
@@ -1065,6 +1064,16 @@ class AnimPickerWindow(QtWidgets.QWidget):
             # Load pose data if available
             button.pose_data = button_data.get("pose_data", {})
             
+            # Load thumbnail path if available
+            if button_data.get("thumbnail_path"):
+                button.thumbnail_path = button_data["thumbnail_path"]
+                # Load the thumbnail image if the file exists
+                if os.path.exists(button.thumbnail_path):
+                    button.thumbnail_pixmap = QtGui.QPixmap(button.thumbnail_path)
+                else:
+                    button.thumbnail_path = ''  # Reset if file doesn't exist
+                    button.thumbnail_pixmap = None
+            
             button.scene_position = QtCore.QPointF(*button_data["position"])
             button.update_tooltip()
             canvas.add_button(button)
@@ -1098,7 +1107,8 @@ class AnimPickerWindow(QtWidgets.QWidget):
                     "assigned_objects": button.assigned_objects,
                     "mode": button.mode,  # Add mode
                     "script_data": button.script_data,  # Add script data
-                    "pose_data": button.pose_data  # Add pose data
+                    "pose_data": button.pose_data,  # Add pose data
+                    "thumbnail_path": button.thumbnail_path if hasattr(button, 'thumbnail_path') else ''  # Add thumbnail path
                 }
                 # Update existing button or add new one
                 updated = False
@@ -1468,6 +1478,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
 
         # Connect signals
         widgets['rename_edit'].returnPressed.connect(self.on_rename_edit_return_pressed)
+        widgets['rename_edit'].editingFinished.connect(self.on_rename_edit_return_pressed)
         widgets['opacity_slider'].valueChanged.connect(self.on_opacity_slider_value_changed)
 
 

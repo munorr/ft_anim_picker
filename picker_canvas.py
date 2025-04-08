@@ -8,6 +8,7 @@ except ImportError:
     from PySide2.QtGui import QColor
     from PySide2.QtCore import QTimer, QPropertyAnimation, QEasingCurve, Signal
     from shiboken2 import wrapInstance
+import os
 import maya.cmds as cmds
 from . import ui as UI
 from . import utils as UT
@@ -921,6 +922,20 @@ class PickerCanvas(QtWidgets.QWidget):
                 new_button.mode = button_data.get('mode', 'select')
                 new_button.script_data = button_data.get('script_data', {}).copy()
                 
+                # Apply pose-specific data if this is a pose button
+                if new_button.mode == 'pose':
+                    # Copy thumbnail path if available
+                    if 'thumbnail_path' in button_data:
+                        new_button.thumbnail_path = button_data['thumbnail_path']
+                        
+                        # If the thumbnail path exists, load the pixmap
+                        if new_button.thumbnail_path and os.path.exists(new_button.thumbnail_path):
+                            new_button.thumbnail_pixmap = QtGui.QPixmap(new_button.thumbnail_path)
+                    
+                    # Copy pose data if available
+                    if 'pose_data' in button_data:
+                        new_button.pose_data = button_data['pose_data'].copy()
+                
                 # Position relative to cursor point, with mirroring option
                 relative_position = button_data['relative_position']
                 if mirror:
@@ -947,6 +962,16 @@ class PickerCanvas(QtWidgets.QWidget):
                     "mode": new_button.mode,
                     "script_data": new_button.script_data
                 }
+                
+                # Add pose-specific data to database if this is a pose button
+                if new_button.mode == 'pose':
+                    # Add thumbnail path if available
+                    if hasattr(new_button, 'thumbnail_path'):
+                        button_data_for_db["thumbnail_path"] = new_button.thumbnail_path
+                    
+                    # Add pose data if available
+                    if hasattr(new_button, 'pose_data') and new_button.pose_data:
+                        button_data_for_db["pose_data"] = new_button.pose_data
                 
                 # Update PickerDataManager
                 tab_data = DM.PickerDataManager.get_tab_data(current_tab)

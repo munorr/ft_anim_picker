@@ -1,6 +1,7 @@
 from functools import partial
 import maya.cmds as cmds
 import maya.mel as mel
+import os
 try:
     from PySide6 import QtWidgets, QtCore, QtGui
     from PySide6.QtGui import QColor
@@ -21,6 +22,7 @@ from . import data_management as DM
 from . import ui as UI
 from . import script_manager as SM
 from . import tool_functions as TF
+from . import custom_dialog as CD
 
 class ButtonClipboard:
     _instance = None
@@ -49,7 +51,8 @@ class ButtonClipboard:
             
             # Store positions relative to center
             for button in buttons:
-                self.copied_buttons.append({
+                # Create a dictionary with all button properties
+                button_data = {
                     'label': button.label,
                     'color': button.color,
                     'opacity': button.opacity,
@@ -60,7 +63,14 @@ class ButtonClipboard:
                     'assigned_objects': button.assigned_objects.copy(),
                     'mode': button.mode,
                     'script_data': button.script_data.copy()
-                })
+                }
+                
+                # Add pose-specific data if this is a pose button
+                if button.mode == 'pose':
+                    button_data['thumbnail_path'] = button.thumbnail_path
+                    button_data['pose_data'] = button.pose_data.copy()  # Copy the pose data
+                
+                self.copied_buttons.append(button_data)
 
     def get_last_attributes(self):
         if self.copied_buttons:
@@ -934,6 +944,13 @@ class PickerButton(QtWidgets.QWidget):
         self.mode = 'select'  # 'select', 'script', or 'pose'
         self.script_data = {}  # Store script data
         self.pose_data = {}  # Store pose data
+        
+        # Thumbnail image for pose mode
+        self.thumbnail_path = ''  # Path to the thumbnail image
+        self.thumbnail_pixmap = None  # Cached pixmap of the thumbnail
+        
+        # Cache for pose mode rendering
+        self.pose_pixmap = None  # Cached pixmap for pose mode (thumbnail + text)
 
         # Pre-render text to pixmap for better performance
         self.text_pixmap = None
@@ -1017,12 +1034,13 @@ class PickerButton(QtWidgets.QWidget):
         # Draw text using pre-rendered pixmap
         painter.setOpacity(1.0)  # Reset opacity for text
         
-        # Only regenerate the text pixmap if zoom or size has changed
+        # Only regenerate the pixmaps if zoom or size has changed
         current_size = self.size()
-        if (self.text_pixmap is None or 
-            abs(self.last_zoom_factor - zoom_factor) > 0.1 or 
-            self.last_size != current_size):
+        needs_update = (self.text_pixmap is None or 
+                      abs(self.last_zoom_factor - zoom_factor) > 0.1 or 
+                      self.last_size != current_size)
             
+        if needs_update:
             self.last_zoom_factor = zoom_factor
             self.last_size = current_size
             
@@ -1039,20 +1057,167 @@ class PickerButton(QtWidgets.QWidget):
             text_painter.setPen(QtGui.QColor('white'))
             font = text_painter.font()
             
-            # In pose mode, font size is based on width and text is at bottom
+            # In pose mode, create a separate cached pixmap for better performance
             if self.mode == 'pose':
-                font_size = (self.width * 0.25) * zoom_factor  # Smaller font based on width
-                font.setPixelSize(int(font_size))
-                text_painter.setFont(font)
+                # Create a new pixmap for pose mode (will contain both thumbnail and text)
+                self.pose_pixmap = QtGui.QPixmap(current_size)
+                self.pose_pixmap.fill(QtCore.Qt.transparent)
+                pose_painter = QtGui.QPainter(self.pose_pixmap)
+                pose_painter.setRenderHint(QtGui.QPainter.Antialiasing)
+                pose_painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
+                
+                # Set up font for pose mode
+                pose_painter.setPen(QtGui.QColor('white'))
+                pose_font = pose_painter.font()
+                font_size = (self.width * 0.15) * zoom_factor  # Smaller font based on width
+                pose_font.setPixelSize(int(font_size))
+                pose_painter.setFont(pose_font)
                 
                 # Calculate text rect with padding for bottom alignment
-                text_rect = self.rect()
-                text_height = int(self.height * 0.2)  # Text takes up bottom 20% of button
-                bottom_padding = (self.height * 0.05) * zoom_factor  # 5% of height for bottom padding
-                text_rect.adjust(0, self.height - text_height - int(bottom_padding), 0, -int(bottom_padding))
+                # Ensure the text area is properly scaled with zoom and has minimum dimensions
+                min_text_height = 12  # Minimum height in pixels
+                text_height = max(int(self.height * 0.2), min_text_height)  # At least 12px height
+                min_padding = 2  # Minimum padding in pixels
+                bottom_padding = max(int((self.height * 0.04)), min_padding)  # Fixed padding, not scaled with zoom
                 
-                # Draw text to pixmap at bottom
-                text_painter.drawText(text_rect, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignBottom, self.label)
+                # Calculate the fixed position for the text area - always at the bottom 20% of the button
+                # This ensures it stays at the bottom regardless of zoom level
+                fixed_position_from_top = self.height * 0.75  # Fixed at 80% from the top (bottom 20%)
+                
+                # Adjust the text rectangle - use fixed positioning relative to button height
+                text_rect = QtCore.QRectF(
+                    0,  # Start at left edge
+                    fixed_position_from_top * zoom_factor,  # Fixed position from top, scaled for zoom
+                    self.width * zoom_factor,  # Full width
+                    text_height * zoom_factor  # Height scaled with zoom
+                )
+                
+                # Draw text to pose pixmap at bottom
+                pose_painter.drawText(text_rect, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignBottom, self.label)
+                
+                # Draw thumbnail if available
+                if self.thumbnail_path and (self.thumbnail_pixmap is not None) and not self.thumbnail_pixmap.isNull():
+                    # Calculate thumbnail area (square in the upper part of the button)
+                    # Limit thumbnail size to ensure it doesn't overlap with text area
+                    max_thumbnail_height = self.height * 0.7  # Limit to 70% of button height to leave room for text
+                    thumbnail_width = self.width * 0.9    # Thumbnail takes up 90% of button width
+                    thumbnail_size = min(thumbnail_width, max_thumbnail_height)  # Make it square, respecting height limit
+                    
+                    # Position thumbnail in the upper part of the button, centered horizontally
+                    thumbnail_rect = QtCore.QRectF(
+                        (self.width - thumbnail_size) / 2.4,  # Center horizontally
+                        self.height * 0.04,  # Fixed position from top (4% of height)
+                        thumbnail_size,
+                        thumbnail_size
+                    )
+                    
+                    # Adjust for zoom factor
+                    thumbnail_rect = QtCore.QRectF(
+                        thumbnail_rect.x() * zoom_factor,
+                        thumbnail_rect.y() * zoom_factor,
+                        thumbnail_rect.width() * zoom_factor,
+                        thumbnail_rect.height() * zoom_factor
+                    )
+                    
+                    # Create a rounded rect path for the thumbnail with same corner radius as button
+                    thumbnail_path = QtGui.QPainterPath()
+                    tr_tl = tr_tr = tr_br = tr_bl = self.radius[0] * zf  # Same radius as button
+                    
+                    thumbnail_path.moveTo(thumbnail_rect.left() + tr_tl, thumbnail_rect.top())
+                    thumbnail_path.lineTo(thumbnail_rect.right() - tr_tr, thumbnail_rect.top())
+                    thumbnail_path.arcTo(thumbnail_rect.right() - 2*tr_tr, thumbnail_rect.top(), 2*tr_tr, 2*tr_tr, 90, -90)
+                    thumbnail_path.lineTo(thumbnail_rect.right(), thumbnail_rect.bottom() - tr_br)
+                    thumbnail_path.arcTo(thumbnail_rect.right() - 2*tr_br, thumbnail_rect.bottom() - 2*tr_br, 2*tr_br, 2*tr_br, 0, -90)
+                    thumbnail_path.lineTo(thumbnail_rect.left() + tr_bl, thumbnail_rect.bottom())
+                    thumbnail_path.arcTo(thumbnail_rect.left(), thumbnail_rect.bottom() - 2*tr_bl, 2*tr_bl, 2*tr_bl, -90, -90)
+                    thumbnail_path.lineTo(thumbnail_rect.left(), thumbnail_rect.top() + tr_tl)
+                    thumbnail_path.arcTo(thumbnail_rect.left(), thumbnail_rect.top(), 2*tr_tl, 2*tr_tl, 180, -90)
+                    
+                    # Draw a tinted background for the thumbnail area (40% tint of button color)
+                    tinted_color = UT.rgba_value(self.color, 0.4, 0.8)  # 40% tint, 80% opacity
+                    pose_painter.setBrush(QtGui.QColor(tinted_color))
+                    pose_painter.setPen(QtCore.Qt.NoPen)
+                    pose_painter.drawPath(thumbnail_path)
+                    
+                    # Set clipping path for the thumbnail
+                    pose_painter.setClipPath(thumbnail_path)
+                    
+                    # Scale the pixmap to fit within the thumbnail area while maintaining aspect ratio
+                    scaled_pixmap = self.thumbnail_pixmap.scaled(
+                        int(thumbnail_rect.width()),
+                        int(thumbnail_rect.height()),
+                        QtCore.Qt.KeepAspectRatio,  # Keep aspect ratio to fit within bounds
+                        QtCore.Qt.SmoothTransformation
+                    )
+                    
+                    # Calculate positioning to center the image in the thumbnail area
+                    pixmap_rect = QtCore.QRectF(
+                        thumbnail_rect.x() + (thumbnail_rect.width() - scaled_pixmap.width()) / 2,
+                        thumbnail_rect.y() + (thumbnail_rect.height() - scaled_pixmap.height()) / 2,
+                        scaled_pixmap.width(),
+                        scaled_pixmap.height()
+                    )
+                    
+                    # Draw the thumbnail
+                    pose_painter.drawPixmap(pixmap_rect.toRect(), scaled_pixmap)
+                    pose_painter.setClipping(False)
+                else:
+                    # Draw placeholder text if no thumbnail
+                    # Calculate the same area as we would for the thumbnail
+                    # Limit placeholder size to ensure it doesn't overlap with text area
+                    max_thumbnail_height = self.height * 0.7  # Limit to 70% of button height to leave room for text
+                    thumbnail_width = self.width * 0.9   # Thumbnail takes up 90% of button width
+                    thumbnail_size = min(thumbnail_width, max_thumbnail_height)  # Make it square, respecting height limit
+                    
+                    # Create placeholder rect with the same positioning as the thumbnail
+                    placeholder_rect = QtCore.QRectF(
+                        (self.width - thumbnail_size) / 2.4,  # Center horizontally (match thumbnail position)
+                        self.height * 0.04,  # Fixed position from top (4% of height)
+                        thumbnail_size,
+                        thumbnail_size
+                    )
+                    
+                    # Adjust for zoom factor
+                    placeholder_rect = QtCore.QRectF(
+                        placeholder_rect.x() * zoom_factor,
+                        placeholder_rect.y() * zoom_factor,
+                        placeholder_rect.width() * zoom_factor,
+                        placeholder_rect.height() * zoom_factor
+                    )
+                    
+                    # Create a rounded rect path for the placeholder with same corner radius as button
+                    placeholder_path = QtGui.QPainterPath()
+                    pl_tl = pl_tr = pl_br = pl_bl = self.radius[0] * zf  # Same radius as button
+                    
+                    placeholder_path.moveTo(placeholder_rect.left() + pl_tl, placeholder_rect.top())
+                    placeholder_path.lineTo(placeholder_rect.right() - pl_tr, placeholder_rect.top())
+                    placeholder_path.arcTo(placeholder_rect.right() - 2*pl_tr, placeholder_rect.top(), 2*pl_tr, 2*pl_tr, 90, -90)
+                    placeholder_path.lineTo(placeholder_rect.right(), placeholder_rect.bottom() - pl_br)
+                    placeholder_path.arcTo(placeholder_rect.right() - 2*pl_br, placeholder_rect.bottom() - 2*pl_br, 2*pl_br, 2*pl_br, 0, -90)
+                    placeholder_path.lineTo(placeholder_rect.left() + pl_bl, placeholder_rect.bottom())
+                    placeholder_path.arcTo(placeholder_rect.left(), placeholder_rect.bottom() - 2*pl_bl, 2*pl_bl, 2*pl_bl, -90, -90)
+                    placeholder_path.lineTo(placeholder_rect.left(), placeholder_rect.top() + pl_tl)
+                    placeholder_path.arcTo(placeholder_rect.left(), placeholder_rect.top(), 2*pl_tl, 2*pl_tl, 180, -90)
+                    
+                    # Draw a tinted background for the placeholder area (40% tint of button color)
+                    tinted_color = UT.rgba_value(self.color, 0.4, 0.8)  # 40% tint, 80% opacity
+                    pose_painter.setBrush(QtGui.QColor(tinted_color))
+                    pose_painter.setPen(QtCore.Qt.NoPen)
+                    pose_painter.drawPath(placeholder_path)
+                    
+                    # Use a lighter font color for the placeholder
+                    pose_painter.setPen(QtGui.QColor(255, 255, 255, 120))
+                    pose_painter.drawText(placeholder_rect, QtCore.Qt.AlignCenter, "Thumbnail")
+                    
+                    # Reset pen color for the label
+                    pose_painter.setPen(QtGui.QColor('white'))
+                
+                # Finish pose pixmap painting
+                pose_painter.end()
+                
+                # For pose mode, we'll use the pose_pixmap instead of text_pixmap
+                # Just end the text_painter without drawing anything
+                text_painter.end()
             else:
                 # Regular mode - font size based on height, centered text
                 font_size = (self.height * 0.5) * zoom_factor
@@ -1066,11 +1231,15 @@ class PickerButton(QtWidgets.QWidget):
                 
                 # Draw text to pixmap centered
                 text_painter.drawText(text_rect, QtCore.Qt.AlignCenter, self.label)
-            text_painter.end()
+                text_painter.end()
         
-        # Draw the pre-rendered text pixmap
-        if self.text_pixmap and not self.text_pixmap.isNull():
-            painter.drawPixmap(0, 0, self.text_pixmap)
+        # Draw the pre-rendered pixmap (text_pixmap for regular modes, pose_pixmap for pose mode)
+        if self.mode == 'pose':
+            if self.pose_pixmap and not self.pose_pixmap.isNull():
+                painter.drawPixmap(0, 0, self.pose_pixmap)
+        else:
+            if self.text_pixmap and not self.text_pixmap.isNull():
+                painter.drawPixmap(0, 0, self.text_pixmap)
 
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
@@ -1168,6 +1337,26 @@ class PickerButton(QtWidgets.QWidget):
             self.setCursor(QtCore.Qt.OpenHandCursor)
         else:
             self.setCursor(QtCore.Qt.ArrowCursor)
+            
+    def update_tooltip(self):
+        """Update the tooltip with button information"""
+        tooltip = f"<b>{self.label}</b>"
+        
+        # Add mode information
+        tooltip += f"<br>Mode: {self.mode.capitalize()}"
+        
+        # Add assigned objects count
+        if self.assigned_objects:
+            tooltip += f"<br>Assigned Objects: {len(self.assigned_objects)}"
+            
+        # Add thumbnail information for pose mode
+        if self.mode == 'pose':
+            if self.thumbnail_path:
+                tooltip += f"<br>Thumbnail: {os.path.basename(self.thumbnail_path)}"
+            else:
+                tooltip += "<br>No thumbnail set"
+                
+        self.setToolTip(tooltip)
     #---------------------------------------------------------------------------------------
     def set_mode(self, mode):
         canvas = self.parent()
@@ -1199,8 +1388,16 @@ class PickerButton(QtWidgets.QWidget):
                 self.height = self._original_height
                 
             self.mode = mode
+
+            
             self.update()
             self.changed.emit(self)
+
+        self.pose_pixmap = None
+        self.last_zoom_factor = 0
+        self.last_size = None
+
+            
 
     def toggle_selection(self):
         self.set_selected(not self.is_selected)
@@ -1319,7 +1516,7 @@ class PickerButton(QtWidgets.QWidget):
             }
             QMenu::item {
                 background-color: transparent;
-                padding: 3px 15px 3px 3px; ;
+                padding: 3px 25px 3px 3px; ;
                 margin: 3px 0px  ;
                 border-radius: 3px;
             }
@@ -1359,6 +1556,17 @@ class PickerButton(QtWidgets.QWidget):
         # Copy, Paste and Delete Actions
         #---------------------------------------------------------------------------------------
         if self.edit_mode:
+            # Add thumbnail options for pose mode buttons
+            if self.mode == 'pose':
+                add_image_action = menu.addAction("Add Thumbnail")
+                add_image_action.triggered.connect(self.add_thumbnail)
+                
+                remove_image_action = menu.addAction("Remove Thumbnail")
+                remove_image_action.triggered.connect(self.remove_thumbnail)
+                remove_image_action.setEnabled(bool(self.thumbnail_path))
+                
+                #menu.addSeparator()
+            
             copy_action = menu.addAction(QtGui.QIcon(":/copyUV.png"), "Copy Button")
             copy_action.triggered.connect(self.copy_selected_buttons)
             
@@ -1482,7 +1690,13 @@ class PickerButton(QtWidgets.QWidget):
         # Get currently selected objects in Maya
         selected_objects = cmds.ls(selection=True, long=True)
         if not selected_objects:
-            QtWidgets.QMessageBox.warning(self, "No Selection", "Please select objects in Maya before adding a pose.")
+            # Use custom dialog instead of QMessageBox
+            dialog = CD.CustomDialog(self, title="No Selection", size=(200, 80), info_box=True)
+            message_label = QtWidgets.QLabel("Please select objects in Maya before adding a pose.")
+            message_label.setWordWrap(True)
+            dialog.add_widget(message_label)
+            dialog.add_button_box()
+            dialog.exec_()
             return
         
         # First, add the selected objects to the button's assigned objects
@@ -1511,6 +1725,10 @@ class PickerButton(QtWidgets.QWidget):
                 obj = obj_data['long_name']
                 
                 if cmds.objExists(obj):
+                    # Extract the base name without namespace for storage
+                    # This makes poses reusable across different namespaces
+                    base_name = obj.split('|')[-1].split(':')[-1]
+                    
                     # Get all keyable attributes
                     attrs = cmds.listAttr(obj, keyable=True) or []
                     attr_values = {}
@@ -1524,7 +1742,8 @@ class PickerButton(QtWidgets.QWidget):
                             continue
                             
                     if attr_values:
-                        pose_data[obj] = attr_values
+                        # Store with base name for namespace compatibility
+                        pose_data[base_name] = attr_values
             except:
                 continue
         
@@ -1532,48 +1751,213 @@ class PickerButton(QtWidgets.QWidget):
             # Use a simple default name - the button itself represents the pose
             self.pose_data = {"default": pose_data}  # Replace any existing poses with this one
             self.changed.emit(self)
-            QtWidgets.QMessageBox.information(self, "Pose Added", "Pose has been added successfully.")
+            dialog = CD.CustomDialog(self, title="Pose Added", size=(200, 80), info_box=True)
+            message_label = QtWidgets.QLabel("Pose has been added successfully.")
+            message_label.setWordWrap(True)
+            dialog.add_widget(message_label)
+            dialog.add_button_box()
+            dialog.exec_()
         else:
-            QtWidgets.QMessageBox.warning(self, "No Data", "Could not capture any attribute data for the selected objects.")
+            dialog = CD.CustomDialog(self, title="No Data", size=(200, 80), info_box=True)
+            message_label = QtWidgets.QLabel("Could not capture any attribute data for the selected objects.")
+            message_label.setWordWrap(True)
+            dialog.add_widget(message_label)
+            dialog.add_button_box()
+            dialog.exec_()
     
     def remove_pose(self):
         """Remove the pose from the pose data"""
         if not self.pose_data:
-            QtWidgets.QMessageBox.information(self, "No Pose", "There is no pose to remove.")
+            # Use custom dialog instead of QMessageBox
+            dialog = CD.CustomDialog(self, title="No Pose", size=(200, 80), info_box=True)
+            message_label = QtWidgets.QLabel("There is no pose to remove.")
+            message_label.setWordWrap(True)
+            dialog.add_widget(message_label)
+            dialog.add_button_box()
+            dialog.exec_()
             return
             
         # Clear the pose data
         self.pose_data = {}
         self.changed.emit(self)
-        QtWidgets.QMessageBox.information(self, "Pose Removed", "Pose has been removed.")
+        dialog = CD.CustomDialog(self, title="Pose Removed", size=(200, 80), info_box=True)
+        message_label = QtWidgets.QLabel("Pose has been removed.")
+        message_label.setWordWrap(True)
+        dialog.add_widget(message_label)
+        dialog.add_button_box()
+        dialog.exec_()
+        
+    def add_thumbnail(self):
+        """Add a thumbnail image to selected pose buttons"""
+        # Get the parent canvas and selected buttons
+        canvas = self.parent()
+        if not canvas or not canvas.edit_mode:
+            return
+            
+        selected_buttons = canvas.get_selected_buttons()
+        # Filter to only include pose mode buttons
+        pose_buttons = [button for button in selected_buttons if button.mode == 'pose']
+        
+        if not pose_buttons:
+            # If no pose buttons are selected, just use this button if it's in pose mode
+            if self.mode == 'pose':
+                pose_buttons = [self]
+            else:
+                dialog = CD.CustomDialog(self, title="No Pose Buttons", size=(250, 100), info_box=True)
+                message_label = QtWidgets.QLabel("No pose buttons selected. Please select at least one button in pose mode.")
+                message_label.setWordWrap(True)
+                dialog.add_widget(message_label)
+                dialog.add_button_box()
+                dialog.exec_()
+                return
+        
+        # Open file dialog to select an image
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select Thumbnail Image", "",
+            "Image Files (*.png *.jpg *.jpeg *.bmp *.gif)"
+        )
+        
+        if file_path:
+            # Load the image into a pixmap to verify it's valid
+            test_pixmap = QtGui.QPixmap(file_path)
+            if test_pixmap.isNull():
+                dialog = CD.CustomDialog(self, title="Error", size=(200, 80), info_box=True)
+                message_label = QtWidgets.QLabel("Failed to load the selected image.")
+                message_label.setWordWrap(True)
+                dialog.add_widget(message_label)
+                dialog.add_button_box()
+                dialog.exec_()
+                return
+            
+            # Apply the thumbnail to all selected pose buttons
+            for button in pose_buttons:
+                # Store the image path
+                button.thumbnail_path = file_path
+                
+                # Load the image into a pixmap
+                button.thumbnail_pixmap = QtGui.QPixmap(file_path)
+                
+                # Force regeneration of the pose_pixmap by invalidating cache parameters
+                button.pose_pixmap = None
+                button.last_zoom_factor = 0
+                button.last_size = None
+                
+                # Update the button
+                button.update()
+                button.changed.emit(button)
+    
+    def remove_thumbnail(self):
+        """Remove the thumbnail image from selected pose buttons"""
+        # Get the parent canvas and selected buttons
+        canvas = self.parent()
+        if not canvas or not canvas.edit_mode:
+            return
+            
+        selected_buttons = canvas.get_selected_buttons()
+        # Filter to only include pose mode buttons with thumbnails
+        pose_buttons_with_thumbnails = [button for button in selected_buttons 
+                                      if button.mode == 'pose' and button.thumbnail_path]
+        
+        if not pose_buttons_with_thumbnails:
+            # If no pose buttons with thumbnails are selected, just use this button if applicable
+            if self.mode == 'pose' and self.thumbnail_path:
+                pose_buttons_with_thumbnails = [self]
+            else:
+                dialog = CD.CustomDialog(self, title="No Thumbnails", size=(250, 100), info_box=True)
+                message_label = QtWidgets.QLabel("No pose buttons with thumbnails selected.")
+                message_label.setWordWrap(True)
+                dialog.add_widget(message_label)
+                dialog.add_button_box()
+                dialog.exec_()
+                return
+        
+        # Remove thumbnails from all selected pose buttons
+        for button in pose_buttons_with_thumbnails:
+            # Clear the thumbnail data
+            button.thumbnail_path = ''
+            button.thumbnail_pixmap = None
+            
+            # Force regeneration of the pose_pixmap by invalidating cache parameters
+            button.pose_pixmap = None
+            button.last_zoom_factor = 0
+            button.last_size = None
+            
+            # Update the button
+            button.update()
+            button.changed.emit(button)
             
     def apply_pose(self):
         """Apply the stored pose to the assigned objects"""
+        # Import custom dialog
+        
+        
         if not self.pose_data:
-            QtWidgets.QMessageBox.information(self, "No Pose", "There is no pose to apply. Please add a pose first.")
+            # Use custom dialog instead of QMessageBox
+            dialog = CD.CustomDialog(self, title="No Pose", size=(200, 80), info_box=True)
+            message_label = QtWidgets.QLabel("There is no pose to apply. Please add a pose first.")
+            message_label.setWordWrap(True)
+            dialog.add_widget(message_label)
+            dialog.add_button_box()
+            dialog.exec_()
             return
         
         # Get the pose data (we're only using the 'default' pose now)
         pose_data = self.pose_data.get("default", {})
         if not pose_data:
-            QtWidgets.QMessageBox.warning(self, "Empty Pose", "Pose does not contain any data.")
+            # Use custom dialog instead of QMessageBox
+            dialog = CD.CustomDialog(self, title="Empty Pose", size=(200, 80), info_box=True)
+            message_label = QtWidgets.QLabel("Pose does not contain any data.")
+            message_label.setWordWrap(True)
+            dialog.add_widget(message_label)
+            dialog.add_button_box()
+            dialog.exec_()
             return
             
         # Apply the pose
         import maya.cmds as cmds
         
+        # Get the current namespace from the main window
+        current_namespace = None
+        main_window = self.window()
+        if hasattr(main_window, 'namespace_dropdown'):
+            current_namespace = main_window.namespace_dropdown.currentText()
+        
         # Start an undo chunk
         cmds.undoInfo(openChunk=True, chunkName="Apply Pose")
+        
+        # Keep track of successfully resolved objects for selection
+        successfully_posed_objects = []
         
         try:
             # For each object in the pose data
             for obj, attr_values in pose_data.items():
-                # Check if the object exists
+                # Get the base name without namespace
+                base_name = obj.split('|')[-1].split(':')[-1]
+                resolved_obj = None
+                
+                # First try original object
                 if cmds.objExists(obj):
+                    resolved_obj = obj
+                    
+                # If that fails and we have a namespace, try with current namespace
+                elif current_namespace and current_namespace != 'None':
+                    namespaced_obj = f"{current_namespace}:{base_name}"
+                    if cmds.objExists(namespaced_obj):
+                        resolved_obj = namespaced_obj
+                
+                # Finally try just the base name
+                elif cmds.objExists(base_name):
+                    resolved_obj = base_name
+                    
+                # If we found a valid object, apply the attributes
+                if resolved_obj:
+                    # Track this object for selection later
+                    successfully_posed_objects.append(resolved_obj)
+                    
                     # Set each attribute
                     for attr, value in attr_values.items():
                         try:
-                            full_attr = f"{obj}.{attr}"
+                            full_attr = f"{resolved_obj}.{attr}"
                             if cmds.objExists(full_attr):
                                 # Check if the attribute is locked or connected
                                 if not cmds.getAttr(full_attr, lock=True):
@@ -1587,10 +1971,24 @@ class PickerButton(QtWidgets.QWidget):
                             print(f"Error setting attribute {full_attr}: {e}")
                             continue
         except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Error", f"Error applying pose: {e}")
+            dialog = CD.CustomDialog(self, title="Error", size=(200, 80), info_box=True)
+            message_label = QtWidgets.QLabel(f"Error applying pose: {e}")
+            message_label.setWordWrap(True)
+            dialog.add_widget(message_label)
+            dialog.add_button_box()
+            dialog.exec_()
         finally:
             # Close the undo chunk
             cmds.undoInfo(closeChunk=True)
+            
+            # Select all the objects that were successfully posed
+            if successfully_posed_objects:
+                try:
+                    # Select all the objects that were actually modified by the pose
+                    # This ensures we're selecting the exact objects in the correct namespace
+                    cmds.select(successfully_posed_objects, replace=True)
+                except Exception as e:
+                    print(f"Error selecting posed objects: {e}")
     
     def execute_script_command(self):
         """Execute the script with namespace and match function token handling"""
