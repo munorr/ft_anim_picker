@@ -1472,6 +1472,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.edit_value_layout.addWidget(widgets['transform_widget'])
         self.edit_value_layout.addWidget(widgets['radius_widget'])
         self.edit_value_layout.addWidget(widgets['color_widget'])
+        self.edit_value_layout.addWidget(widgets['thumbnail_dir_widget'])
 
         # Introduce a flag to control updates
         self.is_updating_widgets = False
@@ -1615,10 +1616,15 @@ class AnimPickerWindow(QtWidgets.QWidget):
                                           QLineEdit {{border:1px solid #333333;background-color:#222222; margin: 0px; padding: 3px;}}''')
             
             #widgets['rename_edit'].setStyleSheet('border: 0px solid #444444;')
-            for widget in widgets.values():
-                if isinstance(widget, (QtWidgets.QWidget, QtWidgets.QLayout)):
-                    
-                    widget.setEnabled(False)
+            # Keep thumbnail directory button active even when no button is selected
+            widgets['thumbnail_dir_button'].setEnabled(True)
+            widgets['thumbnail_dir_widget'].setEnabled(True)
+            
+            # Disable other widgets
+            for widget_name, widget in widgets.items():
+                if widget_name not in ['thumbnail_dir_button', 'thumbnail_dir_widget']:
+                    if isinstance(widget, (QtWidgets.QWidget, QtWidgets.QLayout)):
+                        widget.setEnabled(False)
             return
         else:
             color = '#222222'

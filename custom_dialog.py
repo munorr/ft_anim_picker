@@ -51,10 +51,10 @@ class CustomDialog(QtWidgets.QDialog):
             }
             }
             QPushButton#okayButton {
-                background-color: #444444;
+                background-color: #00749a;
             }
             QPushButton#okayButton:hover {
-                background-color: #555555;
+                background-color: #00ade6;
             }
             QComboBox {
                 background-color: #444444;
@@ -76,6 +76,9 @@ class CustomDialog(QtWidgets.QDialog):
 
     def add_widget(self, widget):
         self.layout.addWidget(widget)
+
+    def add_layout(self, layout):
+        self.layout.addLayout(layout)
 
     def add_button_box(self):
         if self.info_box:

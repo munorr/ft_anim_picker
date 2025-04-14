@@ -931,12 +931,6 @@ class PickerButton(QtWidgets.QWidget):
 
         self.setStyleSheet(f"QToolTip {{background-color: {UT.rgba_value(color,.8,alpha=1)}; color: #eeeeee ; border: none; border-radius: 3px;}}")
         
-        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.customContextMenuRequested.connect(self.show_context_menu)
-
-        #self.setToolTip(f"Label: {self.label}\nSelect Set\nID: {self.unique_id}")
-        self.setToolTip(f"Select Set\nID: [{self.unique_id}]")
-
         self.edit_mode = False
         self.update_cursor()
         self.assigned_objects = []  
@@ -1340,23 +1334,44 @@ class PickerButton(QtWidgets.QWidget):
             
     def update_tooltip(self):
         """Update the tooltip with button information"""
-        tooltip = f"<b>{self.label}</b>"
+
+        tooltip = f"<b><span style='font-size: 12px;'>Assigned Objects <span style='color: rgba(255, 255, 255, 0.5);'>({len(self.assigned_objects)})</span>:</b></span>"
+
+        if self.thumbnail_path:
+            tooltip += f"<br><span style='font-size: 10px; color: rgba(255, 255, 255, 0.5);'>[{os.path.basename(self.thumbnail_path).split('.')[0]}]</span>"
+        else:
+            tooltip += f"<br><i><span style='font-size: 9px; color: rgba(255, 255, 255, 0.5);'>No thumbnail</span></i>"
         
-        # Add mode information
-        tooltip += f"<br>Mode: {self.mode.capitalize()}"
-        
-        # Add assigned objects count
         if self.assigned_objects:
-            tooltip += f"<br>Assigned Objects: {len(self.assigned_objects)}"
+            object_names = []
             
-        # Add thumbnail information for pose mode
-        if self.mode == 'pose':
-            if self.thumbnail_path:
-                tooltip += f"<br>Thumbnail: {os.path.basename(self.thumbnail_path)}"
-            else:
-                tooltip += "<br>No thumbnail set"
+            # Use already resolved names from the database instead of resolving again
+            for obj_data in self.assigned_objects:
+                # Extract the short name directly from the long_name in the database
+                long_name = obj_data['long_name']
+                # Strip namespace for display
+                short_name = long_name.split('|')[-1].split(':')[-1]
+                object_names.append(short_name)
                 
-        self.setToolTip(tooltip)
+            
+            if object_names:
+                # Limit to first 10 objects and indicate if there are more
+                if len(object_names) > 10:
+                    displayed_objects = object_names[:10]
+                    remaining_count = len(object_names) - 10
+                    objects_str = "<br>- " + "<br>- ".join(displayed_objects)
+                    objects_str += f"<br><span style='color: rgba(255, 255, 255, 0.5); font-size: 9px;'><i>...and {remaining_count} more object{'s' if remaining_count > 1 else ''}</i></span>"
+                else:
+                    objects_str = "<br>- " + "<br>- ".join(object_names)
+                tooltip += objects_str
+            else:
+                tooltip += "<br>(No valid objects found)"
+        else:
+            tooltip += f"<br><i><span style='font-size: 9px; color: rgba(255, 255, 255, 0.5);'>No objects assigned</span></i>"
+       
+        # Update tooltip text instead of setting QToolTip
+        tooltip += f"<div style='text-align: center; font-size: 10px; color: rgba(255, 255, 255, 0.5); '>({self.mode.capitalize()} mode)</div>"
+        self.setToolTip(tooltip)   
     #---------------------------------------------------------------------------------------
     def set_mode(self, mode):
         canvas = self.parent()
@@ -1397,8 +1412,6 @@ class PickerButton(QtWidgets.QWidget):
         self.last_zoom_factor = 0
         self.last_size = None
 
-            
-
     def toggle_selection(self):
         self.set_selected(not self.is_selected)
         if self.parent():
@@ -1417,74 +1430,6 @@ class PickerButton(QtWidgets.QWidget):
             self.is_selected = selected
             self.update()
     #---------------------------------------------------------------------------------------
-    def update_tooltip(self):
-        """Update tooltip with improved object lookup and UUID updating"""
-        base_tooltip = f"(Assigned Objects):"
-        
-        # Handle empty assigned_objects list
-        if not self.assigned_objects:
-            base_tooltip += "\n(No objects assigned)"
-            self.setToolTip(base_tooltip)
-            return
-            
-        try:
-            object_names = []
-            updated_objects = []  # Store updated object data
-            uuid_updates = False
-            
-            for obj_data in self.assigned_objects:
-                try:
-                    resolved_node = None
-                    new_uuid = None
-                    uuid = obj_data['uuid']
-                    long_name = obj_data['long_name']
-                    
-                    # Try UUID first
-                    try:
-                        nodes = cmds.ls(uuid, long=True)
-                        if nodes:
-                            resolved_node = nodes[0]
-                            new_uuid = uuid  # UUID is still valid
-                    except:
-                        pass
-                    
-                    # If UUID fails, try long name and update UUID if found
-                    if not resolved_node and cmds.objExists(long_name):
-                        resolved_node = long_name
-                        try:
-                            new_uuid = cmds.ls(long_name, uuid=True)[0]
-                            uuid_updates = True
-                        except:
-                            pass
-                    
-                    if resolved_node:
-                        # Strip namespace for display
-                        short_name = resolved_node.split('|')[-1].split(':')[-1]
-                        object_names.append(short_name)
-                        
-                        # Update object data
-                        updated_objects.append({
-                            'uuid': new_uuid if new_uuid else uuid,
-                            'long_name': resolved_node
-                        })
-                except:
-                    continue
-            
-            # Update assigned objects list with only valid objects
-            if uuid_updates or len(updated_objects) != len(self.assigned_objects):
-                self.assigned_objects = updated_objects
-                self.changed.emit(self)
-                    
-            if object_names:
-                objects_str = "\n- " + "\n- ".join(object_names)
-                base_tooltip += objects_str
-            else:
-                base_tooltip += "\n(No valid objects found)"
-        except:
-            base_tooltip += "\nError resolving object names"
-        
-        self.setToolTip(base_tooltip)
-
     def show_selection_manager(self):
         if not hasattr(self, 'selection_manager'):
             self.selection_manager = SelectionManagerWidget()
@@ -1558,12 +1503,15 @@ class PickerButton(QtWidgets.QWidget):
         if self.edit_mode:
             # Add thumbnail options for pose mode buttons
             if self.mode == 'pose':
-                add_image_action = menu.addAction("Add Thumbnail")
-                add_image_action.triggered.connect(self.add_thumbnail)
+                add_thumbnail_action = menu.addAction("Add Thumbnail")
+                add_thumbnail_action.triggered.connect(self.add_thumbnail)
+
+                select_thumbnail_action = menu.addAction("Select Thumbnail")
+                select_thumbnail_action.triggered.connect(self.select_thumbnail)
                 
-                remove_image_action = menu.addAction("Remove Thumbnail")
-                remove_image_action.triggered.connect(self.remove_thumbnail)
-                remove_image_action.setEnabled(bool(self.thumbnail_path))
+                remove_thumbnail_action = menu.addAction("Remove Thumbnail")
+                remove_thumbnail_action.triggered.connect(self.remove_thumbnail)
+                remove_thumbnail_action.setEnabled(bool(self.thumbnail_path))
                 
                 #menu.addSeparator()
             
@@ -1625,6 +1573,21 @@ class PickerButton(QtWidgets.QWidget):
                 
                 remove_pose_action = menu.addAction("Remove Pose")
                 remove_pose_action.triggered.connect(self.remove_pose)
+
+                thumbnail_menu = QtWidgets.QMenu("Thumbnail")
+                thumbnail_menu.setStyleSheet(menu.styleSheet())
+                
+                add_thumbnail_action = thumbnail_menu.addAction("Add Thumbnail")
+                add_thumbnail_action.triggered.connect(self.add_thumbnail)
+
+                select_thumbnail_action = thumbnail_menu.addAction("Select Thumbnail")
+                select_thumbnail_action.triggered.connect(self.select_thumbnail)
+                
+                remove_thumbnail_action = thumbnail_menu.addAction("Remove Thumbnail")
+                remove_thumbnail_action.triggered.connect(self.remove_thumbnail)
+                remove_thumbnail_action.setEnabled(bool(self.thumbnail_path))
+                
+                menu.addMenu(thumbnail_menu)    
         
         menu.addMenu(mode_menu)
         menu.addSeparator()
@@ -1713,9 +1676,6 @@ class PickerButton(QtWidgets.QWidget):
             except:
                 continue
         
-        # Update the tooltip with the new assigned objects
-        self.update_tooltip()
-        
         # Store the current attribute values for all assigned objects
         pose_data = {}
         
@@ -1747,6 +1707,9 @@ class PickerButton(QtWidgets.QWidget):
             except:
                 continue
         
+        # Update the tooltip with the new assigned objects
+        self.update_tooltip()
+        
         if pose_data:
             # Use a simple default name - the button itself represents the pose
             self.pose_data = {"default": pose_data}  # Replace any existing poses with this one
@@ -1756,7 +1719,7 @@ class PickerButton(QtWidgets.QWidget):
             message_label.setWordWrap(True)
             dialog.add_widget(message_label)
             dialog.add_button_box()
-            dialog.exec_()
+            #dialog.exec_()
         else:
             dialog = CD.CustomDialog(self, title="No Data", size=(200, 80), info_box=True)
             message_label = QtWidgets.QLabel("Could not capture any attribute data for the selected objects.")
@@ -1766,7 +1729,7 @@ class PickerButton(QtWidgets.QWidget):
             dialog.exec_()
     
     def remove_pose(self):
-        """Remove the pose from the pose data"""
+        """Remove the pose from the pose data and clear assigned objects"""
         if not self.pose_data:
             # Use custom dialog instead of QMessageBox
             dialog = CD.CustomDialog(self, title="No Pose", size=(200, 80), info_box=True)
@@ -1779,19 +1742,28 @@ class PickerButton(QtWidgets.QWidget):
             
         # Clear the pose data
         self.pose_data = {}
+        
+        # Also clear assigned objects
+        self.assigned_objects = []
+        
+        # Update the tooltip to reflect the changes
+        self.update_tooltip()
+        
+        # Emit the changed signal
         self.changed.emit(self)
+        
         dialog = CD.CustomDialog(self, title="Pose Removed", size=(200, 80), info_box=True)
-        message_label = QtWidgets.QLabel("Pose has been removed.")
+        message_label = QtWidgets.QLabel("Pose and assigned objects have been removed.")
         message_label.setWordWrap(True)
         dialog.add_widget(message_label)
         dialog.add_button_box()
         dialog.exec_()
         
-    def add_thumbnail(self):
+    def select_thumbnail(self):
         """Add a thumbnail image to selected pose buttons"""
         # Get the parent canvas and selected buttons
         canvas = self.parent()
-        if not canvas or not canvas.edit_mode:
+        if not canvas:
             return
             
         selected_buttons = canvas.get_selected_buttons()
@@ -1812,8 +1784,25 @@ class PickerButton(QtWidgets.QWidget):
                 return
         
         # Open file dialog to select an image
+        # Get the thumbnail directory from data management
+        data = DM.PickerDataManager.get_data()
+        thumbnail_dir = data.get('thumbnail_directory', '')
+        
+        # If no thumbnail directory is set, use a dedicated directory in the ft_anim_picker environment
+        if not thumbnail_dir:
+            # Create a thumbnails directory in the ft_anim_picker environment
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            thumbnail_dir = os.path.join(script_dir, 'picker_thumbnails')
+        
+        # Make sure the directory exists
+        if not os.path.exists(thumbnail_dir):
+            try:
+                os.makedirs(thumbnail_dir)
+            except:
+                thumbnail_dir = tempfile.gettempdir()
+
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Select Thumbnail Image", "",
+            self, "Select Thumbnail Image", thumbnail_dir,
             "Image Files (*.png *.jpg *.jpeg *.bmp *.gif)"
         )
         
@@ -1844,13 +1833,203 @@ class PickerButton(QtWidgets.QWidget):
                 
                 # Update the button
                 button.update()
+                button.update_tooltip()
                 button.changed.emit(button)
+    
+    def add_thumbnail(self):
+        """Take a playblast of the current Maya viewport and use it as a thumbnail"""
+        import maya.cmds as cmds
+        import tempfile
+        import os
+        
+        # Get the parent canvas and selected buttons
+        canvas = self.parent()
+        if not canvas:
+            return
+            
+        selected_buttons = canvas.get_selected_buttons()
+        # Filter to only include pose mode buttons
+        pose_buttons = [button for button in selected_buttons if button.mode == 'pose']
+        
+        if not pose_buttons:
+            # If no pose buttons are selected, just use this button if it's in pose mode
+            if self.mode == 'pose':
+                pose_buttons = [self]
+            else:
+                dialog = CD.CustomDialog(self, title="No Pose Buttons", size=(250, 100), info_box=True)
+                message_label = QtWidgets.QLabel("No pose buttons selected. Please select at least one button in pose mode.")
+                message_label.setWordWrap(True)
+                dialog.add_widget(message_label)
+                dialog.add_button_box()
+                dialog.exec_()
+                return
+        
+        # Get the thumbnail directory from the main window
+        main_window = None
+        for widget in QtWidgets.QApplication.topLevelWidgets():
+            if widget.__class__.__name__ == 'AnimPickerWindow':
+                main_window = widget
+                break
+        
+        # Get the thumbnail directory from data management
+        data = DM.PickerDataManager.get_data()
+        thumbnail_dir = data.get('thumbnail_directory', '')
+        
+        # If no thumbnail directory is set, use a dedicated directory in the ft_anim_picker environment
+        if not thumbnail_dir:
+            # Create a thumbnails directory in the ft_anim_picker environment
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            thumbnail_dir = os.path.join(script_dir, 'picker_thumbnails')
+        
+        # Make sure the directory exists
+        if not os.path.exists(thumbnail_dir):
+            try:
+                os.makedirs(thumbnail_dir)
+            except:
+                thumbnail_dir = tempfile.gettempdir()
+        
+        # Generate a unique filename with sequential numbering
+        # Find the highest existing thumbnail number
+        highest_num = 0
+        if os.path.exists(thumbnail_dir):
+            for existing_file in os.listdir(thumbnail_dir):
+                if existing_file.startswith('thumbnail_') and existing_file.endswith('.jpg'):
+                    try:
+                        # Extract the number part from the filename
+                        num_part = existing_file.replace('thumbnail_', '').replace('.jpg', '')
+                        if num_part.isdigit():
+                            num = int(num_part)
+                            highest_num = max(highest_num, num)
+                    except:
+                        pass
+        
+        # Create new filename with incremented number (3 digits format)
+        next_num = highest_num + 1
+        # Use just the base name without extension for playblast - Maya will add its own extension
+        base_filename = f"thumbnail_{next_num:03d}"
+        filepath = os.path.join(thumbnail_dir, base_filename)
+        
+        # Take the playblast using Maya's playblast command
+        try:
+            # Get the active panel
+            panel = cmds.getPanel(withFocus=True)
+            if not panel or 'modelPanel' not in cmds.getPanel(typeOf=panel):
+                panel = cmds.getPanel(type="modelPanel")[0]
+            
+            # Get the active viewport dimensions to maintain aspect ratio
+            active_view = None
+            if panel and 'modelPanel' in cmds.getPanel(typeOf=panel):
+                active_view = cmds.playblast(activeEditor=True)
+            
+            # Get viewport width and height
+            viewport_width = cmds.control(active_view, query=True, width=True)
+            viewport_height = cmds.control(active_view, query=True, height=True)
+            
+            # Calculate aspect ratio and adjust dimensions while keeping max dimension at 200px
+            aspect_ratio = float(viewport_width) / float(viewport_height)
+            img_size = 500
+            if aspect_ratio >= 1.0:  # Wider than tall
+                width = img_size
+                height = int(img_size / aspect_ratio)
+            else:  # Taller than wide
+                height = img_size
+                width = int(500 * aspect_ratio)
+            
+            cmds.playblast(
+                frame=cmds.currentTime(query=True),
+                format="image",
+                compression="jpg",
+                quality=100,
+                width=width,
+                height=height,
+                percent=100,
+                viewer=False,
+                showOrnaments=False,
+                filename=filepath,
+                clearCache=True,
+                framePadding=0
+            )
+            
+            # Maya adds a frame number and extension to the filename, so we need to find the actual file
+            dirname = os.path.dirname(filepath)
+            basename = os.path.basename(filepath)
+            
+            # Find the generated file - Maya adds frame number and extension
+            actual_filepath = None
+            for f in os.listdir(dirname):
+                # Look for files that start with our base filename and have an image extension
+                if f.startswith(basename) and (f.endswith('.jpg') or f.endswith('.jpeg')):
+                    actual_filepath = os.path.join(dirname, f)
+                    break
+                    
+            if not actual_filepath:
+                raise Exception("Could not find generated thumbnail image")
+            
+            # Load the original image into a pixmap
+            original_pixmap = QtGui.QPixmap(actual_filepath)
+            
+            # Crop the image to a 1:1 aspect ratio (square)
+            # Calculate the center and the size of the crop
+            orig_width = original_pixmap.width()
+            orig_height = original_pixmap.height()
+            crop_size = min(orig_width, orig_height)
+            
+            # Calculate the crop rectangle centered in the image
+            x_offset = (orig_width - crop_size) // 2
+            y_offset = (orig_height - crop_size) // 2
+            crop_rect = QtCore.QRect(x_offset, y_offset, crop_size, crop_size)
+            
+            # Crop the pixmap to a square
+            cropped_pixmap = original_pixmap.copy(crop_rect)
+            
+            # Save the cropped square image with our intended filename format
+            final_filename = f"thumbnail_{next_num:03d}.jpg"  # Use our sequential naming format
+            final_filepath = os.path.join(thumbnail_dir, final_filename)
+            cropped_pixmap.save(final_filepath, 'JPG', 100)
+            
+            # Remove the original playblast file to avoid clutter
+            try:
+                if os.path.exists(actual_filepath) and actual_filepath != final_filepath:
+                    os.remove(actual_filepath)
+            except Exception as e:
+                print(f"Warning: Could not remove original playblast file: {e}")
+            
+            # Apply the thumbnail to all selected pose buttons
+            for button in pose_buttons:
+                # Store the image path with our clean naming format
+                button.thumbnail_path = final_filepath
+                
+                # Set the thumbnail pixmap
+                button.thumbnail_pixmap = cropped_pixmap
+                
+                # Force regeneration of the pose_pixmap by invalidating cache parameters
+                button.pose_pixmap = None
+                button.last_zoom_factor = 0
+                button.last_size = None
+                
+                # Update the button
+                button.update()
+                button.update_tooltip()
+                button.changed.emit(button)
+                
+            # No need to remove the original image as we've overwritten it with the square version
+                
+            
+            
+        except Exception as e:
+            # Show error message
+            dialog = CD.CustomDialog(self, title="Error", size=(250, 100), info_box=True)
+            message_label = QtWidgets.QLabel(f"Failed to take playblast: {str(e)}")
+            message_label.setWordWrap(True)
+            dialog.add_widget(message_label)
+            dialog.add_button_box()
+            dialog.exec_()
     
     def remove_thumbnail(self):
         """Remove the thumbnail image from selected pose buttons"""
         # Get the parent canvas and selected buttons
         canvas = self.parent()
-        if not canvas or not canvas.edit_mode:
+        if not canvas:
             return
             
         selected_buttons = canvas.get_selected_buttons()
@@ -1947,12 +2126,25 @@ class PickerButton(QtWidgets.QWidget):
                 
                 # Finally try just the base name
                 elif cmds.objExists(base_name):
-                    resolved_obj = base_name
+                    # Get the full path to avoid ambiguity when multiple objects have the same name
+                    try:
+                        # Get the full path with namespace to avoid ambiguity
+                        full_paths = cmds.ls(base_name, long=True)
+                        if full_paths:
+                            resolved_obj = full_paths[0]  # Use the first match if multiple exist
+                    except Exception:
+                        resolved_obj = base_name  # Fallback to short name if ls fails
                     
                 # If we found a valid object, apply the attributes
                 if resolved_obj:
-                    # Track this object for selection later
-                    successfully_posed_objects.append(resolved_obj)
+                    # Track this object for selection later - store the full path
+                    try:
+                        # Get the full path to ensure unique selection
+                        full_path = cmds.ls(resolved_obj, long=True)[0]
+                        successfully_posed_objects.append(full_path)
+                    except Exception:
+                        # Fallback to the resolved name if we can't get the full path
+                        successfully_posed_objects.append(resolved_obj)
                     
                     # Set each attribute
                     for attr, value in attr_values.items():
@@ -2100,7 +2292,7 @@ class PickerButton(QtWidgets.QWidget):
             main_window = canvas.window()
             if isinstance(main_window, UI.AnimPickerWindow):
                 main_window.update_buttons_for_current_tab()
-    
+        
     def change_color_for_selected_buttons(self, new_color):
         canvas = self.parent()
         if canvas:

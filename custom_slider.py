@@ -152,7 +152,7 @@ class HorizontalScrollArea(QtWidgets.QScrollArea):
         hbar = self.horizontalScrollBar()
         # Use vertical wheel delta for horizontal scrolling
         # You can adjust the 120 value to control scrolling speed
-        delta = event.angleDelta().y() // 120 * 120  # Normalize to steps of 120
+        delta = event.angleDelta().y() // 120 * 30  # Normalize to steps of 120
         hbar.setValue(hbar.value() - delta)
 
 #self.canvas_tab_frame_scroll_area = HorizontalScrollArea()

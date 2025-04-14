@@ -3,6 +3,7 @@ import maya.mel as mel
 import maya.api.OpenMaya as om
 from maya import OpenMayaUI as omui
 from functools import wraps
+import re
 
 try:
     from PySide6 import QtWidgets, QtCore, QtGui
@@ -18,8 +19,88 @@ except ImportError:
 from . utils import undoable
 from . import custom_button as CB
 from . import custom_slider as CS
+from . import custom_dialog as CD
+from . import ui as UI
+from . import main as MAIN
 
 class animation_tool_layout:
+    def show_mirror_pose_dialog(self):
+        """
+        Shows a dialog to input custom naming conventions for left and right sides.
+        This allows users to specify custom prefixes or suffixes for mirroring poses.
+        """
+
+        # Create custom dialog for mirror pose options
+        manager = MAIN.PickerWindowManager.get_instance()
+        parent = manager._picker_widgets[0] if manager._picker_widgets else None
+        dialog = CD.CustomDialog(parent=parent, title="Mirror Pose Options", size=(250, 180))
+        
+        # Create form layout for the inputs
+        form_layout = QtWidgets.QFormLayout()
+        
+        # Create input fields for left and right naming conventions
+        left_input = QtWidgets.QLineEdit()
+        left_input.setPlaceholderText("e.g., L_, left_, _L, _left")
+        
+        right_input = QtWidgets.QLineEdit()
+        right_input.setPlaceholderText("e.g., R_, right_, _R, _right")
+        
+        # Add fields to form layout
+        form_layout.addRow("Left Side Identifier:", left_input)
+        form_layout.addRow("Right Side Identifier:", right_input)
+        
+        # Add explanation text
+        explanation = QtWidgets.QLabel("Enter custom naming conventions for left and right sides. "
+                                   "These will be used to identify and mirror objects between sides.")
+        explanation.setWordWrap(True)
+        
+        # Create layout for the dialog
+        main_layout = QtWidgets.QVBoxLayout()
+        main_layout.addWidget(explanation)
+        main_layout.addLayout(form_layout)
+        
+        # Add the layout to the dialog
+        dialog.add_layout(main_layout)
+        
+        # Add buttons
+        def apply_custom_mirror():
+            # Get the values from the input fields
+            left_value = left_input.text().strip()
+            right_value = right_input.text().strip()
+            
+            # Validate inputs
+            if not left_value or not right_value:
+                manager = MAIN.PickerWindowManager.get_instance()
+                parent = manager._picker_widgets[0] if manager._picker_widgets else None
+                error_dialog = CD.CustomDialog(parent=parent, title="Error", size=(250, 100), info_box=True)
+                error_label = QtWidgets.QLabel("Both left and right identifiers must be specified.")
+                error_label.setWordWrap(True)
+                error_dialog.add_widget(error_label)
+                error_dialog.add_button_box()
+                error_dialog.exec_()
+                return
+            
+            # Call the apply_mirror_pose function with custom naming conventions
+            apply_mirror_pose(L=left_value, R=right_value)
+            
+            # Close the dialog
+            dialog.accept()
+        
+        # Add apply and cancel buttons
+        button_box = QtWidgets.QDialogButtonBox()
+        apply_button = button_box.addButton("Apply", QtWidgets.QDialogButtonBox.AcceptRole)
+        cancel_button = button_box.addButton("Cancel", QtWidgets.QDialogButtonBox.RejectRole)
+        
+        # Connect button signals
+        apply_button.clicked.connect(apply_custom_mirror)
+        cancel_button.clicked.connect(dialog.reject)
+        
+        # Add button box to dialog
+        dialog.add_widget(button_box)
+        
+        # Show the dialog
+        dialog.exec_()
+    
     def __init__(self):
         self.layout = QtWidgets.QVBoxLayout()
         lm = 1 # layout margin
@@ -88,6 +169,10 @@ class animation_tool_layout:
         timeLine_copy_key_button = CB.CustomButton(text='Copy', color='#293F64', tooltip="Copy selected key(s).",text_size=ts, height=bh)
         timeLine_paste_key_button = CB.CustomButton(text='Paste', color='#1699CA', tooltip="Paste copied key(s).",text_size=ts, height=bh)
         timeLine_pasteInverse_key_button = CB.CustomButton(text='Paste Inverse', color='#9416CA', tooltip="Paste Inverted copied keys(s).",text_size=ts, height=bh)
+        
+        mirror_pose_button = CB.CustomButton(text='Mirror Pose', color='#8A2BE2', tooltip="Mirror Pose: Apply the pose of selected objects to their mirrored counterparts.",
+                                           text_size=ts, height=bh, ContextMenu=True, onlyContext=False)
+        mirror_pose_button.addToMenu("Custom Naming", self.show_mirror_pose_dialog, icon='ghostingObjectTypeLocator.png', position=(0,0))
 
         match_transforms_button = CB.CustomButton(text='Match', icon=':ghostingObjectTypeLocator.png', color='#262626', size=14, tooltip="Match Transforms.",
                                                   text_size=ts, height=bh,ContextMenu=True, onlyContext=True)
@@ -109,10 +194,11 @@ class animation_tool_layout:
 
         timeLine_key_button.singleClicked.connect(set_key)
         timeLine_delete_key_button.singleClicked.connect(delete_keys)
-        timeLine_copy_key_button.singleClicked.connect(copy_keys)
-        timeLine_paste_key_button.singleClicked.connect(paste_keys)
-        timeLine_pasteInverse_key_button.singleClicked.connect(paste_inverse)
+        timeLine_copy_key_button.singleClicked.connect(copy_pose)
+        timeLine_paste_key_button.singleClicked.connect(paste_pose)
+        timeLine_pasteInverse_key_button.singleClicked.connect(paste_inverse_pose)
 
+        mirror_pose_button.singleClicked.connect(apply_mirror_pose)
         store_pos_button.singleClicked.connect(store_component_position)
         move_to_pos_button.singleClicked.connect(move_objects_to_stored_position)
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -129,6 +215,7 @@ class animation_tool_layout:
         self.col1.addWidget(timeLine_copy_key_button)
         self.col1.addWidget(timeLine_paste_key_button)
         self.col1.addWidget(timeLine_pasteInverse_key_button)
+        self.col1.addWidget(mirror_pose_button)
 
         self.col1.addSpacing(4)
         self.col1.addWidget(match_transforms_button)
@@ -276,10 +363,175 @@ def delete_keys():
     mel.eval('''timeSliderClearKey;''')
 
 def copy_keys():
-        mel.eval("timeSliderCopyKey;")
+    mel.eval("timeSliderCopyKey;")
     
 def paste_keys():
     mel.eval("timeSliderPasteKey false;")
+
+@undoable
+def paste_inverse():
+    mel.eval("timeSliderPasteKey false;")
+    try:
+        # Get the list of selected objects
+        sel_objs = cmds.ls(sl=True)
+
+        # Loop through each selected object
+        for obj in sel_objs:
+            # Get the current translate, rotate, and scale values
+            tx = cmds.getAttr(f"{obj}.tx")
+            ty = cmds.getAttr(f"{obj}.ty")
+            tz = cmds.getAttr(f"{obj}.tz")
+            rx = cmds.getAttr(f"{obj}.rx")
+            ry = cmds.getAttr(f"{obj}.ry")
+            rz = cmds.getAttr(f"{obj}.rz")
+            sx = cmds.getAttr(f"{obj}.sx")
+            sy = cmds.getAttr(f"{obj}.sy")
+            sz = cmds.getAttr(f"{obj}.sz")
+
+            # Check if the attributes are locked
+            tx_locked = cmds.getAttr(f"{obj}.tx", lock=True)
+            ty_locked = cmds.getAttr(f"{obj}.ty", lock=True)
+            tz_locked = cmds.getAttr(f"{obj}.tz", lock=True)
+            rx_locked = cmds.getAttr(f"{obj}.rx", lock=True)
+            ry_locked = cmds.getAttr(f"{obj}.ry", lock=True)
+            rz_locked = cmds.getAttr(f"{obj}.rz", lock=True)
+            sx_locked = cmds.getAttr(f"{obj}.sx", lock=True)
+            sy_locked = cmds.getAttr(f"{obj}.sy", lock=True)
+            sz_locked = cmds.getAttr(f"{obj}.sz", lock=True)
+
+            # Reset the translate values if the attribute is not locked
+            if not tx_locked:
+                cmds.setAttr(f"{obj}.tx", tx * -1)
+
+            '''if not ty_locked:
+                cmds.setAttr(f"{obj}.ty", ty * -1)
+            if not tz_locked:
+                cmds.setAttr(f"{obj}.tz", tz * -1)'''
+
+            # Reset the rotate values if the attribute is not locked
+            if not rx_locked:
+                cmds.setAttr(f"{obj}.rx", rx)
+            if not ry_locked:
+                cmds.setAttr(f"{obj}.ry", ry * -1)
+            if not rz_locked:
+                cmds.setAttr(f"{obj}.rz", rz * -1)
+            
+            '''# Reset the scale values if the attribute is not locked
+            if not sx_locked:
+                cmds.setAttr(f"{obj}.sx", 1)
+            if not sy_locked:
+                cmds.setAttr(f"{obj}.sy", 1)
+            if not sz_locked:
+                cmds.setAttr(f"{obj}.sz", 1)'''
+    finally:
+        cmds.undoInfo(closeChunk=True)    
+#---------------------------------------------------------------------------------------------------------------
+#---------------------------------------------------------------------------------------------------------------
+
+# Global variable to store copied pose data
+_copied_pose_data = {}
+
+@undoable
+def copy_pose():
+    """Copy the current pose of selected objects."""
+    global _copied_pose_data
+    _copied_pose_data = {}
+    
+    # Get selected objects
+    selected_objects = cmds.ls(selection=True)
+    if not selected_objects:
+        cmds.warning("No objects selected for copying pose.")
+        return
+    
+    # For each selected object, store its keyable attributes
+    for obj in selected_objects:
+        keyable_attrs = cmds.listAttr(obj, keyable=True) or []
+        attr_values = {}
+        
+        for attr in keyable_attrs:
+            try:
+                full_attr = f"{obj}.{attr}"
+                if cmds.objExists(full_attr) and not cmds.getAttr(full_attr, lock=True):
+                    attr_values[attr] = cmds.getAttr(full_attr)
+            except Exception as e:
+                print(f"Error getting attribute {attr} from {obj}: {e}")
+        
+        if attr_values:
+            _copied_pose_data[obj] = attr_values
+    
+    print(f"Copied pose from {len(_copied_pose_data)} objects.")
+
+@undoable
+def paste_pose():
+    """Paste the previously copied pose to selected objects."""
+    global _copied_pose_data
+    
+    if not _copied_pose_data:
+        cmds.warning("No pose data available. Copy a pose first.")
+        return
+    
+    # Get selected objects
+    selected_objects = cmds.ls(selection=True)
+    if not selected_objects:
+        print("No objects selected for pasting pose.")
+        return
+    
+    # Apply pose based on selection order
+    source_objects = list(_copied_pose_data.keys())
+    for i, target_obj in enumerate(selected_objects):
+        if i >= len(source_objects):
+            break
+            
+        source_obj = source_objects[i]
+        attr_values = _copied_pose_data[source_obj]
+        
+        for attr, value in attr_values.items():
+            try:
+                full_attr = f"{target_obj}.{attr}"
+                if cmds.objExists(full_attr) and not cmds.getAttr(full_attr, lock=True):
+                    cmds.setAttr(full_attr, value)
+            except Exception as e:
+                print(f"Error setting attribute {attr} on {target_obj}: {e}")
+    
+    print(f"Pasted pose to {min(len(selected_objects), len(source_objects))} objects.")
+
+@undoable
+def paste_inverse_pose():
+    """Paste the inverse of the previously copied pose to selected objects."""
+    global _copied_pose_data
+    
+    if not _copied_pose_data:
+        cmds.warning("No pose data available. Copy a pose first.")
+        return
+    
+    # Get selected objects
+    selected_objects = cmds.ls(selection=True)
+    if not selected_objects:
+        cmds.warning("No objects selected for pasting inverse pose.")
+        return
+    
+    # Apply inverse pose based on selection order
+    source_objects = list(_copied_pose_data.keys())
+    for i, target_obj in enumerate(selected_objects):
+        if i >= len(source_objects):
+            break
+            
+        source_obj = source_objects[i]
+        attr_values = _copied_pose_data[source_obj]
+        
+        for attr, value in attr_values.items():
+            try:
+                full_attr = f"{target_obj}.{attr}"
+                if cmds.objExists(full_attr) and not cmds.getAttr(full_attr, lock=True):
+                    # Invert translate and rotate values for x-axis
+                    if attr == 'translateX' or attr == 'rotateY' or attr == 'rotateZ':
+                        cmds.setAttr(full_attr, -value)
+                    else:
+                        cmds.setAttr(full_attr, value)
+            except Exception as e:
+                print(f"Error setting attribute {attr} on {target_obj}: {e}")
+    
+    print(f"Pasted inverse pose to {min(len(selected_objects), len(source_objects))} objects.")
 
 @undoable
 def paste_inverse():
@@ -487,3 +739,158 @@ def match_scale():
 
 def match_all():
     mel.eval('''MatchTransform;''')
+
+#---------------------------------------------------------------------------------------------------------------
+@undoable
+def apply_mirror_pose(L="", R=""):
+    """
+    Applies the pose of selected objects to their mirrored counterparts.
+    
+    This function takes selected objects and applies their current pose to the opposing limb.
+    For example, if L_arm is selected, it will apply its pose to R_arm.
+    
+    The function detects common naming conventions for left and right sides:
+    - L_/R_
+    - left_/right_
+    - _L/_R
+    - _left/_right
+    
+    Args:
+        L (str, optional): Custom left side identifier. Default is "".
+        R (str, optional): Custom right side identifier. Default is "".
+    
+    Example:
+        apply_mirror_pose()  # Uses default naming conventions
+        apply_mirror_pose(L="LFT", R="RGT")  # Uses custom naming convention
+    """
+    import maya.cmds as cmds
+    
+    # Get selected objects
+    selected_objects = cmds.ls(selection=True, long=True)
+    if not selected_objects:
+        manager = MAIN.PickerWindowManager.get_instance()
+        parent = manager._picker_widgets[0] if manager._picker_widgets else None
+        dialog = CD.CustomDialog(parent=parent, title="No Selection", size=(250, 80), info_box=True)
+        message_label = QtWidgets.QLabel("Please select objects in Maya before applying mirror pose.")
+        message_label.setWordWrap(True)
+        dialog.add_widget(message_label)
+        dialog.add_button_box()
+        dialog.exec_()
+        return
+    
+    # Define common naming conventions for left and right sides
+    naming_conventions = [
+        # Prefix
+        {"left": "L_", "right": "R_"},
+        {"left": "left_", "right": "right_"},
+        # Suffix
+        {"left": "_L", "right": "_R"},
+        {"left": "_left", "right": "_right"},
+    ]
+    
+    # Add custom naming convention if provided
+    if L and R:
+        naming_conventions.append({"left": L, "right": R})
+    
+    # Store successfully mirrored objects for reporting
+    mirrored_objects = []
+    
+    # Process each selected object
+    for obj in selected_objects:
+        # Get the short name for easier pattern matching
+        short_name = obj.split('|')[-1]
+        
+        # Try to find the corresponding mirrored object
+        mirrored_obj = None
+        
+        for convention in naming_conventions:
+            left_pattern = convention["left"]
+            right_pattern = convention["right"]
+            
+            # Check if object has left pattern and replace with right pattern
+            if left_pattern in short_name:
+                mirrored_name = short_name.replace(left_pattern, right_pattern)
+                print(mirrored_name)
+                if cmds.objExists(mirrored_name):
+                    mirrored_obj = mirrored_name
+                    break
+            
+            # Check if object has right pattern and replace with left pattern
+            elif right_pattern in short_name:
+                mirrored_name = short_name.replace(right_pattern, left_pattern)
+                print(mirrored_name)
+                if cmds.objExists(mirrored_name):
+                    mirrored_obj = mirrored_name
+                    break
+        
+        # If we found a mirrored object, copy the pose
+        if mirrored_obj:
+            # Get all keyable attributes of the source object
+            attrs = cmds.listAttr(obj, keyable=True) or []
+            
+            # Copy attribute values from source to mirrored object
+            print(attrs)
+            for attr in attrs:
+                try:
+                    # Check if the attribute exists on both objects
+                    if cmds.objExists(f"{obj}.{attr}") and cmds.objExists(f"{mirrored_obj}.{attr}"):
+                        # Check if the attribute is not locked on the target
+                        if not cmds.getAttr(f"{mirrored_obj}.{attr}", lock=True):
+                            # Get the value from the source object
+                            value = cmds.getAttr(f"{obj}.{attr}")
+                            
+                            # Handle different attribute types
+                            if isinstance(value, list):
+                                # For multi-attributes like matrices or arrays
+                                for i, val in enumerate(value[0]):
+                                    # Check if we need to mirror the value (for rotation and translation)
+                                    mirrored_val = val
+                                    
+                                    # Mirror translation and rotation values for x-axis
+                                    if attr in ['translateX', 'rotateY', 'rotateZ']:
+                                        mirrored_val = -val
+                                    
+                                    cmds.setAttr(f"{mirrored_obj}.{attr}[{i}]", mirrored_val)
+                            else:
+                                # For simple attributes
+                                mirrored_val = value
+                                
+                                # Mirror translation and rotation values for x-axis
+                                if attr == 'translateX' or attr == 'rotateY' or attr == 'rotateZ':
+                                    mirrored_val = -value
+                                
+                                cmds.setAttr(f"{mirrored_obj}.{attr}", mirrored_val)
+                            
+                            # Add to the list of mirrored objects if not already there
+                            if mirrored_obj not in mirrored_objects:
+                                mirrored_objects.append(mirrored_obj)
+                except Exception as e:
+                    print(f"Error mirroring attribute {attr} from {obj} to {mirrored_obj}: {e}")
+    
+    # Select the mirrored objects
+    if mirrored_objects:
+        cmds.select(mirrored_objects, replace=True)
+        
+        # Show success message
+        # Get the active Animation Picker window from the manager
+        manager = MAIN.PickerWindowManager.get_instance()
+        parent = manager._picker_widgets[0] if manager._picker_widgets else None
+        dialog = CD.CustomDialog(parent=parent, title="Mirror Pose Applied", size=(240, 100), info_box=True)
+        message_label = QtWidgets.QLabel(f"Successfully mirrored pose to {len(mirrored_objects)} object(s).")
+        message_label.setWordWrap(True)
+        dialog.add_widget(message_label)
+        dialog.add_button_box()
+        #dialog.exec_()
+    else:
+        # Show error message if no objects were mirrored
+        # Get the active Animation Picker window from the manager
+        manager = MAIN.PickerWindowManager.get_instance()
+        parent = manager._picker_widgets[0] if manager._picker_widgets else None
+        dialog = CD.CustomDialog(parent=parent, title="Mirror Pose Failed", size=(300, 120), info_box=True)
+        message_label = QtWidgets.QLabel("Could not find any matching objects to mirror the pose to. "
+                                     "Please check that your objects follow standard naming conventions "
+                                     "(L_/R_, _L/_R, left_/right_, _left/_right) or provide custom prefixes.")
+        message_label.setWordWrap(True)
+        dialog.add_widget(message_label)
+        dialog.add_button_box()
+        dialog.exec_()

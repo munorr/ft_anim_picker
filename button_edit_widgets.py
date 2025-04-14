@@ -152,6 +152,62 @@ def create_button_edit_widgets(parent):
     widgets['bottom_right_radius'] = bottom_right_radius
     #layout.layout().addWidget(radius_widget)
     
+    # Thumbnail directory widget
+    thumbnail_dir_widget = QtWidgets.QWidget()
+    thumbnail_dir_widget.setStyleSheet("background-color: None; padding: 0px; border-radius: 3px; border: none !important;")
+    thumbnail_dir_layout = QtWidgets.QVBoxLayout(thumbnail_dir_widget)
+    thumbnail_dir_layout.setContentsMargins(2, 2, 2, 2)
+    thumbnail_dir_layout.setSpacing(4)
+    
+    thumbnail_dir_label = QtWidgets.QLabel("Thumbnail Directory:")
+    thumbnail_dir_label.setStyleSheet("color: #aaaaaa;")
+    
+    thumbnail_dir_edit = QtWidgets.QLineEdit()
+    thumbnail_dir_edit.setStyleSheet("background-color: #222222; color: #dddddd; border: 1px solid #444444; border-radius: 3px; padding: 2px;")
+    thumbnail_dir_edit.setFixedHeight(24)
+    thumbnail_dir_edit.setReadOnly(True)
+    
+    # Set the current thumbnail directory
+    from . import data_management as DM
+    thumbnail_dir = DM.PickerDataManager.get_thumbnail_directory()
+    thumbnail_dir_edit.setText(thumbnail_dir)
+    
+    thumbnail_dir_button = QtWidgets.QPushButton("Browse")
+    thumbnail_dir_button.setStyleSheet("""
+        QPushButton {
+            background-color: #5285a6;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            padding: 2px 10px;
+        }
+        QPushButton:hover {
+            background-color: #77c2f2;
+        }
+    """)
+    thumbnail_dir_button.setFixedHeight(24)
+    
+    thumbnail_dir_layout.addWidget(thumbnail_dir_label)
+    thumbnail_dir_layout.addWidget(thumbnail_dir_edit)
+    thumbnail_dir_layout.addWidget(thumbnail_dir_button)
+    
+    widgets['thumbnail_dir_widget'] = thumbnail_dir_widget
+    widgets['thumbnail_dir_edit'] = thumbnail_dir_edit
+    widgets['thumbnail_dir_button'] = thumbnail_dir_button
+    
+    # Connect thumbnail directory functionality
+    def browse_thumbnail_directory():
+        directory = QtWidgets.QFileDialog.getExistingDirectory(
+            parent,
+            "Select Thumbnail Directory",
+            thumbnail_dir_edit.text() or ""
+        )
+        if directory:
+            thumbnail_dir_edit.setText(directory)
+            DM.PickerDataManager.set_thumbnail_directory(directory)
+    
+    thumbnail_dir_button.clicked.connect(browse_thumbnail_directory)
+    
     # Connect radius functionality
     def update_radius():
         tl = top_left_radius.value()

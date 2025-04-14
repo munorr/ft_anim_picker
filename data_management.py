@@ -15,7 +15,8 @@ class PickerDataManager:
                 'namespace': 'None',
                 'show_dots': True
             }
-        })
+        }),
+        'thumbnail_directory': ''  # Default empty string for thumbnail directory
     })
 
     @classmethod
@@ -276,3 +277,14 @@ class PickerDataManager:
                 new_tabs[tab_name] = data['tabs'][tab_name]
         data['tabs'] = new_tabs
         cls.save_data(data)
+        
+    @classmethod
+    def set_thumbnail_directory(cls, directory):
+        data = cls.get_data()
+        data['thumbnail_directory'] = directory
+        cls.save_data(data)
+        
+    @classmethod
+    def get_thumbnail_directory(cls):
+        data = cls.get_data()
+        return data.get('thumbnail_directory', '')
