@@ -894,3 +894,202 @@ def apply_mirror_pose(L="", R=""):
         dialog.add_widget(message_label)
         dialog.add_button_box()
         dialog.exec_()
+
+#---------------------------------------------------------------------------------------------------------------
+def button_appearance(text="", color="", opacity="", source_button=None, target_buttons=None):
+    """
+    Changes the appearance of buttons in the animation picker.
+    
+    This function allows modifying the text, color, and opacity of buttons.
+    If a parameter is left empty, that property will remain unchanged.
+    
+    When called from a script attached to a button, it will modify that specific button.
+    When called directly, it will modify all selected buttons.
+    
+    Can be used in button scripts with the @TF.button_appearance() qualifier syntax:
+    @TF.button_appearance(text="New Label", color="#FF0000")
+    
+    Args:
+        text (str, optional): New text/label for the button(s). Default is "".
+        color (str, optional): New color for the button(s) in hex format (e.g., "#FF0000"). Default is "".
+        opacity (str, optional): New opacity value for the button(s) between 0 and 1. Default is "".
+        source_button (PickerButton, optional): The button that executed the script. Default is None.
+            This is automatically set when the function is called from a button's script.
+        target_buttons (list or str, optional): Specific buttons to modify. Can be:
+            - A list of button objects
+            - A list of button unique IDs as strings
+            - A single button unique ID as a string
+            - None (default): Uses source_button if called from a script, or selected buttons otherwise
+    
+    Example:
+        button_appearance(text="New Label")  # Only changes the text
+        button_appearance(color="#FF0000")  # Only changes the color to red
+        button_appearance(opacity="0.5")    # Only changes the opacity to 50%
+        button_appearance(text="New Label", color="#FF0000", opacity="0.8")  # Changes all properties
+        
+        # In button scripts with qualifier syntax:
+        @TF.button_appearance(text="IK")
+        @TF.button_appearance(text="FK", color="#FF0000")
+    """
+    # Import needed modules
+    from . import main as MAIN
+    import inspect
+    
+    # Determine if this function is being called from a button's script
+    is_from_script = False
+    if source_button is None:
+        for frame_info in inspect.stack():
+            if frame_info.function == 'execute_script_command':
+                is_from_script = True
+                break
+    
+    # Get the current picker window manager instance
+    manager = MAIN.PickerWindowManager.get_instance()
+    
+    # Check if there are any picker widgets available
+    if not manager or not manager._picker_widgets:
+        print("No picker widgets found.")
+        return
+    
+    # Get all available buttons by searching through the widget hierarchy
+    all_buttons = []
+    
+    # First try to get the current picker widget and its canvas
+    for picker_widget in manager._picker_widgets:
+        # Try different ways to access the canvas
+        canvas = None
+        
+        # Method 1: Direct canvas attribute
+        if hasattr(picker_widget, 'canvas'):
+            canvas = picker_widget.canvas
+        
+        # Method 2: Look for canvas in tab system
+        elif hasattr(picker_widget, 'tab_widget'):
+            tab_widget = picker_widget.tab_widget
+            current_tab = tab_widget.currentWidget()
+            if hasattr(current_tab, 'canvas'):
+                canvas = current_tab.canvas
+        
+        # Method 3: Search for canvas in children
+        if not canvas:
+            for child in picker_widget.findChildren(QtWidgets.QWidget):
+                if hasattr(child, 'buttons') and isinstance(child.buttons, list):
+                    canvas = child
+                    break
+        
+        # If we found a canvas, get its buttons
+        if canvas and hasattr(canvas, 'buttons'):
+            all_buttons.extend(canvas.buttons)
+    
+    # If we still don't have any buttons, try a more aggressive search
+    if not all_buttons:
+        # Look for any widget that might be a button
+        for picker_widget in manager._picker_widgets:
+            for child in picker_widget.findChildren(QtWidgets.QWidget):
+                if hasattr(child, 'mode') and hasattr(child, 'label') and hasattr(child, 'unique_id'):
+                    all_buttons.append(child)
+    
+    # If we still don't have any buttons, give up
+    if not all_buttons:
+        print("No buttons found in any picker widget.")
+        return
+    
+    # Get buttons to modify
+    buttons_to_modify = []
+    
+    # Case 1: Specific target buttons provided
+    if target_buttons is not None:
+        # Convert single string to list
+        if isinstance(target_buttons, str):
+            target_buttons = [target_buttons]
+            
+        # Process each target
+        for target in target_buttons:
+            if isinstance(target, str):
+                # Find buttons by unique ID only
+                for btn in all_buttons:
+                    # Match by unique ID
+                    if hasattr(btn, 'unique_id') and btn.unique_id == target:
+                        buttons_to_modify.append(btn)
+                        break
+            else:
+                # Assume it's a button object
+                buttons_to_modify.append(target)
+    
+    # Case 2: Source button provided or detected from script execution
+    elif source_button is not None:
+        # Use the provided source button
+        buttons_to_modify = [source_button]
+    elif is_from_script:
+        # We're being called from a script but don't have the source button
+        # Try to find the button that's executing this script
+        for frame_info in inspect.stack():
+            if hasattr(frame_info, 'frame'):
+                if 'self' in frame_info.frame.f_locals:
+                    potential_button = frame_info.frame.f_locals['self']
+                    if hasattr(potential_button, 'mode') and hasattr(potential_button, 'script_data'):
+                        # This looks like a PickerButton
+                        buttons_to_modify = [potential_button]
+                        break
+    
+    # Case 3: Default to selected buttons
+    else:
+        # Get selected buttons
+        buttons_to_modify = [btn for btn in all_buttons if btn.is_selected]
+    
+    # Check if we have any buttons to modify
+    if not buttons_to_modify:
+        print("No buttons to modify. Please select at least one button or call this function from a button's script.")
+        return
+    
+    # Process and validate the opacity value
+    opacity_value = None
+    if opacity:
+        try:
+            opacity_value = float(opacity)
+            if opacity_value < 0 or opacity_value > 1:
+                print("Opacity must be between 0 and 1. Using current opacity.")
+                opacity_value = None
+        except ValueError:
+            print(f"Invalid opacity value: {opacity}. Using current opacity.")
+    
+    # Apply changes to all buttons
+    for button in buttons_to_modify:
+        # Update text if provided
+        if text:
+            button.label = text
+            # Reset text pixmap cache to force redraw
+            button.text_pixmap = None
+            button.pose_pixmap = None
+            button.last_zoom_factor = 0
+        
+        # Update color if provided
+        if color:
+            # Validate color format
+            if color.startswith('#') and (len(color) == 7 or len(color) == 9):
+                button.color = color
+            else:
+                print(f"Invalid color format: {color}. Color should be in hex format (e.g., #FF0000).")
+        
+        # Update opacity if provided and valid
+        if opacity_value is not None:
+            button.opacity = opacity_value
+        
+        # Update tooltip and force redraw
+        button.update_tooltip()
+        button.update()
+    
+    # Update the canvas if we have access to it
+    if len(buttons_to_modify) > 0 and buttons_to_modify[0].parent():
+        buttons_to_modify[0].parent().update()
+    
+    # Report changes
+    changes = []
+    if text: changes.append(f"text to '{text}'")
+    if color: changes.append(f"color to '{color}'")
+    if opacity_value is not None: changes.append(f"opacity to {opacity_value}")
+    
+    if changes:
+        print(f"Updated {len(buttons_to_modify)} button(s): {', '.join(changes)}")
+    else:
+        print("No changes were made. Please provide at least one parameter (text, color, or opacity).")

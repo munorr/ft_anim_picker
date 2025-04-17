@@ -1335,12 +1335,13 @@ class PickerButton(QtWidgets.QWidget):
     def update_tooltip(self):
         """Update the tooltip with button information"""
 
-        tooltip = f"<b><span style='font-size: 12px;'>Assigned Objects <span style='color: rgba(255, 255, 255, 0.5);'>({len(self.assigned_objects)})</span>:</b></span>"
+        tooltip = f"<b><span style='font-size: 12px;'>Assigned Objects <span style='color: rgba(255, 255, 255, 0.6);'>({len(self.assigned_objects)})</span>:</b></span>"
+        tooltip += f"<i><div style='text-align: left; font-size: 10px; color: rgba(255, 255, 255, 0.8); '> ID: [{self.unique_id}]</div></i>"
 
         if self.thumbnail_path:
-            tooltip += f"<br><span style='font-size: 10px; color: rgba(255, 255, 255, 0.5);'>[{os.path.basename(self.thumbnail_path).split('.')[0]}]</span>"
+            tooltip += f"<br><span style='font-size: 10px; color: rgba(255, 255, 255, 0.6);'>[{os.path.basename(self.thumbnail_path).split('.')[0]}]</span>"
         else:
-            tooltip += f"<br><i><span style='font-size: 9px; color: rgba(255, 255, 255, 0.5);'>No thumbnail</span></i>"
+            tooltip += f"<br><i><span style='font-size: 9px; color: rgba(255, 255, 255, 0.6);'>No thumbnail</span></i>"
         
         if self.assigned_objects:
             object_names = []
@@ -1367,9 +1368,10 @@ class PickerButton(QtWidgets.QWidget):
             else:
                 tooltip += "<br>(No valid objects found)"
         else:
-            tooltip += f"<br><i><span style='font-size: 9px; color: rgba(255, 255, 255, 0.5);'>No objects assigned</span></i>"
+            tooltip += f"<br><i><span style='font-size: 9px; color: rgba(255, 255, 255, 0.6);'>No objects assigned</span></i>"
        
-        # Update tooltip text instead of setting QToolTip
+        # Button ID and mode
+        
         tooltip += f"<div style='text-align: center; font-size: 10px; color: rgba(255, 255, 255, 0.5); '>({self.mode.capitalize()} mode)</div>"
         self.setToolTip(tooltip)   
     #---------------------------------------------------------------------------------------
@@ -2216,15 +2218,17 @@ class PickerButton(QtWidgets.QWidget):
                             r'import ft_anim_picker.tool_functions as TF\nTF.match_fk_to_ik(\1)',
                             modified_code
                         )
-                        # Handle @TF.function_name(arguments) syntax
+                        # Handle @TF.function_name(arguments) syntax with indentation preservation
                         modified_code = re.sub(
-                            r'@TF\.([\w_]+)\s*\((.*?)\)',
-                            r'import ft_anim_picker.tool_functions as TF\nTF.\1(\2)',
-                            modified_code
+                            r'^(\s*)@TF\.([\w_]+)\s*\((.*?)\)',
+                            r'\1import ft_anim_picker.tool_functions as TF\n\1TF.\2(\3)',
+                            modified_code,
+                            flags=re.MULTILINE  # Enable multiline mode to match at the start of each line
                         )
                         
                         # Execute the modified code
                         if script_type == 'python':
+                            print(modified_code)
                             exec(modified_code)
                         else:
                             import maya.mel as mel
