@@ -896,7 +896,7 @@ def apply_mirror_pose(L="", R=""):
         dialog.exec_()
 
 #---------------------------------------------------------------------------------------------------------------
-def button_appearance(text="", color="", opacity="", source_button=None, target_buttons=None):
+def button_appearance(text="", color="", opacity="", selectable="", source_button=None, target_buttons=None):
     """
     Changes the appearance of buttons in the animation picker.
     
@@ -913,6 +913,8 @@ def button_appearance(text="", color="", opacity="", source_button=None, target_
         text (str, optional): New text/label for the button(s). Default is "".
         color (str, optional): New color for the button(s) in hex format (e.g., "#FF0000"). Default is "".
         opacity (str, optional): New opacity value for the button(s) between 0 and 1. Default is "".
+        selectable (str, optional): Whether the button can be selected in select mode (not edit mode). 
+            Values can be "True"/"False" or "1"/"0". Default is "" (no change).
         source_button (PickerButton, optional): The button that executed the script. Default is None.
             This is automatically set when the function is called from a button's script.
         target_buttons (list or str, optional): Specific buttons to modify. Can be:
@@ -925,6 +927,7 @@ def button_appearance(text="", color="", opacity="", source_button=None, target_
         button_appearance(text="New Label")  # Only changes the text
         button_appearance(color="#FF0000")  # Only changes the color to red
         button_appearance(opacity="0.5")    # Only changes the opacity to 50%
+        button_appearance(selectable="False")  # Makes the button not selectable in select mode
         button_appearance(text="New Label", color="#FF0000", opacity="0.8")  # Changes all properties
         
         # In button scripts with qualifier syntax:
@@ -1053,6 +1056,17 @@ def button_appearance(text="", color="", opacity="", source_button=None, target_
         except ValueError:
             print(f"Invalid opacity value: {opacity}. Using current opacity.")
     
+    # Process and validate the selectable value
+    selectable_value = None
+    selectable = str(selectable)
+    if selectable:
+        if selectable.lower() in ["true", "1"]:
+            selectable_value = True
+        elif selectable.lower() in ["false", "0"]:
+            selectable_value = False
+        else:
+            print(f"Invalid selectable value: {selectable}. Use 'True'/'False' or '1'/'0'. Using current setting.")
+    
     # Apply changes to all buttons
     for button in buttons_to_modify:
         # Update text if provided
@@ -1074,6 +1088,13 @@ def button_appearance(text="", color="", opacity="", source_button=None, target_
         # Update opacity if provided and valid
         if opacity_value is not None:
             button.opacity = opacity_value
+            
+        # Update selectable state if provided and valid
+        if selectable_value is not None:
+            # Add selectable attribute if it doesn't exist
+            if not hasattr(button, 'selectable'):
+                button.selectable = True  # Default to True for backward compatibility
+            button.selectable = selectable_value
         
         # Update tooltip and force redraw
         button.update_tooltip()
@@ -1088,6 +1109,7 @@ def button_appearance(text="", color="", opacity="", source_button=None, target_
     if text: changes.append(f"text to '{text}'")
     if color: changes.append(f"color to '{color}'")
     if opacity_value is not None: changes.append(f"opacity to {opacity_value}")
+    if selectable_value is not None: changes.append(f"selectable to {selectable_value}")
     
     if changes:
         print(f"Updated {len(buttons_to_modify)} button(s): {', '.join(changes)}")

@@ -62,6 +62,12 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.main_frame.setMouseTracking(True)
         self.main_frame.installEventFilter(self)
         
+        # Add resize timer for performance
+        self.resize_timer = QTimer(self)
+        self.resize_timer.setSingleShot(True)
+        self.resize_timer.setInterval(50)  # 50ms throttle
+        self.resize_timer.timeout.connect(self.finalize_resize)
+        
         self.available_ids = {}
 
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -716,6 +722,8 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 self.resize_start_pos = event.globalPos()
                 self.initial_size = self.size()
                 self.initial_pos = self.pos()
+                # Capture mouse to prevent losing focus during resize
+                self.grabMouse()
             else:
                 self.resizing = False
                     
@@ -723,18 +731,23 @@ class AnimPickerWindow(QtWidgets.QWidget):
 
     def mouseMoveEvent(self, event):
         if event.buttons() == QtCore.Qt.LeftButton:
-            # First check if we're interacting with special widgets
-            child_widget = self.childAt(event.pos())
-            current_widget = child_widget
-            while current_widget:
-                if isinstance(current_widget, (PC.PickerCanvas, PB.PickerButton, 
-                                            TS.TabButton, CB.CustomRadioButton)):
-                    event.accept()
-                    return
-                current_widget = current_widget.parent()
+            # If we're already in resize mode, skip widget checks
+            if not self.resizing:
+                # First check if we're interacting with special widgets
+                child_widget = self.childAt(event.pos())
+                current_widget = child_widget
+                while current_widget:
+                    if isinstance(current_widget, (PC.PickerCanvas, PB.PickerButton, 
+                                                TS.TabButton, CB.CustomRadioButton)):
+                        event.accept()
+                        return
+                    current_widget = current_widget.parent()
 
-            # Handle resize/move operations only if not on special widgets
+            # Handle resize/move operations
             if self.resizing and self.resize_edge:
+                # Disable updates during resize for better performance
+                self.setUpdatesEnabled(False)
+                
                 delta = event.globalPos() - self.resize_start_pos
                 new_geometry = self.geometry()
                 
@@ -759,7 +772,12 @@ class AnimPickerWindow(QtWidgets.QWidget):
                     new_geometry.setWidth(new_width)
                 
                 self.setGeometry(new_geometry)
-                self.update_buttons_for_current_tab()
+                
+                # Restart the timer to throttle updates
+                self.resize_timer.start()
+                
+                # Re-enable updates
+                self.setUpdatesEnabled(True)
             elif not self.resizing:     
                 delta = event.globalPos() - self.oldPos
                 self.move(self.x() + delta.x(), self.y() + delta.y())
@@ -785,8 +803,16 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 self.resize_edge = None
                 self.releaseMouse()
                 self.unsetCursor()  # Use unsetCursor instead of setting arrow cursor
-            self.update_buttons_for_current_tab()
+                # Immediately finalize the resize when mouse is released
+                self.finalize_resize()
+                # Cancel any pending timer to avoid duplicate updates
+                self.resize_timer.stop()
 
+    def finalize_resize(self):
+        # This method is called when resize timer times out or when mouse is released
+        # Update button positions and layout only once at the end of resize
+        self.update_buttons_for_current_tab()
+        
     def eventFilter(self, obj, event):
         if obj == self.resize_handle:
             if event.type() == QtCore.QEvent.MouseButtonPress:
@@ -799,11 +825,19 @@ class AnimPickerWindow(QtWidgets.QWidget):
                     return True
                     
             elif event.type() == QtCore.QEvent.MouseMove and self.resizing:
+                # Disable updates during resize for better performance
+                self.setUpdatesEnabled(False)
+                
                 delta = event.globalPos() - self.resize_start_pos
                 new_width = max(self.minimumWidth(), self.initial_size.width() + delta.x())
                 new_height = max(self.minimumHeight(), self.initial_size.height() + delta.y())
                 self.resize(new_width, new_height)
-                self.update_buttons_for_current_tab()
+                
+                # Restart the timer to throttle updates
+                self.resize_timer.start()
+                
+                # Re-enable updates
+                self.setUpdatesEnabled(True)
                 return True
                 
             elif event.type() == QtCore.QEvent.MouseButtonRelease:
@@ -828,6 +862,12 @@ class AnimPickerWindow(QtWidgets.QWidget):
                         else:
                             self.unsetCursor()
                 return False
+            elif event.type() == QtCore.QEvent.MouseButtonDblClick:
+                # Reset window to original size when double-clicked
+                self.setGeometry(1150, 280, 350, 450)
+                self.update_buttons_for_current_tab()
+                UT.maya_main_window().activateWindow()
+                return True
             elif event.type() == QtCore.QEvent.Leave:
                 if not self.resizing:
                     self.unsetCursor()
@@ -853,21 +893,23 @@ class AnimPickerWindow(QtWidgets.QWidget):
         width = self.width()
         height = self.height()
         edge_size = self.resize_range
-
-        return (pos.x() <= edge_size or 
-                pos.x() >= width - edge_size or 
-                pos.y() <= edge_size or 
-                pos.y() >= height - edge_size)
+        
+        # Make the detection slightly more forgiving
+        return (pos.x() <= edge_size + 2 or 
+                pos.x() >= width - edge_size - 2 or 
+                pos.y() <= edge_size + 2 or 
+                pos.y() >= height - edge_size - 2)
     
     def get_resize_edge(self, pos):
         width = self.width()
         height = self.height()
         edge_size = self.resize_range
         
-        is_top = pos.y() <= edge_size
-        is_bottom = pos.y() >= height - edge_size
-        is_left = pos.x() <= edge_size
-        is_right = pos.x() >= width - edge_size
+        # Use the same more forgiving edge detection as is_in_resize_range
+        is_top = pos.y() <= edge_size + 2
+        is_bottom = pos.y() >= height - edge_size - 2
+        is_left = pos.x() <= edge_size + 2
+        is_right = pos.x() >= width - edge_size - 2
         
         if is_top and is_left: return 'top_left'
         if is_top and is_right: return 'top_right'

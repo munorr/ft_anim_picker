@@ -230,6 +230,10 @@ class PickerCanvas(QtWidgets.QWidget):
 
         selection_changed = False
         for button in self.buttons:
+            # Skip buttons that are not selectable in select mode
+            if not self.edit_mode and hasattr(button, 'selectable') and not button.selectable:
+                continue
+                
             button_rect = button.geometry()
             if rect.intersects(button_rect):
                 if not button.is_selected:
@@ -269,9 +273,11 @@ class PickerCanvas(QtWidgets.QWidget):
                 button_height
             )
             
-            # Check intersection in scene coordinates
+            # Check intersection in scene coordinates and respect selectable property
             if scene_rect.intersects(button_rect):
-                current_buttons.add(button)
+                # Only add selectable buttons when not in edit mode
+                if self.edit_mode or (hasattr(button, 'selectable') and button.selectable):
+                    current_buttons.add(button)
                 
         # Reset visual selection for buttons no longer in rectangle
         for button in self.buttons_in_current_drag - current_buttons:
@@ -1021,7 +1027,11 @@ class PickerCanvas(QtWidgets.QWidget):
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
-            self.focus_canvas()
+            # Reset to original size when double-clicked
+            self.zoom_factor = 1.0
+            self.pan_offset = QtCore.QPointF(0, 0)
+            self.update()
+            self.update_button_positions()
         super().mouseDoubleClickEvent(event)
         
     def mousePressEvent(self, event):

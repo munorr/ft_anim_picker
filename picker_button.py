@@ -927,8 +927,8 @@ class PickerButton(QtWidgets.QWidget):
         self.border_radius = 3
         self.radius = [3, 3, 3, 3]  # [top_left, top_right, bottom_right, bottom_left]
         self.is_selected = False
+        self.selectable = True  # Whether the button can be selected in select mode (not edit mode)
     
-
         self.setStyleSheet(f"QToolTip {{background-color: {UT.rgba_value(color,.8,alpha=1)}; color: #eeeeee ; border: none; border-radius: 3px;}}")
         
         self.edit_mode = False
@@ -977,7 +977,8 @@ class PickerButton(QtWidgets.QWidget):
             painter.setBrush(QtGui.QColor(self.color))
         else:
             painter.setBrush(QtGui.QColor(255, 255, 255, 120))
-            
+        
+        # Apply the button's opacity without modification for selectable state
         painter.setOpacity(self.opacity)
         painter.setPen(QtCore.Qt.NoPen)
 
@@ -1267,16 +1268,18 @@ class PickerButton(QtWidgets.QWidget):
                         button.button_start_pos = button.scene_position
                 else:
                     if self.mode == 'select':
-                        # Existing selection behavior
-                        canvas.buttons_in_current_drag.clear()
-                        canvas.buttons_in_current_drag.add(self)
-                        
-                        if not event.modifiers() & QtCore.Qt.ShiftModifier:
-                            canvas.clear_selection()
-                        self.is_selected = not self.is_selected if event.modifiers() & QtCore.Qt.ShiftModifier else True
-                        self.update()
-                        
-                        canvas.apply_final_selection(event.modifiers() & QtCore.Qt.ShiftModifier)
+                        # Only allow selection if the button is selectable
+                        if hasattr(self, 'selectable') and self.selectable:
+                            # Existing selection behavior
+                            canvas.buttons_in_current_drag.clear()
+                            canvas.buttons_in_current_drag.add(self)
+                            
+                            if not event.modifiers() & QtCore.Qt.ShiftModifier:
+                                canvas.clear_selection()
+                            self.is_selected = not self.is_selected if event.modifiers() & QtCore.Qt.ShiftModifier else True
+                            self.update()
+                            
+                            canvas.apply_final_selection(event.modifiers() & QtCore.Qt.ShiftModifier)
                     elif self.mode == 'script':
                         # script mode behavior
                         self.execute_script_command()
