@@ -4,6 +4,7 @@ import maya.api.OpenMaya as om
 from maya import OpenMayaUI as omui
 from functools import wraps
 import re
+import json
 
 try:
     from PySide6 import QtWidgets, QtCore, QtGui
@@ -742,7 +743,7 @@ def match_all():
 
 #---------------------------------------------------------------------------------------------------------------
 @undoable
-def apply_mirror_pose(L="", R=""):
+def apply_mirror_pose(L="", R="", custom_flip_controls=None, auto_detect_orientation=True):
     """
     Applies the pose of selected objects to their mirrored counterparts.
     
@@ -758,142 +759,571 @@ def apply_mirror_pose(L="", R=""):
     Args:
         L (str, optional): Custom left side identifier. Default is "".
         R (str, optional): Custom right side identifier. Default is "".
+        custom_flip_controls (dict, optional): Dictionary of controls that need custom flipping logic.
+            Format: {"control_name": {"attrs": ["attr1", "attr2"], "flip": True/False}}
+            If flip is True, the standard mirroring logic is applied.
+            If flip is False, the value is copied directly without mirroring.
+        auto_detect_orientation (bool, optional): If True, automatically determines which attributes
+            need to be flipped based on the control's world orientation. Default is True.
     
     Example:
-        apply_mirror_pose()  # Uses default naming conventions
+        apply_mirror_pose()  # Uses default naming conventions with auto-orientation detection
         apply_mirror_pose(L="LFT", R="RGT")  # Uses custom naming convention
+        apply_mirror_pose(auto_detect_orientation=False, custom_flip_controls={"shoulder_ctrl": {"attrs": ["rotateX"], "flip": False}})
     """
     import maya.cmds as cmds
     
     # Get selected objects
     selected_objects = cmds.ls(selection=True, long=True)
     if not selected_objects:
-        manager = MAIN.PickerWindowManager.get_instance()
-        parent = manager._picker_widgets[0] if manager._picker_widgets else None
-        dialog = CD.CustomDialog(parent=parent, title="No Selection", size=(250, 80), info_box=True)
-        message_label = QtWidgets.QLabel("Please select objects in Maya before applying mirror pose.")
-        message_label.setWordWrap(True)
-        dialog.add_widget(message_label)
-        dialog.add_button_box()
-        dialog.exec_()
+        _show_dialog("No Selection", "Please select objects in Maya before applying mirror pose.")
         return
     
-    # Define common naming conventions for left and right sides
+    # Initialize data structures
+    naming_conventions = _get_naming_conventions(L, R)
+    custom_flip_controls = custom_flip_controls or {}
+    mirror_data = {}
+    
+    # Auto-detect orientation if enabled
+    if auto_detect_orientation:
+        orientation_data = _collect_orientation_data(selected_objects, cmds)
+        custom_flip_controls = _analyze_orientations(selected_objects, orientation_data, naming_conventions, custom_flip_controls, cmds)
+    
+    # Process each selected object to collect mirror data
+    mirror_data = _collect_mirror_data(selected_objects, naming_conventions, custom_flip_controls, cmds)
+    
+    # Apply the collected mirror data
+    mirrored_objects = _apply_mirror_data(mirror_data, cmds)
+    
+    # Select the mirrored objects and show feedback
+    if mirrored_objects:
+        cmds.select(mirrored_objects, replace=True)
+        #_show_dialog("Mirror Pose Applied", f"Successfully mirrored pose to {len(mirrored_objects)} object(s).")
+    else:
+        _show_dialog("Mirror Pose Failed", "Could not find any matching objects to mirror the pose to. "
+                                      "Please check that your objects follow standard naming conventions "
+                                      "(L_/R_, _L/_R, left_/right_, _left/_right) or provide custom prefixes.")
+
+def _show_dialog(title, message, size=(300, 100)):
+    """
+    Shows a dialog with the given title and message.
+    
+    Args:
+        title (str): The dialog title
+        message (str): The message to display
+        size (tuple, optional): Dialog size as (width, height). Default is (300, 100).
+    """
+    manager = MAIN.PickerWindowManager.get_instance()
+    parent = manager._picker_widgets[0] if manager._picker_widgets else None
+    dialog = CD.CustomDialog(parent=parent, title=title, size=size, info_box=True)
+    message_label = QtWidgets.QLabel(message)
+    message_label.setWordWrap(True)
+    dialog.add_widget(message_label)
+    dialog.add_button_box()
+    dialog.exec_()
+
+def _get_naming_conventions(L, R):
+    """
+    Returns a list of naming conventions for left and right sides.
+    
+    Args:
+        L (str): Custom left side identifier
+        R (str): Custom right side identifier
+        
+    Returns:
+        list: List of dictionaries with left and right patterns
+    """
     naming_conventions = [
         # Prefix
         {"left": "L_", "right": "R_"},
         {"left": "left_", "right": "right_"},
+        {"left": "Lf_", "right": "Rt_"},
+        {"left": "lt_", "right": "rt_"},
+        
         # Suffix
         {"left": "_L", "right": "_R"},
         {"left": "_left", "right": "_right"},
+        {"left": "_lt", "right": "_rt"},
+        {"left": "_lf", "right": "_rf"},
+        {"left": "_l_", "right": "_r_"},
+        
+        # Other patterns
+        {"left": ":l_", "right": ":r_"},
+        {"left": "^l_", "right": "^r_"},
+        {"left": "_l$", "right": "_r$"},
+        {"left": ":L", "right": ":R"},
+        {"left": "^L", "right": "^R"},
+        {"left": "Left", "right": "Right"},
+        {"left": "left", "right": "right"}
     ]
     
     # Add custom naming convention if provided
     if L and R:
         naming_conventions.append({"left": L, "right": R})
+        
+    return naming_conventions
+
+def _collect_orientation_data(objects, cmds):
+    """
+    Collects orientation data for the given objects.
     
-    # Store successfully mirrored objects for reporting
-    mirrored_objects = []
+    Args:
+        objects (list): List of object names
+        cmds: Maya commands module
+        
+    Returns:
+        dict: Dictionary mapping object names to orientation data
+    """
+    orientation_data = {}
     
-    # Process each selected object
-    for obj in selected_objects:
+    for obj in objects:
+        short_name = obj.split('|')[-1]
+        
+        try:
+            # Get world matrix
+            world_matrix = cmds.xform(obj, query=True, matrix=True, worldSpace=True)
+            
+            # Extract orientation vectors from the matrix
+            x_axis = [world_matrix[0], world_matrix[1], world_matrix[2]]
+            y_axis = [world_matrix[4], world_matrix[5], world_matrix[6]]
+            z_axis = [world_matrix[8], world_matrix[9], world_matrix[10]]
+            
+            # Store orientation data
+            orientation_data[short_name] = {
+                'x_axis': x_axis,
+                'y_axis': y_axis,
+                'z_axis': z_axis
+            }
+            
+            print(f"Collected orientation data for {short_name}")
+        except Exception as e:
+            print(f"Error collecting orientation data for {short_name}: {e}")
+    
+    return orientation_data
+
+def _find_mirrored_name(obj_name, naming_conventions, mirror_preferences=None):
+    """
+    Finds the mirrored name for the given object name.
+    
+    Args:
+        obj_name (str): Object name to find mirror for
+        naming_conventions (list): List of naming conventions
+        mirror_preferences (dict, optional): Dictionary of mirror preferences
+        
+    Returns:
+        tuple: (mirrored_name, is_center_object) where mirrored_name is the name of the mirrored object
+               and is_center_object is a boolean indicating if the object is a center object
+    """
+    # Check if we have a mirror preference with a counterpart defined
+    if mirror_preferences:
+        # First check if this object has preferences with a counterpart defined
+        if obj_name in mirror_preferences:
+            pref_data = mirror_preferences[obj_name]
+            if "counterpart" in pref_data and pref_data["counterpart"]:
+                return pref_data["counterpart"], False
+        
+        # If not, check if any object has this object defined as its counterpart
+        for other_obj, pref_data in mirror_preferences.items():
+            if "counterpart" in pref_data and pref_data["counterpart"] == obj_name:
+                return other_obj, False
+    
+    is_center_object = True  # Assume it's a center object until proven otherwise
+    
+    for convention in naming_conventions:
+        left_pattern = convention["left"]
+        right_pattern = convention["right"]
+        
+        if left_pattern in obj_name:
+            is_center_object = False
+            mirrored_name = obj_name.replace(left_pattern, right_pattern)
+            return mirrored_name, is_center_object
+        elif right_pattern in obj_name:
+            is_center_object = False
+            mirrored_name = obj_name.replace(right_pattern, left_pattern)
+            return mirrored_name, is_center_object
+    
+    # If no pattern matched, it's a center object
+    return obj_name, is_center_object
+
+def _analyze_orientations(objects, orientation_data, naming_conventions, custom_flip_controls, cmds):
+    """
+    Analyzes orientations of objects and their mirrors to determine custom flipping logic.
+    
+    Args:
+        objects (list): List of object names
+        orientation_data (dict): Dictionary of orientation data
+        naming_conventions (list): List of naming conventions
+        custom_flip_controls (dict): Dictionary of custom flip controls
+        cmds: Maya commands module
+        
+    Returns:
+        dict: Updated custom_flip_controls dictionary
+    """
+    for obj in objects:
+        short_name = obj.split('|')[-1]
+        
+        # Skip if we don't have orientation data for this control
+        if short_name not in orientation_data:
+            continue
+        
+        # Find the mirrored object name
+        mirrored_name, _ = _find_mirrored_name(short_name, naming_conventions)
+        
+        # Skip if we couldn't find a mirrored name or it doesn't exist in orientation data
+        if mirrored_name != short_name and mirrored_name not in orientation_data:
+            continue
+        
+        # Compare orientations between the control and its mirror
+        obj_orient = orientation_data[short_name]
+        mirror_orient = orientation_data[mirrored_name]
+        
+        # Initialize custom flip data for this control if not already present
+        if short_name not in custom_flip_controls:
+            custom_flip_controls[short_name] = {"attrs": [], "flip": {}}
+        
+        # Analyze X axis (affects rotateX)
+        x_dot_product = obj_orient['x_axis'][0] * -mirror_orient['x_axis'][0]  # Negate for mirror reflection
+        if x_dot_product < 0:  # Standard case
+            custom_flip_controls[short_name]["flip"]["rotateX"] = True
+        else:  # Needs custom handling
+            custom_flip_controls[short_name]["attrs"].append("rotateX")
+            custom_flip_controls[short_name]["flip"]["rotateX"] = False
+            print(f"Auto-detected custom flipping for {short_name}.rotateX")
+        
+        # Analyze Y axis (affects rotateY)
+        y_dot_product = obj_orient['y_axis'][1] * mirror_orient['y_axis'][1]  # No negation for Y
+        if y_dot_product > 0:  # Standard case
+            custom_flip_controls[short_name]["flip"]["rotateY"] = True
+        else:  # Needs custom handling
+            custom_flip_controls[short_name]["attrs"].append("rotateY")
+            custom_flip_controls[short_name]["flip"]["rotateY"] = False
+            print(f"Auto-detected custom flipping for {short_name}.rotateY")
+        
+        # Analyze Z axis (affects rotateZ)
+        z_dot_product = obj_orient['z_axis'][2] * mirror_orient['z_axis'][2]  # No negation for Z
+        if z_dot_product > 0:  # Standard case
+            custom_flip_controls[short_name]["flip"]["rotateZ"] = True
+        else:  # Needs custom handling
+            custom_flip_controls[short_name]["attrs"].append("rotateZ")
+            custom_flip_controls[short_name]["flip"]["rotateZ"] = False
+            print(f"Auto-detected custom flipping for {short_name}.rotateZ")
+        
+        # Also add the mirrored control with the same settings
+        if mirrored_name != short_name and mirrored_name not in custom_flip_controls:
+            custom_flip_controls[mirrored_name] = {
+                "attrs": custom_flip_controls[short_name]["attrs"].copy(),
+                "flip": custom_flip_controls[short_name]["flip"].copy()
+            }
+    
+    return custom_flip_controls
+
+def _should_flip_attribute(control_name, attr, custom_flip_controls):
+    """
+    Determines if an attribute should be flipped based on custom flip controls.
+    
+    Args:
+        control_name (str): Name of the control
+        attr (str): Attribute name
+        custom_flip_controls (dict): Dictionary of custom flip controls
+        
+    Returns:
+        bool: True if the attribute should be flipped, False otherwise
+    """
+    should_flip = True  # Default behavior
+    
+    # Check if this control is in the custom flip controls dictionary
+    if control_name in custom_flip_controls:
+        # Check if this attribute has custom flipping logic
+        if attr in custom_flip_controls[control_name].get('attrs', []):
+            # Get the custom flipping logic for this attribute
+            should_flip = custom_flip_controls[control_name].get('flip', {}).get(attr, True)
+    
+    return should_flip
+
+def _collect_mirror_data(objects, naming_conventions, custom_flip_controls, cmds):
+    """
+    Collects mirror data for the given objects.
+    
+    Args:
+        objects (list): List of object names
+        naming_conventions (list): List of naming conventions
+        custom_flip_controls (dict): Dictionary of custom flip controls
+        cmds: Maya commands module
+        
+    Returns:
+        dict: Dictionary mapping target objects to attribute values
+    """
+    mirror_data = {}
+    
+    # Load mirror preferences for all objects if they exist
+    mirror_preferences = {}
+    for obj in objects:
+        short_name = obj.split('|')[-1]
+        if cmds.attributeQuery("mirrorPreference", node=short_name, exists=True):
+            try:
+                pref_data_str = cmds.getAttr(f"{short_name}.mirrorPreference")
+                mirror_preferences[short_name] = json.loads(pref_data_str)
+            except (json.JSONDecodeError, Exception) as e:
+                print(f"Error loading mirror preferences for {short_name}: {e}")
+    
+    # Also load mirror preferences for potential counterparts
+    # This allows us to use counterpart preferences when an object doesn't have its own
+    potential_counterparts = set()
+    for obj in objects:
+        short_name = obj.split('|')[-1]
+        # Find the potential counterpart name
+        counterpart_name, _ = _find_mirrored_name(short_name, naming_conventions)
+        if counterpart_name != short_name:
+            potential_counterparts.add(counterpart_name)
+    
+    # Load preferences for counterparts if they exist
+    for counterpart in potential_counterparts:
+        if counterpart not in mirror_preferences and cmds.objExists(counterpart):
+            if cmds.attributeQuery("mirrorPreference", node=counterpart, exists=True):
+                try:
+                    pref_data_str = cmds.getAttr(f"{counterpart}.mirrorPreference")
+                    mirror_preferences[counterpart] = json.loads(pref_data_str)
+                except (json.JSONDecodeError, Exception) as e:
+                    print(f"Error loading mirror preferences for counterpart {counterpart}: {e}")
+    
+    
+    for obj in objects:
         # Get the short name for easier pattern matching
         short_name = obj.split('|')[-1]
         
         # Try to find the corresponding mirrored object
         mirrored_obj = None
         
-        for convention in naming_conventions:
-            left_pattern = convention["left"]
-            right_pattern = convention["right"]
-            
-            # Check if object has left pattern and replace with right pattern
-            if left_pattern in short_name:
-                mirrored_name = short_name.replace(left_pattern, right_pattern)
-                print(mirrored_name)
-                if cmds.objExists(mirrored_name):
-                    mirrored_obj = mirrored_name
-                    break
-            
-            # Check if object has right pattern and replace with left pattern
-            elif right_pattern in short_name:
-                mirrored_name = short_name.replace(right_pattern, left_pattern)
-                print(mirrored_name)
-                if cmds.objExists(mirrored_name):
-                    mirrored_obj = mirrored_name
-                    break
+        # Find mirrored name, using mirror preferences if available
+        mirrored_name, is_center_object = _find_mirrored_name(short_name, naming_conventions, mirror_preferences)
+        print(f"Found potential mirror: {mirrored_name}")
         
-        # If we found a mirrored object, copy the pose
+        # Check if mirrored object exists
+        if cmds.objExists(mirrored_name):
+            mirrored_obj = mirrored_name
+        # If no mirrored object was found but it's a center object, use the object itself
+        elif is_center_object:
+            print(f"{short_name} appears to be a center object, will mirror its pose values")
+            mirrored_obj = obj
+        
+        # If we found a mirrored object, collect the attribute values
         if mirrored_obj:
+            # Initialize attribute dictionary for this mirrored object if not already done
+            if mirrored_obj not in mirror_data:
+                mirror_data[mirrored_obj] = {}
+            
             # Get all keyable attributes of the source object
             attrs = cmds.listAttr(obj, keyable=True) or []
+            print(f"Collecting attributes for {obj} -> {mirrored_obj}: {attrs}")
             
-            # Copy attribute values from source to mirrored object
-            print(attrs)
-            for attr in attrs:
-                try:
-                    # Check if the attribute exists on both objects
-                    if cmds.objExists(f"{obj}.{attr}") and cmds.objExists(f"{mirrored_obj}.{attr}"):
-                        # Check if the attribute is not locked on the target
-                        if not cmds.getAttr(f"{mirrored_obj}.{attr}", lock=True):
-                            # Get the value from the source object
-                            value = cmds.getAttr(f"{obj}.{attr}")
-                            
-                            # Handle different attribute types
-                            if isinstance(value, list):
-                                # For multi-attributes like matrices or arrays
-                                for i, val in enumerate(value[0]):
-                                    # Check if we need to mirror the value (for rotation and translation)
-                                    mirrored_val = val
-                                    
-                                    # Mirror translation and rotation values for x-axis
-                                    if attr in ['translateX', 'rotateY', 'rotateZ']:
-                                        mirrored_val = -val
-                                    
-                                    cmds.setAttr(f"{mirrored_obj}.{attr}[{i}]", mirrored_val)
-                            else:
-                                # For simple attributes
-                                mirrored_val = value
-                                
-                                # Mirror translation and rotation values for x-axis
-                                if attr == 'translateX' or attr == 'rotateY' or attr == 'rotateZ':
-                                    mirrored_val = -value
-                                
-                                cmds.setAttr(f"{mirrored_obj}.{attr}", mirrored_val)
-                            
-                            # Add to the list of mirrored objects if not already there
-                            if mirrored_obj not in mirrored_objects:
-                                mirrored_objects.append(mirrored_obj)
-                except Exception as e:
-                    print(f"Error mirroring attribute {attr} from {obj} to {mirrored_obj}: {e}")
+            # Check if this is a center object (self-mirroring)
+            is_self_mirroring = (obj == mirrored_obj)
+            
+            # Collect attribute values, passing mirror preferences
+            _collect_attribute_values(obj, mirrored_obj, attrs, short_name, is_self_mirroring, custom_flip_controls, mirror_data, cmds, mirror_preferences)
     
-    # Select the mirrored objects
-    if mirrored_objects:
-        cmds.select(mirrored_objects, replace=True)
+    return mirror_data
+
+def _collect_attribute_values(source_obj, target_obj, attrs, control_name, is_self_mirroring, custom_flip_controls, mirror_data, cmds, mirror_preferences=None):
+    """
+    Collects attribute values from source object to target object.
+    
+    Args:
+        source_obj (str): Source object name
+        target_obj (str): Target object name
+        attrs (list): List of attributes
+        control_name (str): Control name for custom flip lookup
+        is_self_mirroring (bool): Whether this is a self-mirroring (center) object
+        custom_flip_controls (dict): Dictionary of custom flip controls
+        mirror_data (dict): Dictionary to store mirror data
+        cmds: Maya commands module
+        mirror_preferences (dict, optional): Dictionary of mirror preferences
+    """
+    for attr in attrs:
+        try:
+            # Check if the attribute exists on both objects and is not locked on target
+            if (cmds.objExists(f"{source_obj}.{attr}") and 
+                cmds.objExists(f"{target_obj}.{attr}") and 
+                not cmds.getAttr(f"{target_obj}.{attr}", lock=True)):
+                
+                # Get the value from the source object
+                value = cmds.getAttr(f"{source_obj}.{attr}")
+                
+                # Handle different attribute types
+                if isinstance(value, list):
+                    _handle_multi_attribute(source_obj, attr, value, control_name, custom_flip_controls, target_obj, mirror_data)
+                else:
+                    _handle_simple_attribute(attr, value, control_name, custom_flip_controls, target_obj, mirror_data, is_self_mirroring, mirror_preferences)
+        except Exception as e:
+            print(f"Error collecting attribute {attr} from {source_obj} to {target_obj}: {e}")
+
+def _handle_multi_attribute(source_obj, attr, value, control_name, custom_flip_controls, target_obj, mirror_data):
+    """
+    Handles multi-attributes like matrices or arrays.
+    
+    Args:
+        source_obj (str): Source object name
+        attr (str): Attribute name
+        value (list): Attribute value
+        control_name (str): Control name for custom flip lookup
+        custom_flip_controls (dict): Dictionary of custom flip controls
+        target_obj (str): Target object name
+        mirror_data (dict): Dictionary to store mirror data
+    """
+    multi_values = []
+    for i, val in enumerate(value[0]):
+        # Check if we need to mirror the value
+        mirrored_val = val
         
-        # Show success message
-        # Get the active Animation Picker window from the manager
-        manager = MAIN.PickerWindowManager.get_instance()
-        parent = manager._picker_widgets[0] if manager._picker_widgets else None
-        dialog = CD.CustomDialog(parent=parent, title="Mirror Pose Applied", size=(240, 100), info_box=True)
-        message_label = QtWidgets.QLabel(f"Successfully mirrored pose to {len(mirrored_objects)} object(s).")
-        message_label.setWordWrap(True)
-        dialog.add_widget(message_label)
-        dialog.add_button_box()
-        #dialog.exec_()
+        # Check if this attribute should be flipped
+        should_flip = _should_flip_attribute(control_name, attr, custom_flip_controls)
+        
+        # Apply standard mirroring logic if should_flip is True
+        if should_flip and attr in ['translateX', 'rotateY', 'rotateZ']:
+            mirrored_val = -val
+        
+        multi_values.append(mirrored_val)
+    
+    # Store the multi-attribute values
+    mirror_data[target_obj][attr] = {'multi': True, 'values': multi_values}
+
+def _handle_simple_attribute(attr, value, control_name, custom_flip_controls, target_obj, mirror_data, is_self_mirroring, mirror_preferences=None):
+    """
+    Handles simple (non-multi) attributes.
+    
+    Args:
+        attr (str): Attribute name
+        value: Attribute value
+        control_name (str): Control name for custom flip lookup
+        custom_flip_controls (dict): Dictionary of custom flip controls
+        target_obj (str): Target object name
+        mirror_data (dict): Dictionary to store mirror data
+        is_self_mirroring (bool): Whether this is a self-mirroring (center) object
+        mirror_preferences (dict, optional): Dictionary of mirror preferences
+    """
+    mirrored_val = value
+    
+    # Check if we have mirror preferences for this control or its counterpart
+    use_mirror_prefs = False
+    pref_data = None
+    
+    # First check if the object itself has mirror preferences
+    if mirror_preferences and control_name in mirror_preferences:
+        pref_data = mirror_preferences[control_name]
     else:
-        # Show error message if no objects were mirrored
-        # Get the active Animation Picker window from the manager
-        manager = MAIN.PickerWindowManager.get_instance()
-        parent = manager._picker_widgets[0] if manager._picker_widgets else None
-        dialog = CD.CustomDialog(parent=parent, title="Mirror Pose Failed", size=(300, 120), info_box=True)
-        message_label = QtWidgets.QLabel("Could not find any matching objects to mirror the pose to. "
-                                     "Please check that your objects follow standard naming conventions "
-                                     "(L_/R_, _L/_R, left_/right_, _left/_right) or provide custom prefixes.")
-        message_label.setWordWrap(True)
-        dialog.add_widget(message_label)
-        dialog.add_button_box()
-        dialog.exec_()
+        # If not, check if we have the counterpart's preferences loaded
+        # We need to find the counterpart name first
+        for obj_name, prefs in mirror_preferences.items():
+            if "counterpart" in prefs and prefs["counterpart"] == control_name:
+                # We found a counterpart that points to this control
+                pref_data = prefs
+                print(f"Using counterpart {obj_name}'s mirror preferences for {control_name}")
+                break
+    
+    if pref_data:
+        # Handle translation attributes
+        if attr.startswith('translate'):
+            axis = attr[-1].lower()  # Get the axis (X, Y, or Z)
+            if "translate" in pref_data and axis in pref_data["translate"]:
+                use_mirror_prefs = True
+                mirror_type = pref_data["translate"][axis]
+                
+                if mirror_type == "invert":
+                    mirrored_val = -value
+                else:  # "none"
+                    mirrored_val = value
+        
+        # Handle rotation attributes
+        elif attr.startswith('rotate'):
+            axis = attr[-1].lower()  # Get the axis (X, Y, or Z)
+            if "rotate" in pref_data and axis in pref_data["rotate"]:
+                use_mirror_prefs = True
+                mirror_type = pref_data["rotate"][axis]
+                
+                if mirror_type == "invert":
+                    mirrored_val = -value
+                else:  # "none"
+                    mirrored_val = value
+    
+    # If we didn't use mirror preferences, use the standard logic
+    if not use_mirror_prefs:
+        # Check if this attribute should be flipped
+        should_flip = _should_flip_attribute(control_name, attr, custom_flip_controls)
+        
+        # Apply standard mirroring logic if should_flip is True
+        if should_flip and (attr == 'translateX' or attr == 'rotateY' or attr == 'rotateZ'):
+            mirrored_val = -value
+    
+    # For center objects, only mirror specific attributes
+    if is_self_mirroring:
+        # Only store attributes that need to be flipped for center objects
+        if (use_mirror_prefs or (should_flip and attr in ['translateX', 'rotateY', 'rotateZ'])):
+            mirror_data[target_obj][attr] = {'multi': False, 'value': mirrored_val}
+    else:
+        # Store all attributes for regular mirroring
+        mirror_data[target_obj][attr] = {'multi': False, 'value': mirrored_val}
+
+def _apply_mirror_data(mirror_data, cmds):
+    """
+    Applies the collected mirror data to the target objects.
+    
+    Args:
+        mirror_data (dict): Dictionary mapping target objects to attribute values
+        cmds: Maya commands module
+        
+    Returns:
+        list: List of mirrored objects
+    """
+    mirrored_objects = []
+    locked_attrs = []
+    print(f"Applying mirrored data to {len(mirror_data)} objects")
+    
+    for target_obj, attrs_data in mirror_data.items():
+        print(f"Setting attributes for {target_obj}")
+        for attr, data in attrs_data.items():
+            full_attr = f"{target_obj}.{attr}"
+            try:
+                # Check if attribute is locked
+                is_locked = False
+                try:
+                    is_locked = cmds.getAttr(full_attr, lock=True)
+                except:
+                    pass
+                
+                # Skip locked attributes instead of trying to unlock them
+                if is_locked:
+                    locked_attrs.append(full_attr)
+                    print(f"Skipping locked attribute {full_attr}")
+                    continue
+                
+                # Set the attribute value
+                if data['multi']:
+                    # Apply multi-attribute values
+                    for i, val in enumerate(data['values']):
+                        cmds.setAttr(f"{full_attr}[{i}]", val)
+                else:
+                    # Apply simple attribute value
+                    cmds.setAttr(full_attr, data['value'])
+                
+                # Add to the list of mirrored objects if not already there
+                if target_obj not in mirrored_objects:
+                    mirrored_objects.append(target_obj)
+                    
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "locked" in error_msg or "connected" in error_msg:
+                    locked_attrs.append(full_attr)
+                    print(f"Skipping locked or connected attribute {full_attr}: {e}")
+                else:
+                    print(f"Error setting attribute {attr} on {target_obj}: {e}")
+    
+    # Provide feedback about locked attributes if any were found
+    if locked_attrs:
+        print(f"Warning: {len(locked_attrs)} attributes were locked or connected and could not be modified:")
+        for attr in locked_attrs:
+            print(f"  - {attr}")
+    
+    return mirrored_objects
 
 #---------------------------------------------------------------------------------------------------------------
 def button_appearance(text="", color="", opacity="", selectable="", source_button=None, target_buttons=None):
@@ -1047,6 +1477,8 @@ def button_appearance(text="", color="", opacity="", selectable="", source_butto
     
     # Process and validate the opacity value
     opacity_value = None
+    if opacity == 0:
+        opacity = 0.001
     if opacity:
         try:
             opacity_value = float(opacity)

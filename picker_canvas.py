@@ -355,7 +355,7 @@ class PickerCanvas(QtWidgets.QWidget):
                                         new_uuid = uuid  # UUID is still valid
 
                                         resolved_node = resolved_node.split(':')[-1]
-                                        print(f"Resolved by UUID: {resolved_node}")
+                                        #print(f"Resolved by UUID: {resolved_node}")
                                 except:
                                     pass
                                 
@@ -367,7 +367,7 @@ class PickerCanvas(QtWidgets.QWidget):
                                         try:
                                             new_uuid = cmds.ls(long_name, uuid=True)[0]
                                             uuid_updates = True
-                                            print(f"Resolved by long name: {resolved_node}")
+                                            #print(f"Resolved by long name: {resolved_node}")
                                         except:
                                             pass
                                             
@@ -379,7 +379,7 @@ class PickerCanvas(QtWidgets.QWidget):
                                             try:
                                                 new_uuid = cmds.ls(namespaced_node, uuid=True)[0]
                                                 uuid_updates = True
-                                                print(f"Resolved by namespaced node: {resolved_node}")
+                                                #print(f"Resolved by namespaced node: {resolved_node}")
                                             except:
                                                 pass
                                         # Finally try just the base name
@@ -388,7 +388,7 @@ class PickerCanvas(QtWidgets.QWidget):
                                             try:
                                                 new_uuid = cmds.ls(base_name, uuid=True)[0]
                                                 uuid_updates = True
-                                                print(f"Resolved by base name: {resolved_node}")
+                                                #print(f"Resolved by base name: {resolved_node}")
                                             except:
                                                 pass
                                 
@@ -456,6 +456,7 @@ class PickerCanvas(QtWidgets.QWidget):
                 if new_selection:
                     current_namespace = main_window.namespace_dropdown.currentText()
                     resolved_selection = []
+                    resolved_names = []
                     for sel in new_selection:
                         namespaced_node = f"{current_namespace}:{sel}"
                         if cmds.objExists(namespaced_node):
@@ -463,7 +464,9 @@ class PickerCanvas(QtWidgets.QWidget):
                             resolved_selection.append(namespaced_node)
                         else:
                             resolved_selection.append(sel)
-                            print(f"Selecting: {sel}")
+                            sel_name = sel.split(':')[-1].split('|')[-1]
+                            resolved_names.append(sel_name)
+                    print(f"Selecting: {', '.join(resolved_names)}")
                     
                     cmds.select(resolved_selection, add=True)
 

@@ -62,10 +62,30 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.main_frame.setMouseTracking(True)
         self.main_frame.installEventFilter(self)
         
+        # Install event filters on all frames to ensure cursor updates properly
+        self.util_frame.setMouseTracking(True)
+        self.util_frame.installEventFilter(self)
+        self.setMouseTracking(True)
+        
+        # Resize state tracking
+        self.resize_state = {
+            'active': False,
+            'edge': None,
+            'start_pos': None,
+            'initial_size': None,
+            'initial_pos': None,
+            'last_update_time': 0,
+            'update_interval_ms': 16,  # ~60 FPS for smoother resizing
+            'buttons_update_interval_ms': 100,  # Less frequent full updates
+            'last_buttons_update_time': 0,
+            'cached_canvas': None,
+            'cached_buttons': None
+        }
+        
         # Add resize timer for performance
         self.resize_timer = QTimer(self)
         self.resize_timer.setSingleShot(True)
-        self.resize_timer.setInterval(50)  # 50ms throttle
+        self.resize_timer.setInterval(100)  # 100ms throttle for full updates
         self.resize_timer.timeout.connect(self.finalize_resize)
         
         self.available_ids = {}
@@ -143,6 +163,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         edit_util.addToMenu("Edit Mode", self.toggle_edit_mode, icon='setEdEditMode.png', position=(0,0))
         #edit_util.addMenuLabel("Window Apparance",position=(1,0))
         #edit_util.addMenuSeparator((1,0))
+        edit_util.addToMenu("Mirror Preferences", self.open_mirror_preferences, icon='syncOn.png', position=(1,0))
         edit_util.addToMenu("Minimal Mode", self.fade_manager.toggle_minimal_mode, icon='eye.png', position=(2,0))
         edit_util.addToMenu("Toggle Fade Away", self.fade_manager.toggle_fade_away, icon='eye.png', position=(3,0))
 
@@ -454,7 +475,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 current_geometry.height()
             )
         else:
-            # Subtract edit panel width
+            # Subtract edit panel width when exiting edit mode
             new_width = current_geometry.width() - edit_panel_width
             self.setGeometry(
                 current_geometry.x(),
@@ -462,23 +483,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 new_width,
                 current_geometry.height()
             )
-
-        # Update the canvas for all tabs
-        for tab_name, tab_data in self.tab_system.tabs.items():
-            canvas = tab_data['canvas']
-            canvas.set_edit_mode(self.edit_mode)
-            
-            # Update cursor for all buttons
-            for button in canvas.buttons:
-                button.update_cursor()
-                
-        # Update the button state in the UI
-        if hasattr(self, 'edit_button'):
-            self.edit_button.setChecked(self.edit_mode)
-
-        # Force update of the layout
-        self.update()
-        QtCore.QTimer.singleShot(0, self.update_buttons_for_current_tab)
+            QtCore.QTimer.singleShot(0, self.update_buttons_for_current_tab)
 
     def setup_layout(self):
         # Add widgets to layouts
@@ -570,7 +575,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 cmds.inViewMessage(amg=f"Picker data successfully saved to {file_path}", pos='midCenter', fade=True)
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "Error", str(e))
-
+                
     def load_picker(self):
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
@@ -594,6 +599,14 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 cmds.inViewMessage(amg=f"Picker data successfully Imported", pos='midCenter', fade=True)
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "Error", str(e))
+                
+    def open_mirror_preferences(self):
+        """
+        Opens the mirror preference window for configuring how objects should be mirrored.
+        This window allows users to set custom mirror preferences for selected objects.
+        """
+        from . import mirror_preferences
+        mirror_preferences.MirrorPreferencesWindow(parent=self).show()
     #----------------------------------------------------------------------------------------------------------------------------------------
     # [Canvas Functions Link]  
     #----------------------------------------------------------------------------------------------------------------------------------------
@@ -697,7 +710,10 @@ class AnimPickerWindow(QtWidgets.QWidget):
     #----------------------------------------------------------------------------------------------------------------------------------------
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.update_buttons_for_current_tab()
+        # Only update buttons if this is not from our manual resize operation
+        # This prevents double updates during manual resizing
+        if not self.resize_state['active']:
+            self.update_buttons_for_current_tab()
 
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
@@ -716,23 +732,21 @@ class AnimPickerWindow(QtWidgets.QWidget):
             # If we get here, we're not clicking on any special widgets
             # Handle resize and drag operations
             self.oldPos = event.globalPos()
-            self.resize_edge = self.get_resize_edge(event.pos())
-            if self.resize_edge:
-                self.resizing = True
-                self.resize_start_pos = event.globalPos()
-                self.initial_size = self.size()
-                self.initial_pos = self.pos()
-                # Capture mouse to prevent losing focus during resize
-                self.grabMouse()
+            resize_edge = self.get_resize_edge(event.pos())
+            
+            if resize_edge:
+                # Initialize resize state
+                self.begin_resize(resize_edge, event.globalPos())
             else:
-                self.resizing = False
+                # Not resizing, just moving the window
+                self.resize_state['active'] = False
                     
             UT.maya_main_window().activateWindow()
 
     def mouseMoveEvent(self, event):
         if event.buttons() == QtCore.Qt.LeftButton:
             # If we're already in resize mode, skip widget checks
-            if not self.resizing:
+            if not self.resize_state['active']:
                 # First check if we're interacting with special widgets
                 child_widget = self.childAt(event.pos())
                 current_widget = child_widget
@@ -744,172 +758,185 @@ class AnimPickerWindow(QtWidgets.QWidget):
                     current_widget = current_widget.parent()
 
             # Handle resize/move operations
-            if self.resizing and self.resize_edge:
-                # Disable updates during resize for better performance
+            if self.resize_state['active'] and self.resize_state['edge']:
+                # Process resize with throttling
+                self.process_resize(event.globalPos())
+            elif not self.resize_state['active']:
+                # Temporarily disable updates during window movement to reduce flickering
                 self.setUpdatesEnabled(False)
                 
-                delta = event.globalPos() - self.resize_start_pos
-                new_geometry = self.geometry()
-                
-                if 'top' in str(self.resize_edge):
-                    new_height = max(self.minimumHeight(), self.initial_size.height() - delta.y())
-                    new_y = self.initial_pos.y() + delta.y()
-                    if new_height >= self.minimumHeight():
-                        new_geometry.setTop(new_y)
-                    
-                if 'bottom' in str(self.resize_edge):
-                    new_height = max(self.minimumHeight(), self.initial_size.height() + delta.y())
-                    new_geometry.setHeight(new_height)
-                    
-                if 'left' in str(self.resize_edge):
-                    new_width = max(self.minimumWidth(), self.initial_size.width() - delta.x())
-                    new_x = self.initial_pos.x() + delta.x()
-                    if new_width >= self.minimumWidth():
-                        new_geometry.setLeft(new_x)
-                    
-                if 'right' in str(self.resize_edge):
-                    new_width = max(self.minimumWidth(), self.initial_size.width() + delta.x())
-                    new_geometry.setWidth(new_width)
-                
-                self.setGeometry(new_geometry)
-                
-                # Restart the timer to throttle updates
-                self.resize_timer.start()
-                
-                # Re-enable updates
-                self.setUpdatesEnabled(True)
-            elif not self.resizing:     
+                # Just moving the window
                 delta = event.globalPos() - self.oldPos
                 self.move(self.x() + delta.x(), self.y() + delta.y())
                 self.oldPos = event.globalPos()
+                
+                # Re-enable updates
+                self.setUpdatesEnabled(True)
         
-        # Only update cursor if we're not currently resizing and not over the canvas
-        if not self.resizing:
+        # Only check cursor state if not dragging the window
+        if not (event.buttons() == QtCore.Qt.LeftButton and not self.resize_state['active']):
             pos = event.pos()
+            
             # Check if the mouse is over the canvas frame
             canvas_frame_geo = self.canvas_frame.geometry()
             if canvas_frame_geo.contains(pos):
-                self.unsetCursor()
+                # Reset cursor when over canvas frame
+                self.reset_cursor()
             else:
+                # Update cursor based on position relative to edges
+                if self.is_in_resize_range(pos):
+                    self.update_cursor(pos)
+                else:
+                    # Reset cursor when not over resize edges
+                    self.reset_cursor()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            if self.resize_state['active']:
+                # End resize operation
+                self.end_resize()
+                
+                # Check cursor position after releasing to ensure proper cursor state
+                pos = self.mapFromGlobal(QtGui.QCursor.pos())
                 if self.is_in_resize_range(pos):
                     self.update_cursor(pos)
                 else:
                     self.unsetCursor()
 
-    def mouseReleaseEvent(self, event):
-        if event.button() == QtCore.Qt.LeftButton:
-            if self.resizing:
-                self.resizing = False
-                self.resize_edge = None
-                self.releaseMouse()
-                self.unsetCursor()  # Use unsetCursor instead of setting arrow cursor
-                # Immediately finalize the resize when mouse is released
-                self.finalize_resize()
-                # Cancel any pending timer to avoid duplicate updates
-                self.resize_timer.stop()
-
     def finalize_resize(self):
         # This method is called when resize timer times out or when mouse is released
         # Update button positions and layout only once at the end of resize
-        self.update_buttons_for_current_tab()
+        if self.tab_system.current_tab:
+            # Clear any cached data
+            self.resize_state['cached_canvas'] = None
+            self.resize_state['cached_buttons'] = None
+            
+            # Do a full update of all buttons
+            self.update_buttons_for_current_tab()
         
     def eventFilter(self, obj, event):
         if obj == self.resize_handle:
             if event.type() == QtCore.QEvent.MouseButtonPress:
                 if event.button() == QtCore.Qt.LeftButton:
-                    self.resizing = True
-                    self.resize_start_pos = event.globalPos()
-                    self.initial_size = self.size()
-                    self.resize_edge = 'bottom_right'
-                    self.grabMouse()
+                    # Use the unified resize handling system
+                    self.begin_resize('bottom_right', event.globalPos())
                     return True
                     
-            elif event.type() == QtCore.QEvent.MouseMove and self.resizing:
-                # Disable updates during resize for better performance
-                self.setUpdatesEnabled(False)
-                
-                delta = event.globalPos() - self.resize_start_pos
-                new_width = max(self.minimumWidth(), self.initial_size.width() + delta.x())
-                new_height = max(self.minimumHeight(), self.initial_size.height() + delta.y())
-                self.resize(new_width, new_height)
-                
-                # Restart the timer to throttle updates
-                self.resize_timer.start()
-                
-                # Re-enable updates
-                self.setUpdatesEnabled(True)
+            elif event.type() == QtCore.QEvent.MouseMove and self.resize_state['active']:
+                # Use the unified resize processing system
+                self.process_resize(event.globalPos())
                 return True
                 
             elif event.type() == QtCore.QEvent.MouseButtonRelease:
-                if self.resizing:
-                    self.resizing = False
-                    self.resize_edge = None
-                    self.releaseMouse()
-                    self.unsetCursor()
-                return True
-                
-        elif obj == self.main_frame:
-            if event.type() == QtCore.QEvent.MouseMove:
-                if not self.resizing:
-                    pos = self.mapFromGlobal(self.main_frame.mapToGlobal(event.pos()))
-                    # Check if the mouse is over the canvas frame
-                    canvas_frame_geo = self.canvas_frame.geometry()
-                    if canvas_frame_geo.contains(pos):
-                        self.unsetCursor()
+                if self.resize_state['active']:
+                    # Use the unified resize end system
+                    self.end_resize()
+                    
+                    # Check cursor position after releasing
+                    pos = self.mapFromGlobal(QtGui.QCursor.pos())
+                    if self.is_in_resize_range(pos):
+                        self.update_cursor(pos)
                     else:
-                        if self.is_in_resize_range(pos):
-                            self.update_cursor(pos)
-                        else:
-                            self.unsetCursor()
+                        self.unsetCursor()
+                return True
+        
+        # Handle mouse events for all frames including main_frame and util_frame
+        if obj in [self.main_frame, self.util_frame] or isinstance(obj, QtWidgets.QFrame):
+            if event.type() == QtCore.QEvent.MouseMove:
+                # Convert local coordinates to window coordinates
+                local_pos = event.pos()
+                global_pos = obj.mapToGlobal(local_pos)
+                window_pos = self.mapFromGlobal(global_pos)
+                
+                # Check if the mouse is over the canvas frame
+                canvas_frame_geo = self.canvas_frame.geometry()
+                if canvas_frame_geo.contains(window_pos):
+                    # Reset cursor when over canvas frame
+                    self.reset_cursor()
+                else:
+                    if self.is_in_resize_range(window_pos):
+                        self.update_cursor(window_pos)
+                    else:
+                        # Reset cursor when not over resize edges
+                        self.reset_cursor()
+                        
+                # Don't consume the event so it can propagate
                 return False
-            elif event.type() == QtCore.QEvent.MouseButtonDblClick:
+                
+            elif event.type() == QtCore.QEvent.Enter:
+                # Handle enter events for child frames
+                local_pos = event.pos()
+                global_pos = obj.mapToGlobal(local_pos)
+                window_pos = self.mapFromGlobal(global_pos)
+                
+                if self.is_in_resize_range(window_pos):
+                    self.update_cursor(window_pos)
+                elif not self.resize_state['active']:
+                    self.unsetCursor()
+                return False
+                
+            elif event.type() == QtCore.QEvent.MouseButtonDblClick and obj == self.main_frame:
                 # Reset window to original size when double-clicked
                 self.setGeometry(1150, 280, 350, 450)
                 self.update_buttons_for_current_tab()
                 UT.maya_main_window().activateWindow()
                 return True
+                
             elif event.type() == QtCore.QEvent.Leave:
-                if not self.resizing:
+                # Only unset cursor if we're not resizing
+                if not self.resize_state['active']:
                     self.unsetCursor()
-                return True
+                return False
                     
         return super().eventFilter(obj, event)
 
     def enterEvent(self, event):
-        if not self.resizing:
-            pos = event.pos()
-            # Check if the mouse is over the canvas frame
-            canvas_frame_geo = self.canvas_frame.geometry()
-            if not canvas_frame_geo.contains(pos) and self.is_in_resize_range(pos):
+        # Always check cursor on enter
+        pos = event.pos()
+        # Check if the mouse is over the canvas frame
+        canvas_frame_geo = self.canvas_frame.geometry()
+        
+        # Force cursor update regardless of entry point
+        if not canvas_frame_geo.contains(pos):
+            if self.is_in_resize_range(pos):
                 self.update_cursor(pos)
             else:
-                self.unsetCursor()
+                self.reset_cursor()
+        else:
+            self.reset_cursor()
+            
+        # Ensure cursor updates properly when entering from any edge
+        QtWidgets.QApplication.processEvents()
 
     def leaveEvent(self, event):
-        if not self.resizing:
-            self.unsetCursor()
+        # When leaving the window, we should reset cursor only if not resizing
+        self.reset_cursor()
 
     def is_in_resize_range(self, pos):
+        # Make sure pos is within the window bounds first
+        if not (0 <= pos.x() <= self.width() and 0 <= pos.y() <= self.height()):
+            return False
+            
         width = self.width()
         height = self.height()
         edge_size = self.resize_range
         
-        # Make the detection slightly more forgiving
-        return (pos.x() <= edge_size + 2 or 
-                pos.x() >= width - edge_size - 2 or 
-                pos.y() <= edge_size + 2 or 
-                pos.y() >= height - edge_size - 2)
+        # Make the detection more precise (less forgiving)
+        return (pos.x() <= edge_size or 
+                pos.x() >= width - edge_size or 
+                pos.y() <= edge_size or 
+                pos.y() >= height - edge_size)
     
     def get_resize_edge(self, pos):
         width = self.width()
         height = self.height()
         edge_size = self.resize_range
         
-        # Use the same more forgiving edge detection as is_in_resize_range
-        is_top = pos.y() <= edge_size + 2
-        is_bottom = pos.y() >= height - edge_size - 2
-        is_left = pos.x() <= edge_size + 2
-        is_right = pos.x() >= width - edge_size - 2
+        # Use the same precise edge detection as is_in_resize_range
+        is_top = pos.y() <= edge_size
+        is_bottom = pos.y() >= height - edge_size
+        is_left = pos.x() <= edge_size
+        is_right = pos.x() >= width - edge_size
         
         if is_top and is_left: return 'top_left'
         if is_top and is_right: return 'top_right'
@@ -920,6 +947,11 @@ class AnimPickerWindow(QtWidgets.QWidget):
         if is_left: return 'left'
         if is_right: return 'right'
         return None
+        
+    def reset_cursor(self):
+        """Reset cursor to default if not in resize mode"""
+        if not self.resize_state['active']:
+            self.unsetCursor()
 
     def update_cursor(self, pos):
         edge = self.get_resize_edge(pos)
@@ -940,22 +972,103 @@ class AnimPickerWindow(QtWidgets.QWidget):
         
         self.setCursor(cursor)
 
-    def resize_window(self, global_pos):
-        delta = global_pos - self.oldPos
-        new_geometry = self.geometry()
-
-        if 'top' in self.resize_edge:
-            new_geometry.setTop(new_geometry.top() + delta.y())
-        if 'bottom' in self.resize_edge:
-            new_geometry.setBottom(new_geometry.bottom() + delta.y())
-        if 'left' in self.resize_edge:
-            new_geometry.setLeft(new_geometry.left() + delta.x())
-        if 'right' in self.resize_edge:
-            new_geometry.setRight(new_geometry.right() + delta.x())
-
-        new_geometry.setWidth(max(self.minimumWidth(), new_geometry.width()))
-        new_geometry.setHeight(max(self.minimumHeight(), new_geometry.height()))
+    # New unified resize methods
+    def begin_resize(self, edge, global_pos):
+        """Start a resize operation with the given edge and position"""
+        self.resize_state.update({
+            'active': True,
+            'edge': edge,
+            'start_pos': global_pos,
+            'initial_size': self.size(),
+            'initial_pos': self.pos(),
+            'last_update_time': QtCore.QTime.currentTime().msecsSinceStartOfDay(),
+            'last_buttons_update_time': QtCore.QTime.currentTime().msecsSinceStartOfDay()
+        })
+        
+        # Cache the current tab and canvas if available
+        if self.tab_system.current_tab:
+            self.resize_state['cached_canvas'] = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
+        
+        # Capture mouse to prevent losing focus during resize
+        self.grabMouse()
+        
+    def process_resize(self, global_pos):
+        """Process resize with the current mouse position"""
+        if not self.resize_state['active']:
+            return
+            
+        # Get current time for throttling
+        current_time = QtCore.QTime.currentTime().msecsSinceStartOfDay()
+        
+        # Disable updates during resize for better performance
+        self.setUpdatesEnabled(False)
+        
+        # Calculate delta from start position
+        delta = global_pos - self.resize_state['start_pos']
+        
+        # Calculate new dimensions
+        new_width = self.resize_state['initial_size'].width()
+        new_height = self.resize_state['initial_size'].height()
+        new_x = self.resize_state['initial_pos'].x()
+        new_y = self.resize_state['initial_pos'].y()
+        
+        # Calculate all dimensions based on the resize edge
+        edge = self.resize_state['edge']
+        if 'left' in str(edge):
+            new_width = max(self.minimumWidth(), self.resize_state['initial_size'].width() - delta.x())
+            if new_width >= self.minimumWidth():
+                new_x = self.resize_state['initial_pos'].x() + delta.x()
+                
+        if 'right' in str(edge):
+            new_width = max(self.minimumWidth(), self.resize_state['initial_size'].width() + delta.x())
+            
+        if 'top' in str(edge):
+            new_height = max(self.minimumHeight(), self.resize_state['initial_size'].height() - delta.y())
+            if new_height >= self.minimumHeight():
+                new_y = self.resize_state['initial_pos'].y() + delta.y()
+            
+        if 'bottom' in str(edge):
+            new_height = max(self.minimumHeight(), self.resize_state['initial_size'].height() + delta.y())
+        
+        # Apply geometry changes
+        new_geometry = QtCore.QRect(new_x, new_y, new_width, new_height)
         self.setGeometry(new_geometry)
+        
+        # Check if we should update buttons (less frequently)
+        if (current_time - self.resize_state['last_buttons_update_time'] >= 
+                self.resize_state['buttons_update_interval_ms']):
+            # Update buttons with throttling
+            if self.resize_state['cached_canvas']:
+                self.resize_state['cached_canvas'].update_button_positions()
+            self.resize_state['last_buttons_update_time'] = current_time
+        
+        # Restart the timer for final update
+        self.resize_timer.start()
+        
+        # Re-enable updates
+        self.setUpdatesEnabled(True)
+        
+        # Update last update time
+        self.resize_state['last_update_time'] = current_time
+    
+    def end_resize(self):
+        """End the current resize operation"""
+        # Store current geometry before deactivating resize state
+        current_geometry = self.geometry()
+        
+        # Deactivate resize state
+        self.resize_state['active'] = False
+        self.resize_state['edge'] = None
+        self.releaseMouse()
+        
+        # Immediately finalize the resize
+        self.finalize_resize()
+        
+        # Cancel any pending timer to avoid duplicate updates
+        self.resize_timer.stop()
+        
+        # Update oldPos for next delta calculation
+        self.oldPos = QtGui.QCursor.pos()
     #----------------------------------------------------------------------------------------------------------------------------------------
     # [Name Space]    
     #----------------------------------------------------------------------------------------------------------------------------------------
@@ -1164,18 +1277,21 @@ class AnimPickerWindow(QtWidgets.QWidget):
             DM.PickerDataManager.update_tab_data(current_tab, tab_data)
             self.update_buttons_for_current_tab()
 
-    def update_buttons_for_current_tab(self):
+    def update_buttons_for_current_tab(self, force_update=False):
         if self.tab_system.current_tab:
             current_tab = self.tab_system.current_tab
             canvas = self.tab_system.tabs[current_tab]['canvas']
-            canvas.update_button_positions()
+            
+            # Only update if we're not in an active resize operation or if forced
+            if not self.resize_state['active'] or force_update:
+                canvas.update_button_positions()
 
-            # Update button positions in PickerDataManager
-            button_positions = {
-                button.unique_id: (button.scene_position.x(), button.scene_position.y())
-                for button in canvas.buttons
-            }
-            DM.PickerDataManager.update_button_positions(current_tab, button_positions)
+                # Update button positions in PickerDataManager
+                button_positions = {
+                    button.unique_id: (button.scene_position.x(), button.scene_position.y())
+                    for button in canvas.buttons
+                }
+                DM.PickerDataManager.update_button_positions(current_tab, button_positions)
     #----------------------------------------------------------------------------------------------------------------------------------------
     # [Tab Functions]  
     #----------------------------------------------------------------------------------------------------------------------------------------

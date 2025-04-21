@@ -353,10 +353,20 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
         self.special_format.setForeground(QtGui.QColor("#91CB08"))  # Bright green color
         self.special_format.setFontWeight(QtGui.QFont.Bold)
 
+        # Create format for @TF. function call (darker green)
+        self.tf_function_format = QtGui.QTextCharFormat()
+        self.tf_function_format.setForeground(QtGui.QColor("#399dcd"))  # sky blue
+        self.tf_function_format.setFontWeight(QtGui.QFont.Bold)
+
         # Create format for special tokens 2
         self.special_format_02 = QtGui.QTextCharFormat()
         self.special_format_02.setForeground(QtGui.QColor("#10b1cc"))  
         self.special_format_02.setFontWeight(QtGui.QFont.Bold)
+
+        # Create format for brackets/parens/braces (yellow)
+        self.bracket_format = QtGui.QTextCharFormat()
+        self.bracket_format.setForeground(QtGui.QColor("#FFD700"))  # Yellow (Gold)
+        self.bracket_format.setFontWeight(QtGui.QFont.Bold)
    
         # Create format for comments
         self.comment_format = QtGui.QTextCharFormat()
@@ -365,6 +375,20 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
         # Create format for quoted text in comments
         self.quoted_text_format = QtGui.QTextCharFormat()
         self.quoted_text_format.setForeground(QtGui.QColor("#ce9178"))
+
+        # Create format for Python keywords
+        self.keyword_format = QtGui.QTextCharFormat()
+        self.keyword_format.setForeground(QtGui.QColor("#2666cb"))  # Slate blue
+        self.keyword_format.setFontWeight(QtGui.QFont.Bold)
+
+        # List of Python keywords
+        self.python_keywords = [
+            'def', 'class', 'if', 'else', 'elif', 'for', 'while', 'return', 'import', 'from', 'as', 'pass', 'break',
+            'continue', 'try', 'except', 'finally', 'with', 'lambda', 'yield', 'global', 'nonlocal', 'assert', 'del',
+            'raise', 'and', 'or', 'not', 'in', 'is', 'True', 'False', 'None'
+        ]
+        self.keyword_pattern = r'\\b(' + '|'.join(self.python_keywords) + r')\\b'
+
         
     def highlightBlock(self, text):
         # Define all special tokens to highlight
@@ -375,14 +399,32 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
         ]
         special_patterns_02 = [r'@ns\.'] # Original @ns pattern
         
-        # Apply highlighting for special patterns
+        # Apply highlighting for @TF.functionName() pattern with split colors
+        tf_pattern = r'(@TF\.)(\w+\s*\([^)]*\))'
+        for match in re.finditer(tf_pattern, text):
+            # Apply bright green to @TF.
+            self.setFormat(match.start(1), len(match.group(1)), self.special_format)
+            # Apply darker green to the function part
+            self.setFormat(match.start(2), len(match.group(2)), self.tf_function_format)
+
+        # Apply highlighting for other special patterns
         for pattern in special_patterns:
+            if pattern == r'@TF\.\w+\s*\([^)]*\)':
+                continue  # Already handled above
             for match in re.finditer(pattern, text):
                 self.setFormat(match.start(), len(match.group()), self.special_format)
         
         for pattern in special_patterns_02:
             for match in re.finditer(pattern, text):
                 self.setFormat(match.start(), len(match.group()), self.special_format_02)
+        
+        # Highlight Python keywords
+        for match in re.finditer(r'\b(' + '|'.join(self.python_keywords) + r')\b', text):
+            self.setFormat(match.start(), len(match.group()), self.keyword_format)
+
+        # Highlight (), {}, [] in yellow
+        for match in re.finditer(r'[\(\)\{\}\[\]]', text):
+            self.setFormat(match.start(), 1, self.bracket_format)
         
         # Highlight comments (lines starting with #)
         comment_pattern = r'#.*$'
@@ -398,10 +440,6 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
             if not self.format(start_pos) == self.comment_format:
                 self.setFormat(start_pos, len(match.group()), self.quoted_text_format)
 
-                for pattern in special_patterns_02:
-                    for match in re.finditer(pattern, text):
-                        self.setFormat(match.start(), len(match.group()), self.special_format_02)
-        
         # Handle single quotes
         single_quote_pattern = r'\'[^\'\\]*(?:\\.[^\'\\]*)*\''
         for match in re.finditer(single_quote_pattern, text):
@@ -410,10 +448,6 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
             if not self.format(start_pos) == self.comment_format:
                 self.setFormat(start_pos, len(match.group()), self.quoted_text_format)
 
-                for pattern in special_patterns_02:
-                    for match in re.finditer(pattern, text):
-                        self.setFormat(match.start(), len(match.group()), self.special_format_02)
-        
 class ScriptManagerWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super(ScriptManagerWidget, self).__init__(parent)
@@ -495,6 +529,8 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.python_function_preset_button.addToMenu('Set Attribute', self.ppf_set_attribute, position=(1,0))
         self.python_function_preset_button.addToMenu('Match IK to FK', self.ppf_match_ik_to_fk, position=(2,0))
         self.python_function_preset_button.addToMenu('Match FK to IK', self.ppf_match_fk_to_ik, position=(3,0))
+        self.python_function_preset_button.addToMenu('Button Appearance', self.ppf_button_appearance, position=(4,0))
+        self.python_function_preset_button.addToMenu('Get Selected Button IDs', self.ppf_get_selected_button_ids, position=(5,0))
 
         self.mel_function_preset_button = CB.CustomButton(text='', icon=':addClip.png', size=14, height=20, width=20, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', 
                                                           ContextMenu=True, onlyContext= True, cmColor='#333333',tooltip='Python function presets', flat=True)
@@ -510,77 +546,318 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.language_layout.addStretch()
         self.language_layout.addWidget(self.function_preset_stack)
 
-        # Create custom QPlainTextEdit subclass for tab handling
+        # Create custom QPlainTextEdit subclass with line numbers and tab handling
+        class LineNumberArea(QtWidgets.QWidget):
+            def __init__(self, editor):
+                super(LineNumberArea, self).__init__(editor)
+                self.editor = editor
+                self.setFixedWidth(15)  # Initial width for line numbers - reduced to save space
+            
+            def sizeHint(self):
+                return QtCore.QSize(self.editor.line_number_area_width(), 0)
+            
+            def paintEvent(self, event):
+                self.editor.line_number_area_paint_event(event)
+        
         class CodeEditor(QtWidgets.QPlainTextEdit):
-            def keyPressEvent(self, event):
-                if event.key() == QtCore.Qt.Key_Tab:
-                    cursor = self.textCursor()
-                    if cursor.hasSelection():
-                        # Get start and end positions
-                        start = cursor.selectionStart()
-                        end = cursor.selectionEnd()
-                        
-                        # Ensure we have the correct cursor positions
-                        cursor.setPosition(start)
-                        start_block = cursor.blockNumber()
-                        cursor.setPosition(end)
-                        end_block = cursor.blockNumber()
-                        
-                        # Handle shift+tab (unindent)
-                        if event.modifiers() & QtCore.Qt.ShiftModifier:
-                            cursor.beginEditBlock()
-                            for _ in range(end_block - start_block + 1):
-                                cursor.movePosition(QtGui.QTextCursor.StartOfLine)
-                                # Check if line starts with spaces
-                                line_text = cursor.block().text()
-                                if line_text.startswith("    "):
-                                    cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.KeepAnchor, 4)
-                                    cursor.removeSelectedText()
-                                elif line_text.startswith(" "):
-                                    # Remove any remaining spaces less than 4
-                                    spaces = len(line_text) - len(line_text.lstrip())
-                                    cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.KeepAnchor, min(4, spaces))
-                                    cursor.removeSelectedText()
-                                cursor.movePosition(QtGui.QTextCursor.NextBlock)
-                            cursor.endEditBlock()
-                        else:
-                            # Normal tab (indent)
-                            cursor.beginEditBlock()
-                            for _ in range(end_block - start_block + 1):
-                                cursor.movePosition(QtGui.QTextCursor.StartOfLine)
-                                # Only add indent if not doing Shift+Tab
-                                if not event.modifiers() & QtCore.Qt.ShiftModifier:
-                                    cursor.insertText("    ")
-                                else:
-                                    # Remove indent on Shift+Tab
-                                    line_text = cursor.block().text()
-                                    if line_text.startswith("    "):
-                                        cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.KeepAnchor, 4)
-                                        cursor.removeSelectedText()
-                                    elif line_text.startswith(" "):
-                                        spaces = len(line_text) - len(line_text.lstrip())
-                                        cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.KeepAnchor, min(4, spaces))
-                                        cursor.removeSelectedText()
-                                cursor.movePosition(QtGui.QTextCursor.NextBlock)
-                            cursor.endEditBlock()
-                    else:
-                        # No selection, just handle single line
-                        if event.modifiers() & QtCore.Qt.ShiftModifier:
-                            # Remove indent on Shift+Tab
-                            cursor.movePosition(QtGui.QTextCursor.StartOfLine)
-                            line_text = cursor.block().text()
-                            if line_text.startswith("    "):
-                                cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.KeepAnchor, 4)
-                                cursor.removeSelectedText()
-                            elif line_text.startswith(" "):
-                                spaces = len(line_text) - len(line_text.lstrip())
-                                cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.KeepAnchor, min(4, spaces))
-                                cursor.removeSelectedText()
-                        else:
-                            # Add indent on normal Tab
-                            cursor.insertText("    ")
+            def __init__(self, parent=None):
+                super(CodeEditor, self).__init__(parent)
+                self.line_number_area = LineNumberArea(self)
+                
+                # Connect signals for updating line number area
+                self.blockCountChanged.connect(self.update_line_number_area_width)
+                self.updateRequest.connect(self.update_line_number_area)
+                self.cursorPositionChanged.connect(self.highlight_current_line)
+                
+                # Initialize the line number area width
+                self.update_line_number_area_width(0)
+                
+                # Highlight the current line
+                self.highlight_current_line()
+            
+            def line_number_area_width(self):
+                digits = 1
+                max_num = max(1, self.blockCount())
+                while max_num >= 10:
+                    max_num //= 10
+                    digits += 1
+                
+                space = 8 + self.fontMetrics().horizontalAdvance('9') * digits  # Reduced padding
+                return space
+            
+            def update_line_number_area_width(self, _):
+                # Set viewport margins to make room for line numbers
+                width = self.line_number_area_width()
+                # Add 15 pixels of extra margin to prevent text from touching the gutter
+                self.setViewportMargins(width + 0, 0, 0, 0)
+            
+            def update_line_number_area(self, rect, dy):
+                if dy:
+                    self.line_number_area.scroll(0, dy)
                 else:
-                    super().keyPressEvent(event)
+                    self.line_number_area.update(0, rect.y(), self.line_number_area.width(), rect.height())
+                
+                if rect.contains(self.viewport().rect()):
+                    self.update_line_number_area_width(0)
+            
+            def resizeEvent(self, event):
+                super(CodeEditor, self).resizeEvent(event)
+                
+                cr = self.contentsRect()
+                self.line_number_area.setGeometry(QtCore.QRect(cr.left(), cr.top(), self.line_number_area_width(), cr.height()))
+            
+            def line_number_area_paint_event(self, event):
+                painter = QtGui.QPainter(self.line_number_area)
+                # Use a color that matches the editor background but is slightly different
+                painter.fillRect(event.rect(), QtGui.QColor('#1e1e1e'))  # Match editor background
+                
+                # Draw a subtle separator line
+                painter.setPen(QtGui.QColor('#2d2d2d'))
+                painter.drawLine(event.rect().topRight(), event.rect().bottomRight())
+                
+                block = self.firstVisibleBlock()
+                block_number = block.blockNumber()
+                top = self.blockBoundingGeometry(block).translated(self.contentOffset()).top()
+                bottom = top + self.blockBoundingRect(block).height()
+                
+                while block.isValid() and top <= event.rect().bottom():
+                    if block.isVisible() and bottom >= event.rect().top():
+                        number = str(block_number + 1)
+                        # Use a more subtle color for line numbers
+                        painter.setPen(QtGui.QColor('#6d6d6d'))  # Line number color
+                        painter.drawText(0, top, self.line_number_area.width() - 3, self.fontMetrics().height(),
+                                        QtCore.Qt.AlignRight, number)
+                    
+                    block = block.next()
+                    top = bottom
+                    bottom = top + self.blockBoundingRect(block).height()
+                    block_number += 1
+            
+            def highlight_current_line(self):
+                extra_selections = []
+                
+                if not self.isReadOnly():
+                    selection = QtWidgets.QTextEdit.ExtraSelection()
+                    line_color = QtGui.QColor('#222222')  # Current line highlight color
+                    
+                    selection.format.setBackground(line_color)
+                    selection.format.setProperty(QtGui.QTextFormat.FullWidthSelection, True)
+                    selection.cursor = self.textCursor()
+                    selection.cursor.clearSelection()
+                    extra_selections.append(selection)
+                
+                self.setExtraSelections(extra_selections)
+            
+            def keyPressEvent(self, event):
+                # Explicitly check for Shift+Tab and handle it first
+                if event.key() == QtCore.Qt.Key_Backtab:
+                    # Qt sends Key_Backtab for Shift+Tab
+                    event.accept()  # Prevent event propagation
+                    self._handle_shift_tab()
+                    return
+                elif event.key() == QtCore.Qt.Key_Tab:
+                    if event.modifiers() & QtCore.Qt.ShiftModifier:
+                        event.accept()  # Prevent event propagation
+                        self._handle_shift_tab()
+                        return
+                    else:
+                        handled = self._handle_tab()
+                        if handled:
+                            event.accept()  # Prevent event propagation
+                            return
+                elif event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+                    if self._handle_enter():
+                        event.accept()  # Prevent event propagation
+                        return
+                # Pass unhandled events to parent
+                super().keyPressEvent(event)
+
+            def _handle_tab(self):
+                cursor = self.textCursor()
+                if cursor.hasSelection():
+                    start = cursor.selectionStart()
+                    end = cursor.selectionEnd()
+                    cursor.setPosition(start)
+                    start_block = cursor.blockNumber()
+                    cursor.setPosition(end)
+                    end_block = cursor.blockNumber()
+                    cursor.beginEditBlock()
+                    for _ in range(end_block - start_block + 1):
+                        cursor.movePosition(QtGui.QTextCursor.StartOfLine)
+                        cursor.insertText("    ")
+                        cursor.movePosition(QtGui.QTextCursor.NextBlock)
+                    cursor.endEditBlock()
+                    # Restore selection
+                    cursor.setPosition(start + 4)  # +4 for the added spaces
+                    cursor.setPosition(end + 4 * (end_block - start_block + 1), QtGui.QTextCursor.KeepAnchor)
+                    self.setTextCursor(cursor)
+                    return True
+                else:
+                    # Store current position
+                    pos = cursor.position()
+                    line_pos = cursor.positionInBlock()
+                    cursor.beginEditBlock()
+                    cursor.movePosition(QtGui.QTextCursor.StartOfLine)
+                    cursor.insertText("    ")
+                    cursor.endEditBlock()
+                    # Move cursor to after the inserted spaces
+                    cursor.setPosition(pos + 4)  # +4 for the added spaces
+                    self.setTextCursor(cursor)
+                    return True
+
+            def _handle_shift_tab(self):
+                cursor = self.textCursor()
+                if cursor.hasSelection():
+                    # Store selection info
+                    start = cursor.selectionStart()
+                    end = cursor.selectionEnd()
+                    cursor.setPosition(start)
+                    start_block = cursor.blockNumber()
+                    start_pos_in_block = cursor.positionInBlock()
+                    cursor.setPosition(end)
+                    end_block = cursor.blockNumber()
+                    end_pos_in_block = cursor.positionInBlock()
+                    
+                    # Track how many spaces were removed from each line
+                    spaces_removed = []
+                    
+                    cursor.beginEditBlock()
+                    # Process each line in the selection
+                    for i in range(end_block - start_block + 1):
+                        cursor.movePosition(QtGui.QTextCursor.StartOfLine)
+                        line_text = cursor.block().text()
+                        
+                        # Count leading spaces/tabs
+                        spaces_to_remove = 0
+                        if line_text.startswith("    "):  # 4 spaces
+                            spaces_to_remove = 4
+                        elif line_text.startswith(" "):  # 1-3 spaces
+                            for j, char in enumerate(line_text):
+                                if char == ' ' and j < 4:
+                                    spaces_to_remove += 1
+                                else:
+                                    break
+                        elif line_text.startswith("\t"):  # Tab
+                            spaces_to_remove = 1  # Count tab as 1 character
+                        
+                        # Remove the spaces/tab if any
+                        if spaces_to_remove > 0:
+                            cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.KeepAnchor, spaces_to_remove)
+                            cursor.removeSelectedText()
+                        
+                        spaces_removed.append(spaces_to_remove)
+                        cursor.movePosition(QtGui.QTextCursor.NextBlock)
+                    cursor.endEditBlock()
+                    
+                    # Adjust selection start/end based on removed spaces
+                    new_start = start - (spaces_removed[0] if start_pos_in_block >= spaces_removed[0] else start_pos_in_block)
+                    
+                    # Calculate total spaces removed before end position
+                    total_spaces_before_end = sum(spaces_removed[:end_block - start_block])
+                    # Add spaces removed from the last line if cursor is past them
+                    if end_pos_in_block >= spaces_removed[end_block - start_block]:
+                        total_spaces_before_end += spaces_removed[end_block - start_block]
+                    else:
+                        total_spaces_before_end += end_pos_in_block
+                    
+                    new_end = end - total_spaces_before_end
+                    
+                    # Restore adjusted selection
+                    cursor.setPosition(new_start)
+                    cursor.setPosition(new_end, QtGui.QTextCursor.KeepAnchor)
+                    self.setTextCursor(cursor)
+                    return True
+                else:
+                    # Store cursor position
+                    original_pos = cursor.position()
+                    pos_in_block = cursor.positionInBlock()
+                    
+                    cursor.beginEditBlock()
+                    cursor.movePosition(QtGui.QTextCursor.StartOfLine)
+                    line_text = cursor.block().text()
+                    
+                    # Count leading spaces/tabs
+                    spaces_to_remove = 0
+                    if line_text.startswith("    "):  # 4 spaces
+                        spaces_to_remove = 4
+                    elif line_text.startswith(" "):  # 1-3 spaces
+                        for i, char in enumerate(line_text):
+                            if char == ' ' and i < 4:
+                                spaces_to_remove += 1
+                            else:
+                                break
+                    elif line_text.startswith("\t"):  # Tab
+                        spaces_to_remove = 1  # Count tab as 1 character
+                    
+                    # Remove the spaces/tab if any
+                    if spaces_to_remove > 0:
+                        cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.KeepAnchor, spaces_to_remove)
+                        cursor.removeSelectedText()
+                    
+                    # Adjust cursor position
+                    new_pos = original_pos - (spaces_to_remove if pos_in_block >= spaces_to_remove else pos_in_block)
+                    cursor.setPosition(new_pos)
+                    cursor.endEditBlock()
+                    
+                    self.setTextCursor(cursor)
+                    return True
+
+            def _handle_enter(self):
+                cursor = self.textCursor()
+                cursor.beginEditBlock()
+                
+                # Get current line and position within line
+                current_line = cursor.block().text()
+                position_in_line = cursor.positionInBlock()
+                
+                # Extract text before and after cursor on current line
+                text_before_cursor = current_line[:position_in_line]
+                text_after_cursor = current_line[position_in_line:]
+                
+                # Get indentation of current line
+                indent = ''
+                for char in current_line:
+                    if char in (' ', '\t'):
+                        indent += char
+                    else:
+                        break
+                
+                # Check if current line ends with ':' (before the cursor)
+                add_extra_indent = text_before_cursor.rstrip().endswith(':')
+                
+                # Check if cursor is at the end of the line
+                at_end_of_line = position_in_line == len(current_line)
+                
+                # Insert newline with appropriate indentation
+                if add_extra_indent:
+                    # Add one level of indentation
+                    cursor.insertText("\n" + indent + "    " + text_after_cursor)
+                    # Only move cursor up if not at the end of the line
+                    if not at_end_of_line:
+                        cursor.movePosition(QtGui.QTextCursor.Up)
+                        cursor.movePosition(QtGui.QTextCursor.EndOfLine)
+                    else:
+                        # Position cursor after the indentation on the new line
+                        cursor.movePosition(QtGui.QTextCursor.StartOfLine)
+                        cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.MoveAnchor, len(indent) + 4)
+                else:
+                    # Maintain same indentation level
+                    cursor.insertText("\n" + indent + text_after_cursor)
+                    # Only handle text removal if not at the end of the line
+                    if not at_end_of_line:
+                        # Remove the duplicated text after cursor
+                        end_pos = cursor.position()
+                        cursor.setPosition(end_pos - len(text_after_cursor))
+                        cursor.setPosition(end_pos, QtGui.QTextCursor.KeepAnchor)
+                        cursor.removeSelectedText()
+                    else:
+                        # Position cursor after the indentation on the new line
+                        cursor.movePosition(QtGui.QTextCursor.StartOfLine)
+                        cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.MoveAnchor, len(indent))
+                
+                cursor.endEditBlock()
+                self.setTextCursor(cursor)
+                return True
 
         # Editor style
         editor_style = """
@@ -589,7 +866,7 @@ class ScriptManagerWidget(QtWidgets.QWidget):
                 color: #dddddd;
                 border: 0px solid #444444;
                 border-radius: 3px;
-                padding: 5px;
+                padding: 5px 5px 5px 15px; /* Added significant left padding to prevent text from being under line numbers */
                 font-family: Consolas, Monaco, monospace;
                 selection-background-color: #264f78;
             }
@@ -599,10 +876,14 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.python_editor = CodeEditor()
         self.python_editor.setStyleSheet(editor_style)
         self.python_highlighter = ScriptSyntaxHighlighter(self.python_editor.document())
+        # Force document margin to create space for line numbers
+        self.python_editor.document().setDocumentMargin(5)
         
         self.mel_editor = CodeEditor()
         self.mel_editor.setStyleSheet(editor_style)
         self.mel_highlighter = ScriptSyntaxHighlighter(self.mel_editor.document())
+        # Force document margin to create space for line numbers
+        self.mel_editor.document().setDocumentMargin(15)
         
         # Set tab width for both editors
         font = self.python_editor.font()
@@ -668,12 +949,10 @@ ik_controls = ['@ns.ik_pole_ctrl', '@ns.ik_arm_or_leg_ctrl']
 fk_joints = ['@ns.fk_upper_arm_or_leg_jnt', '@ns.fk_elbow_or_knee_jnt', '@ns.fk_wrist_or_ankle_jnt'] 
 @match_ik_to_fk(ik_controls, fk_joints)'''
         
-        # Get current text and append new code with a newline if there's existing content
-        current_text = self.python_editor.toPlainText()
-        if current_text:
-            self.python_editor.setPlainText(current_text + '\n' + preset_code)
-        else:
-            self.python_editor.setPlainText(preset_code)
+        # Insert code at the current cursor position
+        cursor = self.python_editor.textCursor()
+        cursor.insertText(preset_code)
+        self.python_editor.setFocus()
 
     def ppf_match_fk_to_ik(self): # Match FK to IK
         preset_code = '''#Replace the fk_controls and ik_joints with your own names
@@ -681,23 +960,48 @@ fk_controls = ['@ns.fk_upper_arm_or_leg_ctrl', '@ns.fk_elbow_or_knee_ctrl', '@ns
 ik_joints = ['@ns.ik_upper_arm_or_leg_jnt', '@ns.ik_elbow_or_knee_jnt', '@ns.ik_wrist_or_ankle_jnt'] 
 @match_fk_to_ik(fk_controls, ik_joints)'''
         
-        # Get current text and append new code with a newline if there's existing content
-        current_text = self.python_editor.toPlainText()
-        if current_text:
-            self.python_editor.setPlainText(current_text + '\n' + preset_code)
-        else:
-            self.python_editor.setPlainText(preset_code)
+        # Insert code at the current cursor position
+        cursor = self.python_editor.textCursor()
+        cursor.insertText(preset_code)
+        self.python_editor.setFocus()
     
     def ppf_set_attribute(self): # Match FK to IK
         preset_code = '''#Replace the Object, Attribute and Attribute Value with your own names
 cmds.setAttr("@ns.Object.Attribute", AttributeValue)'''
         
-        # Get current text and append new code with a newline if there's existing content
-        current_text = self.python_editor.toPlainText()
-        if current_text:
-            self.python_editor.setPlainText(current_text + '\n' + preset_code)
-        else:
-            self.python_editor.setPlainText(preset_code)
+        # Insert code at the current cursor position
+        cursor = self.python_editor.textCursor()
+        cursor.insertText(preset_code)
+        self.python_editor.setFocus()
+
+    def ppf_button_appearance(self): # Button Appearance
+        preset_code = '''@TF.button_appearance(text=" ", opacity=1, selectable=1, target_buttons=None)'''
+        
+        # Insert code at the current cursor position
+        cursor = self.python_editor.textCursor()
+        cursor.insertText(preset_code)
+        self.python_editor.setFocus()
+        
+    def ppf_get_selected_button_ids(self): # Get Selected Button IDs
+        # Get the canvas from the picker button
+        canvas = None
+        if self.picker_button:
+            canvas = self.picker_button.parent()
+            
+        if canvas:
+            # Get all selected buttons
+            selected_buttons = canvas.get_selected_buttons()
+            
+            # Extract button IDs
+            button_ids = [button.unique_id for button in selected_buttons]
+            
+            # Create the preset code
+            preset_code = f'''button_ids = {button_ids}'''
+            
+            # Insert code at the current cursor position
+            cursor = self.python_editor.textCursor()
+            cursor.insertText(preset_code)
+            self.python_editor.setFocus()
     #--------------------------------------------------------------------------------------------------------------------
     def mel_preset_function_01(self):
         print('Mel Preset Function 01')
@@ -706,12 +1010,10 @@ cmds.setAttr("@ns.Object.Attribute", AttributeValue)'''
         preset_code = '''#Replace the Object, Attribute and Attribute Value with your own names
 setAttr "@ns.Object.Attribute" Attribute Value;'''
         
-        # Get current text and append new code with a newline if there's existing content
-        current_text = self.mel_editor.toPlainText()
-        if current_text:
-            self.mel_editor.setPlainText(current_text + '\n' + preset_code)
-        else:
-            self.mel_editor.setPlainText(preset_code)
+        # Insert code at the current cursor position
+        cursor = self.mel_editor.textCursor()
+        cursor.insertText(preset_code)
+        self.mel_editor.setFocus()  
     #--------------------------------------------------------------------------------------------------------------------
     def set_picker_button(self, button):
         """Modified to ensure proper initialization of script data for individual buttons"""
@@ -1286,6 +1588,7 @@ class PickerButton(QtWidgets.QWidget):
                     elif self.mode == 'pose':
                         # pose mode behavior
                         self.apply_pose()
+                        
                 
                 event.accept()
         elif event.button() == QtCore.Qt.RightButton:
