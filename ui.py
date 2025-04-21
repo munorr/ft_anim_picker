@@ -475,7 +475,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 current_geometry.height()
             )
         else:
-            # Subtract edit panel width when exiting edit mode
+            # Subtract edit panel width
             new_width = current_geometry.width() - edit_panel_width
             self.setGeometry(
                 current_geometry.x(),
@@ -483,7 +483,23 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 new_width,
                 current_geometry.height()
             )
-            QtCore.QTimer.singleShot(0, self.update_buttons_for_current_tab)
+
+        # Update the canvas for all tabs
+        for tab_name, tab_data in self.tab_system.tabs.items():
+            canvas = tab_data['canvas']
+            canvas.set_edit_mode(self.edit_mode)
+            
+            # Update cursor for all buttons
+            for button in canvas.buttons:
+                button.update_cursor()
+                
+        # Update the button state in the UI
+        if hasattr(self, 'edit_button'):
+            self.edit_button.setChecked(self.edit_mode)
+
+        # Force update of the layout
+        self.update()
+        QtCore.QTimer.singleShot(0, self.update_buttons_for_current_tab)
 
     def setup_layout(self):
         # Add widgets to layouts
@@ -1843,6 +1859,3 @@ class AnimPickerWindow(QtWidgets.QWidget):
 
         #print("Updating edit widgets")
 
-
-
-    
