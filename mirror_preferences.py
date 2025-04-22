@@ -25,7 +25,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
         self.resizing = False
         self.resize_edge = None
         self.resize_range = 8  # Pixels from edge where resizing is active
-        self.setMinimumSize(280, 260)  # Set minimum size to match frame size
+        self.setMinimumSize(270, 230)  # Set minimum size to match frame size
         
         # Dictionary to store mirror preferences for objects
         self.mirror_prefs = {}
@@ -69,7 +69,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
         
         # Create main frame
         self.frame = QtWidgets.QFrame()
-        self.frame.setFixedSize(280, 260)
+        self.frame.setFixedSize(270, 230)
         self.frame.setStyleSheet("""
             QFrame {
                 background-color: rgba(30, 30, 30, 1);
@@ -89,7 +89,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
         title_layout.setContentsMargins(6, 6, 6, 6)
         title_layout.setSpacing(6)
         
-        self.title_label = QtWidgets.QLabel("Mirror Preferences")
+        self.title_label = QtWidgets.QLabel("Mirror Pref")
         self.title_label.setStyleSheet("color: #dddddd; background: transparent;")
         title_layout.addSpacing(4)
         title_layout.addWidget(self.title_label)
@@ -185,18 +185,22 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
         counterpart_layout2 = QtWidgets.QHBoxLayout()
         counterpart_layout2.setContentsMargins(1, 1, 1, 1)
         
-        counterpart_label = QtWidgets.QLabel("Mirror Counterpart:")
+        counterpart_label = QtWidgets.QLabel("Mirror Object:")
         counterpart_label.setStyleSheet("color: #aaaaaa; border: none;")
         counterpart_layout1.addWidget(counterpart_label)
         
         self.counterpart_label = QtWidgets.QLabel("None")
         self.counterpart_label.setStyleSheet("color: #00aaff; border: none;")
-        counterpart_layout1.addWidget(self.counterpart_label)
+        #counterpart_layout1.addWidget(self.counterpart_label)
         
         self.manual_counterpart_edit = QtWidgets.QLineEdit()
         self.manual_counterpart_edit.setPlaceholderText("Enter manual counterpart name")
+        self.manual_counterpart_edit.setStyleSheet("background-color: #1e1e1e; color: #00aaff; border: 1px solid #444444; border-radius: 3px; padding: 2px;")
+        self.manual_counterpart_edit.setFixedHeight(24)
         self.manual_counterpart_edit.setEnabled(False)
-        counterpart_layout2.addWidget(self.manual_counterpart_edit)
+        # Connect textChanged signal to update the text color in real-time
+        self.manual_counterpart_edit.textChanged.connect(self.check_counterpart_exists)
+        counterpart_layout1.addWidget(self.manual_counterpart_edit)
         
         self.set_counterpart_button = CB.CustomButton(
             text='Set',
@@ -208,9 +212,9 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
         )
         self.set_counterpart_button.clicked.connect(self.set_manual_counterpart)
         self.set_counterpart_button.setEnabled(False)
-        counterpart_layout2.addWidget(self.set_counterpart_button)
+        #counterpart_layout1.addWidget(self.set_counterpart_button)
         counterpart_layout.addLayout(counterpart_layout1)
-        counterpart_layout.addLayout(counterpart_layout2)
+        #counterpart_layout.addLayout(counterpart_layout2)
         
         config_layout.addWidget(counterpart_frame)
 
@@ -240,7 +244,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
         
         
         self.x_trans_invert = CB.CustomRadioButton("Invert", color="#00aaff", group=True, height=bh, fill=True)
-        self.x_trans_none = CB.CustomRadioButton("None", color="#00aaff", group=True, height=bh, fill=True)
+        self.x_trans_none = CB.CustomRadioButton("Same", color="#00aaff", group=True, height=bh, fill=True)
         
         self.x_trans_invert.group('x_trans')
         self.x_trans_none.group('x_trans')
@@ -258,7 +262,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
         y_trans_layout.addWidget(y_trans_label)
         
         self.y_trans_invert = CB.CustomRadioButton("Invert", color="#00aaff", group=True, height=bh, fill=True)
-        self.y_trans_none = CB.CustomRadioButton("None", color="#00aaff", group=True, height=bh, fill=True)
+        self.y_trans_none = CB.CustomRadioButton("Same", color="#00aaff", group=True, height=bh, fill=True)
         
         self.y_trans_invert.group('y_trans')
         self.y_trans_none.group('y_trans')
@@ -276,7 +280,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
         z_trans_layout.addWidget(z_trans_label)
         
         self.z_trans_invert = CB.CustomRadioButton("Invert", color="#00aaff", group=True, height=bh, fill=True)
-        self.z_trans_none = CB.CustomRadioButton("None", color="#00aaff", group=True, height=bh, fill=True)
+        self.z_trans_none = CB.CustomRadioButton("Same", color="#00aaff", group=True, height=bh, fill=True)
         
         self.z_trans_invert.group('z_trans')
         self.z_trans_none.group('z_trans')
@@ -307,7 +311,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
         x_rot_layout.addWidget(x_rot_label)
         
         self.x_rot_invert = CB.CustomRadioButton("Invert", color="#00aaff", group=True, height=bh, fill=True)
-        self.x_rot_none = CB.CustomRadioButton("None", color="#00aaff", group=True, height=bh, fill=True)
+        self.x_rot_none = CB.CustomRadioButton("Same", color="#00aaff", group=True, height=bh, fill=True)
         
         self.x_rot_invert.group('x_rot')
         self.x_rot_none.group('x_rot')
@@ -325,7 +329,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
         y_rot_layout.addWidget(y_rot_label)
         
         self.y_rot_invert = CB.CustomRadioButton("Invert", color="#00aaff", group=True, height=bh, fill=True)
-        self.y_rot_none = CB.CustomRadioButton("None", color="#00aaff", group=True, height=bh, fill=True)
+        self.y_rot_none = CB.CustomRadioButton("Same", color="#00aaff", group=True, height=bh, fill=True)
         
         self.y_rot_invert.group('y_rot')
         self.y_rot_none.group('y_rot')
@@ -343,7 +347,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
         z_rot_layout.addWidget(z_rot_label)
         
         self.z_rot_invert = CB.CustomRadioButton("Invert", color="#00aaff", group=True, height=bh, fill=True)
-        self.z_rot_none = CB.CustomRadioButton("None", color="#00aaff", group=True, height=bh, fill=True)
+        self.z_rot_none = CB.CustomRadioButton("Same", color="#00aaff", group=True, height=bh, fill=True)
         
         self.z_rot_invert.group('z_rot')
         self.z_rot_none.group('z_rot')
@@ -439,7 +443,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
             
             if not selected_objects:
                 # No objects selected
-                self.title_label.setText("Mirror Preferences")
+                self.title_label.setText("Mirror Pref")
                 self.clear_preference_ui()
                 self.remove_button.setEnabled(False)
                 self.remove_button.setVisible(False)  # Hide remove button
@@ -453,9 +457,11 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
             # Update the title label with the selected object name
             if len(selected_objects) == 1:
                 obj_name = selected_objects[0].split('|')[-1]  # Show the short name
-                self.title_label.setText(f"Mirror: {obj_name}")
+                obj_name = f"<span style='color:#4a9df0;'>{obj_name}</span>"
+                self.title_label.setText(f"Mirror Pref: {obj_name}")
             else:
-                self.title_label.setText(f"Mirror: {len(selected_objects)} objects")
+                sel_object_num = f"<span style='color:#4a9df0;'>{len(selected_objects)} objects</span>"
+                self.title_label.setText(f"Mirror Pref: {sel_object_num}")
             
             # Process the first selected object for preferences
             first_obj = selected_objects[0]
@@ -631,6 +637,8 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
                 if "counterpart" in pref_data and pref_data["counterpart"]:
                     counterpart = pref_data["counterpart"]
                     self.counterpart_label.setText(counterpart)
+                    # Use setText which will trigger the textChanged signal
+                    # and automatically update the color through check_counterpart_exists
                     self.manual_counterpart_edit.setText(counterpart)
                     return
             except json.JSONDecodeError:
@@ -642,17 +650,54 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
         
         if mirrored_name != short_name:
             self.counterpart_label.setText(mirrored_name)
+            # Use setText which will trigger the textChanged signal
+            # and automatically update the color through check_counterpart_exists
             self.manual_counterpart_edit.setText(mirrored_name)
         else:
             status = "None (Center Object)" if is_center else "Not Found"
             self.counterpart_label.setText(status)
             self.manual_counterpart_edit.clear()
+            self.manual_counterpart_edit.setPlaceholderText(status)
+            # Use default gray color for empty/not found case
+            self.manual_counterpart_edit.setStyleSheet("background-color: #1e1e1e; color: #aaaaaa; border: 1px solid #444444; border-radius: 3px; padding: 2px;")
     
+    def check_counterpart_exists(self, text=None):
+        """Check if the counterpart object exists in Maya and update the text color.
+        
+        Args:
+            text (str, optional): The text to check. If None, uses the current text in the QLineEdit.
+        """
+        if text is None:
+            text = self.manual_counterpart_edit.text().strip()
+        
+        if not text:
+            # Use default gray color for empty case
+            self.manual_counterpart_edit.setStyleSheet("background-color: #1e1e1e; color: #aaaaaa; border: 1px solid #444444; border-radius: 3px; padding: 2px;")
+            return False
+        
+        # Check if counterpart exists, considering namespace
+        object_exists = cmds.objExists(text)
+        
+        # If not found, try by checking just the short name in case it's in a different namespace
+        if not object_exists:
+            # Get all objects with this shortname, ignoring namespace
+            potential_matches = cmds.ls(text, long=True) or []
+            object_exists = len(potential_matches) > 0
+        
+        # Set text color based on object existence
+        if object_exists:
+            self.manual_counterpart_edit.setStyleSheet("background-color: #1e1e1e; color: #00aaff; border: 1px solid #444444; border-radius: 3px; padding: 2px;")
+        else:
+            self.manual_counterpart_edit.setStyleSheet("background-color: #1e1e1e; color: #aa5500; border: 1px solid #444444; border-radius: 3px; padding: 2px;")
+            
+        return object_exists
+            
     def set_manual_counterpart(self):
         """Set a manual counterpart name."""
         counterpart = self.manual_counterpart_edit.text().strip()
         if counterpart:
             self.counterpart_label.setText(counterpart)
+            # The color has already been updated by the textChanged signal
             self.on_preference_changed()
     
     def _block_preference_signals(self, block):

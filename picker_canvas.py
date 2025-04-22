@@ -997,20 +997,35 @@ class PickerCanvas(QtWidgets.QWidget):
             del self.selection_manager
     #------------------------------------------------------------------------------
     def wheelEvent(self, event):
-        # Check if Ctrl key is pressed for finer zoom control
-        ctrl_pressed = event.modifiers() & QtCore.Qt.ControlModifier
+        # Get the wheel delta value - positive for wheel up, negative for wheel down
+        delta_y = event.angleDelta().y()
         
-        # Use smaller zoom increment when Ctrl is pressed
-        if ctrl_pressed:
-            zoom_factor = 1.05 if event.angleDelta().y() > 0 else 1 / 1.05
+        # Check for modifier keys
+        alt_pressed = bool(event.modifiers() & QtCore.Qt.AltModifier)
+        ctrl_pressed = bool(event.modifiers() & QtCore.Qt.ControlModifier)
+        
+        # Determine zoom direction based on wheel direction
+        zoom_in = delta_y > 0
+        
+        # Set zoom factors based on modifiers
+        if alt_pressed:
+            # Alt key handling with more aggressive zoom factors
+            if zoom_in:
+                zoom_factor = 1.15  # Zoom in faster with Alt
+            else:
+                zoom_factor = 1 / 1.15  # Zoom out faster with Alt
+        elif ctrl_pressed:
+            # Ctrl key for finer control
+            zoom_factor = 1.05 if zoom_in else 1 / 1.05
         else:
-            zoom_factor = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
+            # Default zoom speed
+            zoom_factor = 1.2 if zoom_in else 1 / 1.2
         
         # Get mouse position in scene coordinates before zoom
         mouse_pos = QtCore.QPointF(event.position().x(), event.position().y())
         old_scene_pos = self.canvas_to_scene_coords(mouse_pos)
 
-        # Apply zoom
+        # Apply zoom (only once!)
         self.zoom_factor *= zoom_factor
         
         # Limit zoom range for better performance
@@ -1026,7 +1041,11 @@ class PickerCanvas(QtWidgets.QWidget):
         self.update_button_positions()
         self.setUpdatesEnabled(True)
         
+        # Ensure Maya window stays active
         UT.maya_main_window().activateWindow()
+        
+        # Accept the event to prevent it from being processed further
+        event.accept()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:

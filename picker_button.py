@@ -1254,8 +1254,7 @@ class PickerButton(QtWidgets.QWidget):
         self.last_size = None      # Track size to know when to regenerate the pixmap
 
         self.update_tooltip()
-        
-        
+    
     @property
     def scene_position(self):
         return self._scene_position
@@ -1264,41 +1263,25 @@ class PickerButton(QtWidgets.QWidget):
     def scene_position(self, pos):
         self._scene_position = pos
         if self.parent():
-            self.parent().update_button_positions()
-            
+            self.parent().update_button_positions()    
     #---------------------------------------------------------------------------------------
-    def paintEvent(self, event):
-        painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
-
-        # Get the current zoom factor from the parent canvas
-        zoom_factor = self.parent().zoom_factor  if self.parent() else 1.0
-
-        # Draw button background
-        if not self.is_selected:
-            painter.setBrush(QtGui.QColor(self.color))
-        else:
-            painter.setBrush(QtGui.QColor(255, 255, 255, 120))
+    def _create_rounded_rect_path(self, rect, radii, zoom_factor):
+        """Create a rounded rectangle path with the given corner radii.
         
-        # Apply the button's opacity without modification for selectable state
-        painter.setOpacity(self.opacity)
-        painter.setPen(QtCore.Qt.NoPen)
-
-        # Create a path with individual corner radii adjusted for zoom
+        Args:
+            rect (QRectF): Rectangle to create path for
+            radii (list): List of 4 corner radii values [tl, tr, br, bl]
+            zoom_factor (float): Current zoom factor
+            
+        Returns:
+            QPainterPath: Path with rounded corners
+        """
         path = QtGui.QPainterPath()
-        rect = self.rect().adjusted(zoom_factor, zoom_factor, -zoom_factor, -zoom_factor)
         
-        # Adjust radii for zoom
-        transition = 1 / (1 + math.exp(-6 * (zoom_factor - .3)))
-        scale_factor = 0.2* (1 - transition) + 0.96 * transition
-        #zf = zoom_factor * .7 if zoom_factor <= 1 else zoom_factor *.96
-        zf = zoom_factor *.95#* scale_factor
-
-        tl = self.radius[0] * zf 
-        tr = self.radius[1] * zf
-        br = self.radius[2] * zf
-        bl = self.radius[3] * zf
-
+        # Apply zoom factor to radii
+        zf = zoom_factor * 0.95
+        tl, tr, br, bl = [radius * zf for radius in radii]
+        
         # Create the path with adjusted radii
         path.moveTo(rect.left() + tl, rect.top())
         path.lineTo(rect.right() - tr, rect.top())
@@ -1309,7 +1292,209 @@ class PickerButton(QtWidgets.QWidget):
         path.arcTo(rect.left(), rect.bottom() - 2*bl, 2*bl, 2*bl, -90, -90)
         path.lineTo(rect.left(), rect.top() + tl)
         path.arcTo(rect.left(), rect.top(), 2*tl, 2*tl, 180, -90)
+        
+        return path
+    
+    def _calculate_thumbnail_rect(self, zoom_factor):
+        """Calculate the rectangle for the thumbnail or placeholder.
+        
+        Args:
+            zoom_factor (float): Current zoom factor
+            
+        Returns:
+            QRectF: Rectangle for the thumbnail area
+        """
+        # Limit thumbnail size to ensure it doesn't overlap with text area
+        max_thumbnail_height = self.height * 0.7  # Limit to 70% of button height
+        thumbnail_width = self.width * 0.9  # 90% of button width
+        thumbnail_size = min(thumbnail_width, max_thumbnail_height)
+        
+        # Position thumbnail in the upper part of the button, centered horizontally
+        rect = QtCore.QRectF(
+            (self.width - thumbnail_size) / 2.4,  # Center horizontally
+            self.height * 0.04,  # Fixed position from top (4% of height)
+            thumbnail_size,
+            thumbnail_size
+        )
+        
+        # Adjust for zoom factor
+        return QtCore.QRectF(
+            rect.x() * zoom_factor,
+            rect.y() * zoom_factor,
+            rect.width() * zoom_factor,
+            rect.height() * zoom_factor
+        )
+    
+    def _render_pose_pixmap(self, current_size, zoom_factor):
+        """Render the pixmap for pose mode with thumbnail and text.
+        
+        Args:
+            current_size (QSize): Current button size
+            zoom_factor (float): Current zoom factor
+            
+        Returns:
+            QPixmap: The rendered pose pixmap
+        """
+        # Create a new pixmap for pose mode
+        pose_pixmap = QtGui.QPixmap(current_size)
+        pose_pixmap.fill(QtCore.Qt.transparent)
+        
+        pose_painter = QtGui.QPainter(pose_pixmap)
+        pose_painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        pose_painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
+        
+        # Set up font for pose mode
+        pose_painter.setPen(QtGui.QColor('white'))
+        pose_font = pose_painter.font()
+        font_size = (self.width * 0.15) * zoom_factor  # Smaller font based on width
+        pose_font.setPixelSize(int(font_size))
+        pose_painter.setFont(pose_font)
+        
+        # Calculate text area at bottom of button
+        min_text_height = 12  # Minimum height in pixels
+        text_height = max(int(self.height * 0.2), min_text_height)
+        fixed_position_from_top = self.height * 0.75  # Bottom 20% of button
+        
+        text_rect = QtCore.QRectF(
+            0,  # Start at left edge
+            fixed_position_from_top * zoom_factor,  # Fixed position from top
+            self.width * zoom_factor,  # Full width
+            text_height * zoom_factor  # Height scaled with zoom
+        )
+        
+        # Draw text at bottom
+        pose_painter.drawText(text_rect, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignBottom, self.label)
+        
+        # Get thumbnail area
+        thumbnail_rect = self._calculate_thumbnail_rect(zoom_factor)
+        
+        # Create thumbnail path with same corner radius as button
+        thumbnail_path = self._create_rounded_rect_path(
+            thumbnail_rect, 
+            [self.radius[0]] * 4,  # Same radius for all corners
+            zoom_factor
+        )
+        
+        # Draw tinted background for thumbnail area
+        tinted_color = UT.rgba_value(self.color, 0.4, 0.8)  # 40% tint, 80% opacity
+        pose_painter.setBrush(QtGui.QColor(tinted_color))
+        pose_painter.setPen(QtCore.Qt.NoPen)
+        pose_painter.drawPath(thumbnail_path)
+        
+        # Draw thumbnail or placeholder
+        if self.thumbnail_path and (self.thumbnail_pixmap is not None) and not self.thumbnail_pixmap.isNull():
+            # Set clipping path for the thumbnail
+            pose_painter.setClipPath(thumbnail_path)
+            
+            # Scale the pixmap to fit within the thumbnail area
+            scaled_pixmap = self.thumbnail_pixmap.scaled(
+                int(thumbnail_rect.width()),
+                int(thumbnail_rect.height()),
+                QtCore.Qt.KeepAspectRatio,
+                QtCore.Qt.SmoothTransformation
+            )
+            
+            # Center the image in the thumbnail area
+            pixmap_rect = QtCore.QRectF(
+                thumbnail_rect.x() + (thumbnail_rect.width() - scaled_pixmap.width()) / 2,
+                thumbnail_rect.y() + (thumbnail_rect.height() - scaled_pixmap.height()) / 2,
+                scaled_pixmap.width(),
+                scaled_pixmap.height()
+            )
+            
+            # Draw the thumbnail
+            pose_painter.drawPixmap(pixmap_rect.toRect(), scaled_pixmap)
+            pose_painter.setClipping(False)
+        else:
+            # Draw placeholder text
+            pose_painter.setPen(QtGui.QColor(255, 255, 255, 120))
+            pose_painter.drawText(thumbnail_rect, QtCore.Qt.AlignCenter, "Thumbnail")
+            pose_painter.setPen(QtGui.QColor('white'))  # Reset pen color
+        
+        pose_painter.end()
+        return pose_pixmap
+    
+    def _render_text_pixmap(self, current_size, zoom_factor):
+        """Render the pixmap for regular mode with centered text.
+        
+        Args:
+            current_size (QSize): Current button size
+            zoom_factor (float): Current zoom factor
+            
+        Returns:
+            QPixmap: The rendered text pixmap
+        """
+        text_pixmap = QtGui.QPixmap(current_size)
+        text_pixmap.fill(QtCore.Qt.transparent)
+        
+        text_painter = QtGui.QPainter(text_pixmap)
+        text_painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        text_painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
+        
+        # Set up font
+        text_painter.setPen(QtGui.QColor('white'))
+        font = text_painter.font()
+        font_size = (self.height * 0.5) * zoom_factor
+        font.setPixelSize(int(font_size))
+        text_painter.setFont(font)
+        
+        # Calculate text rect with padding
+        text_rect = self.rect()
+        bottom_padding = (self.height * 0.1) * zoom_factor
+        text_rect.adjust(0, 0, 0, -int(bottom_padding))
+        
+        # Draw text centered
+        text_painter.drawText(text_rect, QtCore.Qt.AlignCenter, self.label)
+        text_painter.end()
+        
+        return text_pixmap
+    
+    def _should_update_pixmaps(self, zoom_factor, current_size):
+        """Determine if pixmaps need to be updated.
+        
+        Args:
+            zoom_factor (float): Current zoom factor
+            current_size (QSize): Current button size
+            
+        Returns:
+            bool: True if pixmaps need to be updated
+        """
+        # Check if pixmaps are missing or if zoom/size has changed significantly
+        if self.mode == 'pose':
+            pixmap_missing = self.pose_pixmap is None
+        else:
+            pixmap_missing = self.text_pixmap is None
+            
+        zoom_changed = abs(self.last_zoom_factor - zoom_factor) > 0.1
+        size_changed = self.last_size != current_size
+        
+        return pixmap_missing or zoom_changed or size_changed
+    
+    def paintEvent(self, event):
+        """Paint the button with background, selection border, and text/thumbnail.
+        
+        Args:
+            event (QPaintEvent): The paint event
+        """
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
 
+        # Get the current zoom factor from the parent canvas
+        zoom_factor = self.parent().zoom_factor if self.parent() else 1.0
+
+        # Draw button background
+        if not self.is_selected:
+            painter.setBrush(QtGui.QColor(self.color))
+        else:
+            painter.setBrush(QtGui.QColor(255, 255, 255, 120))
+        
+        # Apply the button's opacity
+        painter.setOpacity(self.opacity)
+        painter.setPen(QtCore.Qt.NoPen)
+
+        # Create button path with rounded corners
+        rect = self.rect().adjusted(zoom_factor, zoom_factor, -zoom_factor, -zoom_factor)
+        path = self._create_rounded_rect_path(rect, self.radius, zoom_factor)
         painter.drawPath(path)
 
         # Draw selection border if selected
@@ -1317,220 +1502,34 @@ class PickerButton(QtWidgets.QWidget):
             if self.edit_mode:
                 painter.setBrush(QtGui.QColor(self.color))
                 pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 200), 2)
-                #pen.setWidth(2)  # Increased border width
-                pen.setCosmetic(True)  # Ensures the pen width is always 2 pixels regardless of zoom
+                pen.setCosmetic(True)  # Fixed width regardless of zoom
                 painter.setPen(pen)
                 painter.drawPath(path)
-
             else:   
                 pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 120), 1)
-                pen.setCosmetic(True)  # Ensures the pen width is always 2 pixels regardless of zoom
+                pen.setCosmetic(True)
                 painter.setPen(pen)
                 painter.drawPath(path)
 
-        # Draw text using pre-rendered pixmap
-        painter.setOpacity(1.0)  # Reset opacity for text
+        # Reset opacity for text/thumbnail rendering
+        painter.setOpacity(1.0)
         
-        # Only regenerate the pixmaps if zoom or size has changed
+        # Check if pixmaps need to be updated
         current_size = self.size()
-        needs_update = (self.text_pixmap is None or 
-                      abs(self.last_zoom_factor - zoom_factor) > 0.1 or 
-                      self.last_size != current_size)
-            
-        if needs_update:
+        if self._should_update_pixmaps(zoom_factor, current_size):
             self.last_zoom_factor = zoom_factor
             self.last_size = current_size
             
-            # Create a new pixmap for the text
-            self.text_pixmap = QtGui.QPixmap(current_size)
-            self.text_pixmap.fill(QtCore.Qt.transparent)
-            
-            # Create a temporary painter for the pixmap
-            text_painter = QtGui.QPainter(self.text_pixmap)
-            text_painter.setRenderHint(QtGui.QPainter.Antialiasing)
-            text_painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
-            
-            # Set up font
-            text_painter.setPen(QtGui.QColor('white'))
-            font = text_painter.font()
-            
-            # In pose mode, create a separate cached pixmap for better performance
+            # Render appropriate pixmap based on mode
             if self.mode == 'pose':
-                # Create a new pixmap for pose mode (will contain both thumbnail and text)
-                self.pose_pixmap = QtGui.QPixmap(current_size)
-                self.pose_pixmap.fill(QtCore.Qt.transparent)
-                pose_painter = QtGui.QPainter(self.pose_pixmap)
-                pose_painter.setRenderHint(QtGui.QPainter.Antialiasing)
-                pose_painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
-                
-                # Set up font for pose mode
-                pose_painter.setPen(QtGui.QColor('white'))
-                pose_font = pose_painter.font()
-                font_size = (self.width * 0.15) * zoom_factor  # Smaller font based on width
-                pose_font.setPixelSize(int(font_size))
-                pose_painter.setFont(pose_font)
-                
-                # Calculate text rect with padding for bottom alignment
-                # Ensure the text area is properly scaled with zoom and has minimum dimensions
-                min_text_height = 12  # Minimum height in pixels
-                text_height = max(int(self.height * 0.2), min_text_height)  # At least 12px height
-                min_padding = 2  # Minimum padding in pixels
-                bottom_padding = max(int((self.height * 0.04)), min_padding)  # Fixed padding, not scaled with zoom
-                
-                # Calculate the fixed position for the text area - always at the bottom 20% of the button
-                # This ensures it stays at the bottom regardless of zoom level
-                fixed_position_from_top = self.height * 0.75  # Fixed at 80% from the top (bottom 20%)
-                
-                # Adjust the text rectangle - use fixed positioning relative to button height
-                text_rect = QtCore.QRectF(
-                    0,  # Start at left edge
-                    fixed_position_from_top * zoom_factor,  # Fixed position from top, scaled for zoom
-                    self.width * zoom_factor,  # Full width
-                    text_height * zoom_factor  # Height scaled with zoom
-                )
-                
-                # Draw text to pose pixmap at bottom
-                pose_painter.drawText(text_rect, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignBottom, self.label)
-                
-                # Draw thumbnail if available
-                if self.thumbnail_path and (self.thumbnail_pixmap is not None) and not self.thumbnail_pixmap.isNull():
-                    # Calculate thumbnail area (square in the upper part of the button)
-                    # Limit thumbnail size to ensure it doesn't overlap with text area
-                    max_thumbnail_height = self.height * 0.7  # Limit to 70% of button height to leave room for text
-                    thumbnail_width = self.width * 0.9    # Thumbnail takes up 90% of button width
-                    thumbnail_size = min(thumbnail_width, max_thumbnail_height)  # Make it square, respecting height limit
-                    
-                    # Position thumbnail in the upper part of the button, centered horizontally
-                    thumbnail_rect = QtCore.QRectF(
-                        (self.width - thumbnail_size) / 2.4,  # Center horizontally
-                        self.height * 0.04,  # Fixed position from top (4% of height)
-                        thumbnail_size,
-                        thumbnail_size
-                    )
-                    
-                    # Adjust for zoom factor
-                    thumbnail_rect = QtCore.QRectF(
-                        thumbnail_rect.x() * zoom_factor,
-                        thumbnail_rect.y() * zoom_factor,
-                        thumbnail_rect.width() * zoom_factor,
-                        thumbnail_rect.height() * zoom_factor
-                    )
-                    
-                    # Create a rounded rect path for the thumbnail with same corner radius as button
-                    thumbnail_path = QtGui.QPainterPath()
-                    tr_tl = tr_tr = tr_br = tr_bl = self.radius[0] * zf  # Same radius as button
-                    
-                    thumbnail_path.moveTo(thumbnail_rect.left() + tr_tl, thumbnail_rect.top())
-                    thumbnail_path.lineTo(thumbnail_rect.right() - tr_tr, thumbnail_rect.top())
-                    thumbnail_path.arcTo(thumbnail_rect.right() - 2*tr_tr, thumbnail_rect.top(), 2*tr_tr, 2*tr_tr, 90, -90)
-                    thumbnail_path.lineTo(thumbnail_rect.right(), thumbnail_rect.bottom() - tr_br)
-                    thumbnail_path.arcTo(thumbnail_rect.right() - 2*tr_br, thumbnail_rect.bottom() - 2*tr_br, 2*tr_br, 2*tr_br, 0, -90)
-                    thumbnail_path.lineTo(thumbnail_rect.left() + tr_bl, thumbnail_rect.bottom())
-                    thumbnail_path.arcTo(thumbnail_rect.left(), thumbnail_rect.bottom() - 2*tr_bl, 2*tr_bl, 2*tr_bl, -90, -90)
-                    thumbnail_path.lineTo(thumbnail_rect.left(), thumbnail_rect.top() + tr_tl)
-                    thumbnail_path.arcTo(thumbnail_rect.left(), thumbnail_rect.top(), 2*tr_tl, 2*tr_tl, 180, -90)
-                    
-                    # Draw a tinted background for the thumbnail area (40% tint of button color)
-                    tinted_color = UT.rgba_value(self.color, 0.4, 0.8)  # 40% tint, 80% opacity
-                    pose_painter.setBrush(QtGui.QColor(tinted_color))
-                    pose_painter.setPen(QtCore.Qt.NoPen)
-                    pose_painter.drawPath(thumbnail_path)
-                    
-                    # Set clipping path for the thumbnail
-                    pose_painter.setClipPath(thumbnail_path)
-                    
-                    # Scale the pixmap to fit within the thumbnail area while maintaining aspect ratio
-                    scaled_pixmap = self.thumbnail_pixmap.scaled(
-                        int(thumbnail_rect.width()),
-                        int(thumbnail_rect.height()),
-                        QtCore.Qt.KeepAspectRatio,  # Keep aspect ratio to fit within bounds
-                        QtCore.Qt.SmoothTransformation
-                    )
-                    
-                    # Calculate positioning to center the image in the thumbnail area
-                    pixmap_rect = QtCore.QRectF(
-                        thumbnail_rect.x() + (thumbnail_rect.width() - scaled_pixmap.width()) / 2,
-                        thumbnail_rect.y() + (thumbnail_rect.height() - scaled_pixmap.height()) / 2,
-                        scaled_pixmap.width(),
-                        scaled_pixmap.height()
-                    )
-                    
-                    # Draw the thumbnail
-                    pose_painter.drawPixmap(pixmap_rect.toRect(), scaled_pixmap)
-                    pose_painter.setClipping(False)
-                else:
-                    # Draw placeholder text if no thumbnail
-                    # Calculate the same area as we would for the thumbnail
-                    # Limit placeholder size to ensure it doesn't overlap with text area
-                    max_thumbnail_height = self.height * 0.7  # Limit to 70% of button height to leave room for text
-                    thumbnail_width = self.width * 0.9   # Thumbnail takes up 90% of button width
-                    thumbnail_size = min(thumbnail_width, max_thumbnail_height)  # Make it square, respecting height limit
-                    
-                    # Create placeholder rect with the same positioning as the thumbnail
-                    placeholder_rect = QtCore.QRectF(
-                        (self.width - thumbnail_size) / 2.4,  # Center horizontally (match thumbnail position)
-                        self.height * 0.04,  # Fixed position from top (4% of height)
-                        thumbnail_size,
-                        thumbnail_size
-                    )
-                    
-                    # Adjust for zoom factor
-                    placeholder_rect = QtCore.QRectF(
-                        placeholder_rect.x() * zoom_factor,
-                        placeholder_rect.y() * zoom_factor,
-                        placeholder_rect.width() * zoom_factor,
-                        placeholder_rect.height() * zoom_factor
-                    )
-                    
-                    # Create a rounded rect path for the placeholder with same corner radius as button
-                    placeholder_path = QtGui.QPainterPath()
-                    pl_tl = pl_tr = pl_br = pl_bl = self.radius[0] * zf  # Same radius as button
-                    
-                    placeholder_path.moveTo(placeholder_rect.left() + pl_tl, placeholder_rect.top())
-                    placeholder_path.lineTo(placeholder_rect.right() - pl_tr, placeholder_rect.top())
-                    placeholder_path.arcTo(placeholder_rect.right() - 2*pl_tr, placeholder_rect.top(), 2*pl_tr, 2*pl_tr, 90, -90)
-                    placeholder_path.lineTo(placeholder_rect.right(), placeholder_rect.bottom() - pl_br)
-                    placeholder_path.arcTo(placeholder_rect.right() - 2*pl_br, placeholder_rect.bottom() - 2*pl_br, 2*pl_br, 2*pl_br, 0, -90)
-                    placeholder_path.lineTo(placeholder_rect.left() + pl_bl, placeholder_rect.bottom())
-                    placeholder_path.arcTo(placeholder_rect.left(), placeholder_rect.bottom() - 2*pl_bl, 2*pl_bl, 2*pl_bl, -90, -90)
-                    placeholder_path.lineTo(placeholder_rect.left(), placeholder_rect.top() + pl_tl)
-                    placeholder_path.arcTo(placeholder_rect.left(), placeholder_rect.top(), 2*pl_tl, 2*pl_tl, 180, -90)
-                    
-                    # Draw a tinted background for the placeholder area (40% tint of button color)
-                    tinted_color = UT.rgba_value(self.color, 0.4, 0.8)  # 40% tint, 80% opacity
-                    pose_painter.setBrush(QtGui.QColor(tinted_color))
-                    pose_painter.setPen(QtCore.Qt.NoPen)
-                    pose_painter.drawPath(placeholder_path)
-                    
-                    # Use a lighter font color for the placeholder
-                    pose_painter.setPen(QtGui.QColor(255, 255, 255, 120))
-                    pose_painter.drawText(placeholder_rect, QtCore.Qt.AlignCenter, "Thumbnail")
-                    
-                    # Reset pen color for the label
-                    pose_painter.setPen(QtGui.QColor('white'))
-                
-                # Finish pose pixmap painting
-                pose_painter.end()
-                
-                # For pose mode, we'll use the pose_pixmap instead of text_pixmap
-                # Just end the text_painter without drawing anything
-                text_painter.end()
+                self.pose_pixmap = self._render_pose_pixmap(current_size, zoom_factor)
+                # Create an empty text_pixmap to avoid None checks
+                self.text_pixmap = QtGui.QPixmap(current_size)
+                self.text_pixmap.fill(QtCore.Qt.transparent)
             else:
-                # Regular mode - font size based on height, centered text
-                font_size = (self.height * 0.5) * zoom_factor
-                font.setPixelSize(int(font_size))
-                text_painter.setFont(font)
-                
-                # Calculate text rect with padding
-                text_rect = self.rect()
-                bottom_padding = (self.height * 0.1) * zoom_factor  # 10% of height for bottom padding
-                text_rect.adjust(0, 0, 0, -int(bottom_padding))     
-                
-                # Draw text to pixmap centered
-                text_painter.drawText(text_rect, QtCore.Qt.AlignCenter, self.label)
-                text_painter.end()
+                self.text_pixmap = self._render_text_pixmap(current_size, zoom_factor)
         
-        # Draw the pre-rendered pixmap (text_pixmap for regular modes, pose_pixmap for pose mode)
+        # Draw the appropriate pixmap
         if self.mode == 'pose':
             if self.pose_pixmap and not self.pose_pixmap.isNull():
                 painter.drawPixmap(0, 0, self.pose_pixmap)
@@ -1756,6 +1755,58 @@ class PickerButton(QtWidgets.QWidget):
         self.script_manager.set_picker_button(self)
         self.script_manager.show()
 
+    def move_button_behind(self):
+        """Move the selected buttons behind other buttons in the z-order"""
+        canvas = self.parent()
+        if canvas and canvas.edit_mode:
+            selected_buttons = canvas.get_selected_buttons()
+            if selected_buttons:
+                # For each selected button, move it to the beginning of the buttons list
+                for button in selected_buttons:
+                    if button in canvas.buttons:
+                        canvas.buttons.remove(button)
+                        canvas.buttons.insert(0, button)  # Insert at the beginning (bottom of z-order)
+                        # Ensure button is visually at the bottom of the stack
+                        button.lower()
+                        # Trigger data update
+                        canvas.update_button_data(button)
+                
+                # Update the button positions and z-order
+                canvas.update_button_positions()
+                # Force a repaint
+                canvas.update()
+                
+                # Update the main window data
+                main_window = canvas.window()
+                if hasattr(main_window, 'update_buttons_for_current_tab'):
+                    main_window.update_buttons_for_current_tab()
+    
+    def bring_button_forward(self):
+        """Bring the selected buttons forward in the z-order"""
+        canvas = self.parent()
+        if canvas and canvas.edit_mode:
+            selected_buttons = canvas.get_selected_buttons()
+            if selected_buttons:
+                # For each selected button, move it to the end of the buttons list
+                for button in selected_buttons:
+                    if button in canvas.buttons:
+                        canvas.buttons.remove(button)
+                        canvas.buttons.append(button)  # Append to the end (top of z-order)
+                        # Ensure button is visually at the top of the stack
+                        button.raise_()
+                        # Trigger data update
+                        canvas.update_button_data(button)
+                
+                # Update the button positions and z-order
+                canvas.update_button_positions()
+                # Force a repaint
+                canvas.update()
+                
+                # Update the main window data
+                main_window = canvas.window()
+                if hasattr(main_window, 'update_buttons_for_current_tab'):
+                    main_window.update_buttons_for_current_tab()
+
     def show_context_menu(self, pos):
         menu = QtWidgets.QMenu()
         menu.setWindowFlags(menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
@@ -1811,23 +1862,42 @@ class PickerButton(QtWidgets.QWidget):
         if self.edit_mode:
             # Add thumbnail options for pose mode buttons
             if self.mode == 'pose':
-                add_thumbnail_action = menu.addAction("Add Thumbnail")
+                thumbnail_menu = QtWidgets.QMenu("Thumbnail", menu)
+                thumbnail_menu.setStyleSheet(menu.styleSheet())
+                
+                add_thumbnail_action = thumbnail_menu.addAction("Add Thumbnail")
                 add_thumbnail_action.triggered.connect(self.add_thumbnail)
 
-                select_thumbnail_action = menu.addAction("Select Thumbnail")
+                select_thumbnail_action = thumbnail_menu.addAction("Select Thumbnail")
                 select_thumbnail_action.triggered.connect(self.select_thumbnail)
                 
-                remove_thumbnail_action = menu.addAction("Remove Thumbnail")
+                remove_thumbnail_action = thumbnail_menu.addAction("Remove Thumbnail")
                 remove_thumbnail_action.triggered.connect(self.remove_thumbnail)
                 remove_thumbnail_action.setEnabled(bool(self.thumbnail_path))
                 
-                #menu.addSeparator()
+                menu.addMenu(thumbnail_menu)
             
+            #---------------------------------------------------------------------------------------
+            # Button placement submenu
+            placement_menu = QtWidgets.QMenu("Placement", menu)
+            placement_menu.setStyleSheet(menu.styleSheet())
+            
+            move_behind_action = placement_menu.addAction("Move Behind")
+            move_behind_action.triggered.connect(self.move_button_behind)
+            
+            bring_forward_action = placement_menu.addAction("Bring Forward")
+            bring_forward_action.triggered.connect(self.bring_button_forward)
+            
+            menu.addMenu(placement_menu)
+            #---------------------------------------------------------------------------------------
+            # Copy Action
             copy_action = menu.addAction(QtGui.QIcon(":/copyUV.png"), "Copy Button")
             copy_action.triggered.connect(self.copy_selected_buttons)
             
+            #---------------------------------------------------------------------------------------
             # Create Paste submenu
             paste_menu = QtWidgets.QMenu("Paste Options", menu)
+            paste_menu.setIcon(QtGui.QIcon(":/pasteUV.png"))
             paste_menu.setStyleSheet(menu.styleSheet())
             
             paste_all_action = paste_menu.addAction("Paste All")
@@ -1850,7 +1920,8 @@ class PickerButton(QtWidgets.QWidget):
             paste_text_action.setEnabled(has_clipboard)
             
             menu.addMenu(paste_menu)
-            
+            #---------------------------------------------------------------------------------------
+            # Delete Action
             delete_action = menu.addAction(QtGui.QIcon(":/delete.png"), "Delete Button")
             delete_action.triggered.connect(self.delete_selected_buttons)
         
