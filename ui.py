@@ -252,7 +252,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.canvas_tab_frame_scroll_area.setWidget(self.canvas_tab_frame)
         
         self.canvas_tab_frame_col = QtWidgets.QHBoxLayout(self.canvas_tab_frame)
-        self.addTabButton = QtWidgets.QPushButton("+")
+        self.addTabButton = QtWidgets.QPushButton(" ")
         self.addTabButton.setFixedSize(16,16)
         self.addTabButton.setStyleSheet('''
             QPushButton {background-color: #76a507; color: white; border-radius: 8px; padding:0px 0px 1px 0px;}

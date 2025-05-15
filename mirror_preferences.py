@@ -11,14 +11,18 @@ from . import custom_dialog as CD
 from . import custom_button as CB
 from . import tool_functions as TF
 from functools import partial
+from . import main as MAIN
+from . import utils as UT
 
 class MirrorPreferencesWindow(QtWidgets.QWidget):
     """Window for configuring mirror preferences for Maya objects using script manager style."""
     
     def __init__(self, parent=None):
+        if parent is None:
+            manager = MAIN.PickerWindowManager.get_instance()
+            parent = manager._picker_widgets[0] if manager._picker_widgets else None
         super(MirrorPreferencesWindow, self).__init__(parent)
         self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint | QtCore.Qt.Tool)
-        self.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         
         # Setup resizing parameters
@@ -873,6 +877,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
         if event.button() == QtCore.Qt.LeftButton:
             self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
             event.accept()
+        UT.maya_main_window().activateWindow()
     
     def title_bar_mouse_move_event(self, event):
         """Handle mouse move events on the title bar for dragging."""
@@ -922,6 +927,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
                 self.resize_start_pos = event.globalPos()
                 self.resize_start_geometry = self.geometry()
                 event.accept()
+        UT.maya_main_window().activateWindow()
     
     def mouseMoveEvent(self, event):
         """Handle mouse move events for resizing."""
@@ -964,6 +970,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
                 self.setCursor(QtCore.Qt.SizeVerCursor)
             else:
                 self.setCursor(QtCore.Qt.ArrowCursor)
+        UT.maya_main_window().activateWindow()
     
     def mouseReleaseEvent(self, event):
         """Handle mouse release events for resizing."""
@@ -972,6 +979,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
             self.resize_edge = None
             self.setCursor(QtCore.Qt.ArrowCursor)
             super().mouseReleaseEvent(event)
+        UT.maya_main_window().activateWindow()
             
     def closeEvent(self, event):
         """Clean up when the window is closed."""
@@ -1001,6 +1009,7 @@ class MirrorPreferencesWindow(QtWidgets.QWidget):
                 print(f"Error saving preferences on close: {e}")
                 
         super().closeEvent(event)
+        UT.maya_main_window().activateWindow()
         
     def create_icon(self, text, color):
         """Create a QIcon with the given text and color."""

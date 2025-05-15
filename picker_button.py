@@ -15,14 +15,17 @@ except ImportError:
 
 import math
 import re
+
 from . import utils as UT
 from . import custom_line_edit as CLE
 from . import custom_button as CB
 from . import data_management as DM
 from . import ui as UI
+# Lazy import main to avoid circular dependency
 from . import script_manager as SM
 from . import tool_functions as TF
 from . import custom_dialog as CD
+
 
 class ButtonClipboard:
     _instance = None
@@ -82,10 +85,11 @@ class ButtonClipboard:
 
 class SelectionManagerWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
+        if parent is None:
+            manager = MAIN.PickerWindowManager.get_instance()
+            parent = manager._picker_widgets[0] if manager._picker_widgets else None
         super(SelectionManagerWidget, self).__init__(parent)
-        self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint | QtCore.Qt.Tool)
-        # Always stay on top of the parent window
-        self.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         
         # Setup main layout
@@ -287,6 +291,7 @@ class SelectionManagerWidget(QtWidgets.QWidget):
         if self.picker_button:
             self.picker_button.add_selected_objects()
             self.refresh_list()
+        UT.maya_main_window().activateWindow()
             
     def remove_selection(self):
         """Remove selected objects using new object structure"""
@@ -329,12 +334,14 @@ class SelectionManagerWidget(QtWidgets.QWidget):
             self.picker_button.update_tooltip()
             self.picker_button.changed.emit(self.picker_button)
             self.refresh_list()
+        UT.maya_main_window().activateWindow()
 
     # Window dragging methods
     def title_bar_mouse_press(self, event):
         if event.button() == QtCore.Qt.LeftButton:
             self.dragging = True
             self.offset = event.globalPos() - self.pos()
+        UT.maya_main_window().activateWindow()
             
     def title_bar_mouse_move(self, event):
         if self.dragging and event.buttons() == QtCore.Qt.LeftButton:
@@ -343,6 +350,10 @@ class SelectionManagerWidget(QtWidgets.QWidget):
     def title_bar_mouse_release(self, event):
         if event.button() == QtCore.Qt.LeftButton:
             self.dragging = False
+
+    def closeEvent(self, event):
+        super().closeEvent(event)
+        UT.maya_main_window().activateWindow()
 #--------------------------------------------------------------------------------------------------------------------
 class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
     def __init__(self, parent=None):
@@ -450,9 +461,13 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
 
 class ScriptManagerWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
+        if parent is None:
+            # Lazy import MAIN to avoid circular dependency
+            from . import main as MAIN
+            manager = MAIN.PickerWindowManager.get_instance()
+            parent = manager._picker_widgets[0] if manager._picker_widgets else None
         super(ScriptManagerWidget, self).__init__(parent)
         self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint | QtCore.Qt.Tool)
-        self.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         
         # Setup resizing parameters
@@ -1105,6 +1120,7 @@ setAttr "@ns.Object.Attribute" Attribute Value;'''
                 self.initial_pos = self.pos()
             else:
                 self.resizing = False
+        UT.maya_main_window().activateWindow()
     
     def mouseMoveEvent(self, event):
         if event.buttons() == QtCore.Qt.LeftButton and self.resizing and self.resize_edge:
@@ -1144,6 +1160,10 @@ setAttr "@ns.Object.Attribute" Attribute Value;'''
             self.resizing = False
             self.resize_edge = None
             self.unsetCursor()
+
+    def closeEvent(self, event):
+        super().closeEvent(event)
+        UT.maya_main_window().activateWindow()
 
     def is_in_resize_range(self, pos):
         width = self.width()
@@ -1199,6 +1219,7 @@ setAttr "@ns.Object.Attribute" Attribute Value;'''
         if event.button() == QtCore.Qt.LeftButton:
             self.dragging = True
             self.offset = event.globalPos() - self.pos()
+        UT.maya_main_window().activateWindow()
             
     def title_bar_mouse_move(self, event):
         if self.dragging and event.buttons() == QtCore.Qt.LeftButton:

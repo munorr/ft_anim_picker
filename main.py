@@ -3,8 +3,10 @@ try:
 except ImportError:
     from PySide2 import QtWidgets, QtCore, QtGui
 
-from . import ui as UI
+# Import utils at the top level
 from . import utils as UT
+
+# UI module will be imported on demand to avoid circular imports
 
 class PickerWindowManager:
     _instance = None
@@ -17,6 +19,9 @@ class PickerWindowManager:
         return cls._instance
     
     def create_window(self):
+        # Lazy import UI to avoid circular dependency
+        from . import ui as UI
+        
         # Create new picker widget
         picker_widget = UI.AnimPickerWindow(parent=UT.maya_main_window())
         picker_widget.setObjectName(f"floatingTool_{len(self._picker_widgets)}")
