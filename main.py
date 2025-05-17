@@ -53,5 +53,5 @@ def ft_anim_picker_window():
     manager = PickerWindowManager.get_instance()
     return manager.create_window()
 
-#if __name__ == "__main__":
-ft_anim_picker_window()
+if __name__ == "__main__":
+    ft_anim_picker_window()
