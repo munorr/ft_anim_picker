@@ -29,7 +29,10 @@ from . import tool_functions as TF
 from . import custom_dialog as CD
 from . fade_away_logic import FadeAway
 
-anim_picker_version = 'v1_2_5'
+# Get version from __init__
+import ft_anim_picker
+anim_picker_version = ft_anim_picker.__version__
+anim_picker_version = f" (v{anim_picker_version})"
 
 class AnimPickerWindow(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -169,6 +172,8 @@ class AnimPickerWindow(QtWidgets.QWidget):
 
         info_util = CB.CustomButton(text='Info', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
                                     cmColor='#333333',tooltip='Help', flat=True)
+        
+        # Get version from __init__
         
         info_util.addMenuLabel(f"Anim Picker{anim_picker_version}",position=(0,0))
         info_util.addToMenu(f"Manual", self.info, icon='info.png', position=(1,0))
@@ -893,7 +898,8 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 
             elif event.type() == QtCore.QEvent.MouseButtonDblClick and obj == self.main_frame:
                 # Reset window to original size when double-clicked
-                self.setGeometry(1150, 280, 350, 450)
+                #self.setGeometry(1150, 280, 350, 450)
+                self.resize(350, 450)
                 self.update_buttons_for_current_tab()
                 UT.maya_main_window().activateWindow()
                 return True

@@ -3,8 +3,8 @@
 Part of the Floating Tools (FT) collection.
 """
 
-__version__ = '1.3.7'
+__version__ = '1.3.6'
 __author__ = 'Floating Tools'
 
 # Make main functions available at the package level
-from .main import ft_anim_picker_window
+from .main import open

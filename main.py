@@ -48,10 +48,10 @@ class PickerWindowManager:
             widget.deleteLater()
         self._picker_widgets.clear()
 
-def ft_anim_picker_window():
+def open():
     """Create a new instance of the animation picker window"""
     manager = PickerWindowManager.get_instance()
     return manager.create_window()
 
 if __name__ == "__main__":
-    ft_anim_picker_window()
+    open()

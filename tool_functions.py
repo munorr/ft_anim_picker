@@ -1547,3 +1547,31 @@ def button_appearance(text="", color="", opacity="", selectable="", source_butto
         print(f"Updated {len(buttons_to_modify)} button(s): {', '.join(changes)}")
     else:
         print("No changes were made. Please provide at least one parameter (text, color, or opacity).")
+
+#---------------------------------------------------------------------------------------------------------------
+def tool_tip(tooltip_text=""):
+    """
+    Sets a custom tooltip for a button in the animation picker.
+    
+    This function allows setting a custom tooltip for a button.
+    When called from a script attached to a button, it will modify that specific button's tooltip.
+    
+    Can be used in button scripts with the @TF.tool_tip() qualifier syntax:
+    @TF.tool_tip("My custom tooltip")
+    
+    Args:
+        tooltip_text (str): The custom tooltip text to display when hovering over the button.
+        
+    Returns:
+        None: This function is meant to be used as a decorator in button scripts.
+        
+    Example:
+        @TF.tool_tip("This button resets the character pose")
+        
+        # Can be combined with other decorators:
+        @TF.tool_tip("Switch to FK mode")
+        @TF.button_appearance(text="FK", color="#FF0000")
+    """
+    # This function is meant to be used as a decorator in button scripts
+    # The actual implementation is handled in the PickerButton.execute_script_command method
+    pass

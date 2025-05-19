@@ -21,8 +21,6 @@ from . import custom_line_edit as CLE
 from . import custom_button as CB
 from . import data_management as DM
 from . import ui as UI
-# Lazy import main to avoid circular dependency
-from . import script_manager as SM
 from . import tool_functions as TF
 from . import custom_dialog as CD
 
@@ -1079,18 +1077,35 @@ setAttr "@ns.Object.Attribute" Attribute Value;'''
             self.function_preset_stack.setCurrentIndex(0 if is_python else 1)
             
     def execute_code(self):
-        """Modified to ensure each button gets its own script data"""
+        """Modified to ensure each button gets its own script data and extract tooltip information"""
         if self.picker_button:
+            # Get the current code based on selected language
+            current_code = self.python_editor.toPlainText() if self.python_button.isChecked() else self.mel_editor.toPlainText()
+            
+            # Extract tooltip from the code if present
+            tooltip_pattern = r'@TF\.tool_tip\s*\(\s*["\'](.+?)["\']s*\)'
+            tooltip_match = re.search(tooltip_pattern, current_code)
+            custom_tooltip = tooltip_match.group(1) if tooltip_match else None
+            
             # Create fresh script data for this button
             script_data = {
                 'type': 'python' if self.python_button.isChecked() else 'mel',
                 'python_code': self.python_editor.toPlainText(),
                 'mel_code': self.mel_editor.toPlainText(),
-                'code': self.python_editor.toPlainText() if self.python_button.isChecked() else self.mel_editor.toPlainText()
+                'code': current_code
             }
+            
+            # Add custom tooltip to script data if found
+            if custom_tooltip:
+                script_data['custom_tooltip'] = custom_tooltip
             
             # Update the button's script data
             self.picker_button.script_data = script_data
+            
+            # Update the tooltip immediately
+            self.picker_button.update_tooltip()
+            
+            # Emit changed signal and close
             self.picker_button.changed.emit(self.picker_button)
             self.close()
     #---------------------------------------------------------------------------------------
@@ -1252,8 +1267,10 @@ class PickerButton(QtWidgets.QWidget):
         self.is_selected = False
         self.selectable = True  # Whether the button can be selected in select mode (not edit mode)
     
-        self.setStyleSheet(f"QToolTip {{background-color: {UT.rgba_value(color,.8,alpha=1)}; color: #eeeeee ; border: none; border-radius: 3px;}}")
+        self.setStyleSheet(f"QToolTip {{background-color: {UT.rgba_value(color,.8,alpha=1)}; color: #eeeeee ; border: 1px solid rgba(255,255,255,.2); padding: 4px;}}")
+        # Set tool tip to have translucent background and remove shadow
         
+       
         self.edit_mode = False
         self.update_cursor()
         self.assigned_objects = []  
@@ -1657,18 +1674,36 @@ class PickerButton(QtWidgets.QWidget):
             self.setCursor(QtCore.Qt.OpenHandCursor)
         else:
             self.setCursor(QtCore.Qt.ArrowCursor)
-            
+
     def update_tooltip(self):
         """Update the tooltip with button information"""
-
+        
+        # Check if the button has a custom tooltip from script
+        if self.mode == 'script' and self.script_data and 'custom_tooltip' in self.script_data:
+            # Use the custom tooltip from script
+            custom_tooltip = self.script_data['custom_tooltip']
+            #tooltip = f"<b><span style='font-size: 12px;'>{custom_tooltip}</span></b>"
+            tooltip = f"{custom_tooltip}"
+            tooltip += f"<hr><i><div style='text-align: left; font-size: 9px; color: rgba(255, 255, 255, 0.7); '>ID: [{self.unique_id}]</div></i>"
+            tooltip += f"<div style='text-align: center; font-size: 9px; color: rgba(255, 255, 255, 0.5); '>({self.mode.capitalize()} mode)</div>"
+            self.setToolTip(tooltip)
+            return
+        elif self.mode == 'script':
+            tooltip = f"<b><span style='font-size: 12px;'>Script Button</span></b>"
+            tooltip += f"<hr><i><div style='text-align: left; font-size: 9px; color: rgba(255, 255, 255, 0.7); '>ID: [{self.unique_id}]</div></i>"
+            tooltip += f"<div style='text-align: center; font-size: 9px; color: rgba(255, 255, 255, 0.5); '>({self.mode.capitalize()} mode)</div>"
+            self.setToolTip(tooltip)
+            return
+        
+        # Default tooltip behavior
         tooltip = f"<b><span style='font-size: 12px;'>Assigned Objects <span style='color: rgba(255, 255, 255, 0.6);'>({len(self.assigned_objects)})</span>:</b></span>"
-        tooltip += f"<i><div style='text-align: left; font-size: 10px; color: rgba(255, 255, 255, 0.8); '> ID: [{self.unique_id}]</div></i>"
+        tooltip += f"<i><div style='text-align: left; font-size: 10px; color: rgba(255, 255, 255, 0.8); '>ID: [{self.unique_id}]</div></i>"
 
         if self.thumbnail_path:
             tooltip += f"<br><span style='font-size: 10px; color: rgba(255, 255, 255, 0.6);'>[{os.path.basename(self.thumbnail_path).split('.')[0]}]</span>"
         else:
             tooltip += f"<br><i><span style='font-size: 9px; color: rgba(255, 255, 255, 0.6);'>No thumbnail</span></i>"
-        
+    
         if self.assigned_objects:
             object_names = []
             
@@ -1697,8 +1732,8 @@ class PickerButton(QtWidgets.QWidget):
             tooltip += f"<br><i><span style='font-size: 9px; color: rgba(255, 255, 255, 0.6);'>No objects assigned</span></i>"
        
         # Button ID and mode
-        
         tooltip += f"<div style='text-align: center; font-size: 10px; color: rgba(255, 255, 255, 0.5); '>({self.mode.capitalize()} mode)</div>"
+        # Add padding to the tooltip
         self.setToolTip(tooltip)   
     #---------------------------------------------------------------------------------------
     def set_mode(self, mode):
@@ -1889,6 +1924,10 @@ class PickerButton(QtWidgets.QWidget):
                 add_thumbnail_action = thumbnail_menu.addAction("Add Thumbnail")
                 add_thumbnail_action.triggered.connect(self.add_thumbnail)
 
+                update_thumbnail_action = thumbnail_menu.addAction("Update Thumbnail")
+                update_thumbnail_action.triggered.connect(self.update_thumbnail)
+                update_thumbnail_action.setEnabled(bool(self.thumbnail_path))
+                
                 select_thumbnail_action = thumbnail_menu.addAction("Select Thumbnail")
                 select_thumbnail_action.triggered.connect(self.select_thumbnail)
                 
@@ -1980,6 +2019,10 @@ class PickerButton(QtWidgets.QWidget):
                 add_thumbnail_action = thumbnail_menu.addAction("Add Thumbnail")
                 add_thumbnail_action.triggered.connect(self.add_thumbnail)
 
+                update_thumbnail_action = thumbnail_menu.addAction("Update Thumbnail")
+                update_thumbnail_action.triggered.connect(self.update_thumbnail)
+                update_thumbnail_action.setEnabled(bool(self.thumbnail_path))
+                
                 select_thumbnail_action = thumbnail_menu.addAction("Select Thumbnail")
                 select_thumbnail_action.triggered.connect(self.select_thumbnail)
                 
@@ -2425,6 +2468,149 @@ class PickerButton(QtWidgets.QWidget):
             dialog.add_button_box()
             dialog.exec_()
     
+    def update_thumbnail(self):
+        """Take a playblast of the current Maya viewport and update the existing thumbnail"""
+        import maya.cmds as cmds
+        import tempfile
+        import os
+        
+        # Get the parent canvas and selected buttons
+        canvas = self.parent()
+        if not canvas:
+            return
+            
+        selected_buttons = canvas.get_selected_buttons()
+        # Filter to only include pose mode buttons with thumbnails
+        pose_buttons_with_thumbnails = [button for button in selected_buttons 
+                                      if button.mode == 'pose' and button.thumbnail_path]
+        
+        if not pose_buttons_with_thumbnails:
+            # If no pose buttons with thumbnails are selected, just use this button if applicable
+            if self.mode == 'pose' and self.thumbnail_path:
+                pose_buttons_with_thumbnails = [self]
+            else:
+                dialog = CD.CustomDialog(self, title="No Thumbnails", size=(250, 100), info_box=True)
+                message_label = QtWidgets.QLabel("No pose buttons with thumbnails selected. Please select at least one button in pose mode with an existing thumbnail.")
+                message_label.setWordWrap(True)
+                dialog.add_widget(message_label)
+                dialog.add_button_box()
+                dialog.exec_()
+                return
+        
+        # Take the playblast using Maya's playblast command
+        try:
+            # Get the active panel
+            panel = cmds.getPanel(withFocus=True)
+            if not panel or 'modelPanel' not in cmds.getPanel(typeOf=panel):
+                panel = cmds.getPanel(type="modelPanel")[0]
+            
+            # Get the active viewport dimensions to maintain aspect ratio
+            active_view = None
+            if panel and 'modelPanel' in cmds.getPanel(typeOf=panel):
+                active_view = cmds.playblast(activeEditor=True)
+            
+            # Get viewport width and height
+            viewport_width = cmds.control(active_view, query=True, width=True)
+            viewport_height = cmds.control(active_view, query=True, height=True)
+            
+            # Calculate aspect ratio and adjust dimensions while keeping max dimension at 500px
+            aspect_ratio = float(viewport_width) / float(viewport_height)
+            img_size = 500
+            if aspect_ratio >= 1.0:  # Wider than tall
+                width = img_size
+                height = int(img_size / aspect_ratio)
+            else:  # Taller than wide
+                height = img_size
+                width = int(500 * aspect_ratio)
+            
+            # Create a temporary file for the playblast
+            temp_dir = tempfile.gettempdir()
+            temp_filepath = os.path.join(temp_dir, "temp_thumbnail")
+            
+            cmds.playblast(
+                frame=cmds.currentTime(query=True),
+                format="image",
+                compression="jpg",
+                quality=100,
+                width=width,
+                height=height,
+                percent=100,
+                viewer=False,
+                showOrnaments=False,
+                filename=temp_filepath,
+                clearCache=True,
+                framePadding=0
+            )
+            
+            # Maya adds a frame number and extension to the filename, so we need to find the actual file
+            dirname = os.path.dirname(temp_filepath)
+            basename = os.path.basename(temp_filepath)
+            
+            # Find the generated file - Maya adds frame number and extension
+            actual_filepath = None
+            for f in os.listdir(dirname):
+                # Look for files that start with our base filename and have an image extension
+                if f.startswith(basename) and (f.endswith('.jpg') or f.endswith('.jpeg')):
+                    actual_filepath = os.path.join(dirname, f)
+                    break
+                    
+            if not actual_filepath:
+                raise Exception("Could not find generated thumbnail image")
+            
+            # Load the original image into a pixmap
+            original_pixmap = QtGui.QPixmap(actual_filepath)
+            
+            # Crop the image to a 1:1 aspect ratio (square)
+            # Calculate the center and the size of the crop
+            orig_width = original_pixmap.width()
+            orig_height = original_pixmap.height()
+            crop_size = min(orig_width, orig_height)
+            
+            # Calculate the crop rectangle centered in the image
+            x_offset = (orig_width - crop_size) // 2
+            y_offset = (orig_height - crop_size) // 2
+            crop_rect = QtCore.QRect(x_offset, y_offset, crop_size, crop_size)
+            
+            # Crop the pixmap to a square
+            cropped_pixmap = original_pixmap.copy(crop_rect)
+            
+            # Update all selected pose buttons with thumbnails
+            for button in pose_buttons_with_thumbnails:
+                # Get the existing thumbnail path
+                existing_path = button.thumbnail_path
+                
+                # Save the cropped square image to the existing path
+                cropped_pixmap.save(existing_path, 'JPG', 100)
+                
+                # Update the thumbnail pixmap
+                button.thumbnail_pixmap = cropped_pixmap
+                
+                # Force regeneration of the pose_pixmap by invalidating cache parameters
+                button.pose_pixmap = None
+                button.last_zoom_factor = 0
+                button.last_size = None
+                
+                # Update the button
+                button.update()
+                button.update_tooltip()
+                button.changed.emit(button)
+            
+            # Remove the temporary playblast file
+            try:
+                if os.path.exists(actual_filepath):
+                    os.remove(actual_filepath)
+            except Exception as e:
+                print(f"Warning: Could not remove temporary playblast file: {e}")
+                
+        except Exception as e:
+            # Show error message
+            dialog = CD.CustomDialog(self, title="Error", size=(250, 100), info_box=True)
+            message_label = QtWidgets.QLabel(f"Failed to update thumbnail: {str(e)}")
+            message_label.setWordWrap(True)
+            dialog.add_widget(message_label)
+            dialog.add_button_box()
+            dialog.exec_()
+    
     def remove_thumbnail(self):
         """Remove the thumbnail image from selected pose buttons"""
         # Get the parent canvas and selected buttons
@@ -2601,6 +2787,11 @@ class PickerButton(QtWidgets.QWidget):
                         current_ns = main_window.namespace_dropdown.currentText()
                         ns_prefix = f"{current_ns}:" if current_ns and current_ns != 'None' else ""
                         
+                        # Remove any @TF.tool_tip() functions from the code to prevent execution errors
+                        # The tooltip is already extracted and applied in the script manager
+                        tooltip_pattern = r'@TF\.tool_tip\s*\(\s*["\'](.*?)["\']\s*\)'
+                        code = re.sub(tooltip_pattern, '', code)
+                        
                         # Replace '@ns' tokens
                         modified_code = re.sub(r'@ns\.([a-zA-Z0-9_])', fr'{ns_prefix}\1', code)  # Replace @ns. followed by identifier
                         modified_code = re.sub(r'@ns\.(?!\w)', f'"{ns_prefix}"', modified_code)
@@ -2616,9 +2807,11 @@ class PickerButton(QtWidgets.QWidget):
                             r'import ft_anim_picker.tool_functions as TF\nTF.match_fk_to_ik(\1)',
                             modified_code
                         )
+                        
                         # Handle @TF.function_name(arguments) syntax with indentation preservation
+                        # Skip tool_tip since we already handled it separately
                         modified_code = re.sub(
-                            r'^(\s*)@TF\.([\w_]+)\s*\((.*?)\)',
+                            r'^(\s*)@TF\.(?!tool_tip)(\w+)\s*\((.*?)\)',
                             r'\1import ft_anim_picker.tool_functions as TF\n\1TF.\2(\3)',
                             modified_code,
                             flags=re.MULTILINE  # Enable multiline mode to match at the start of each line
