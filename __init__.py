@@ -3,7 +3,7 @@
 Part of the Floating Tools (FT) collection.
 """
 
-__version__ = '1.3.6'
+__version__ = '1.4.0'
 __author__ = 'Floating Tools'
 
 # Make main functions available at the package level
