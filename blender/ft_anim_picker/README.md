@@ -1,4 +1,4 @@
-# FT Anim Picker
+# FT Anim Picker (For Blender)
 
 A powerful animation picker tool for Blender, part of the Floating Tools (FT) collection.
 
