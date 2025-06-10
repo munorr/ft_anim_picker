@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 # FT Anim Picker (Blender)
+=======
+# FT Anim Picker (For Blender)
+>>>>>>> 5b736e6f8e48be48265abd60706f2c2854d48e8c
 
 A powerful animation picker tool for Blender, part of the Floating Tools (FT) collection.
 
