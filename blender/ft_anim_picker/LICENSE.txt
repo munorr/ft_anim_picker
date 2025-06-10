@@ -1,0 +1,42 @@
+SOFTWARE LICENSE AGREEMENT (EULA)
+
+IMPORTANT: PLEASE READ THIS LICENSE CAREFULLY BEFORE USING THIS SOFTWARE.
+
+This End User License Agreement (“Agreement”) is a legal agreement between you (either an individual or a single entity) and [Nnamdi Echiemunor (munorr)] (“Licensor”) for the use of the software tool (FT Anim Picker) provided through Gumroad or any other authorized distribution channel.
+
+By downloading, installing, or using the Software, you agree to be bound by the terms of this Agreement.
+
+1. GRANT OF LICENSE
+Licensor grants you a non-exclusive, non-transferable license to install and use the Software on a single workstation, for commercial or personal use. A separate license must be purchased for each user or workstation, unless a multi-seat or studio license is explicitly granted in writing.
+
+2. OWNERSHIP
+The Software is licensed, not sold. All rights, title, and interest in and to the Software, including but not limited to source code, design, and documentation, remain with the Licensor.
+
+3. RESTRICTIONS
+You may NOT:
+- Distribute, sublicense, lease, rent, sell, or otherwise transfer the Software or any portion of it to any third party.
+- Modify, adapt, translate, reverse engineer, decompile, or disassemble the Software.
+- Share the Software with others who have not purchased a valid license.
+
+4. UPDATES AND SUPPORT
+This license does not include any future updates or technical support unless explicitly provided. Updates, if available, may be offered at the discretion of the Licensor.
+
+5. TERMINATION
+This Agreement is effective until terminated. It will terminate automatically without notice from Licensor if you fail to comply with any provision of this Agreement. Upon termination, you must destroy all copies of the Software and all of its components.
+
+6. DISCLAIMER OF WARRANTY
+The Software is provided “as is” without warranty of any kind, express or implied. Licensor makes no warranty that the Software will meet your requirements or be error-free.
+
+7. LIMITATION OF LIABILITY
+In no event shall Licensor be liable for any damages whatsoever (including, without limitation, damages for loss of business profits, business interruption, loss of data, or other pecuniary loss) arising out of the use of or inability to use this Software.
+
+8. GOVERNING LAW
+This Agreement shall be governed by and construed in accordance with the laws of [Canada], without regard to its conflict of law provisions.
+
+CONTACT INFORMATION:
+For questions, support, or licensing inquiries, please contact:
+name: Nnamdi Echiemunor (munorr)
+email: munorr.3d@gmail.com  
+website: munorr.com 
+
+© [2025] [Nnamdi Echiemunor (munorr)]. All rights reserved.

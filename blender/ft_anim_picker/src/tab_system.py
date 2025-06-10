@@ -74,7 +74,7 @@ class TabButton(QtWidgets.QPushButton):
             
             self.drag_start_position = None
         event.accept()
-        UT.blender_main_window()
+        #UT.blender_main_window()
         super(TabButton, self).mouseReleaseEvent(event)
 
     def leaveEvent(self, event):

@@ -79,6 +79,14 @@ After installation, you can access the FT Anim Picker from the main menu:
 1. Go to File > User Preferences > Add-ons
 2. Find the FT Anim Picker add-on and click on the "Uninstall" button
 
+# If you want to uninstall PySide
+
+1. Open Python Console (Shift+F4)
+2. Run the following command:
+```bash
+import pip; pip.main(['uninstall', 'PySide6', '-y'])
+```
+
 ## License
 
 [Specify your license information here]

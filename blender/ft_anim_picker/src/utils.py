@@ -58,23 +58,10 @@ def rgba_value(hex_color, factor, alpha=None):
     color = QColor(hex_color)
     r, g, b, a = color.getRgbF()
     
-    if factor > 1:
-        # Lighten: blend towards white
-        # Formula: color + (1 - color) * (factor - 1) / factor
-        blend_amount = (factor - 1) / factor
-        r = r + (1 - r) * blend_amount
-        g = g + (1 - g) * blend_amount
-        b = b + (1 - b) * blend_amount
-    else:
-        # Darken: multiply normally
-        r = r * factor
-        g = g * factor
-        b = b * factor
-    
-    # Ensure values stay within bounds
-    r = min(max(r, 0), 1)
-    g = min(max(g, 0), 1)
-    b = min(max(b, 0), 1)
+    # Apply factor to RGB values
+    r = min(max(r * factor, 0), 1)
+    g = min(max(g * factor, 0), 1)
+    b = min(max(b * factor, 0), 1)
     
     # Use the provided alpha if given, otherwise keep the original
     a = alpha if alpha is not None else a

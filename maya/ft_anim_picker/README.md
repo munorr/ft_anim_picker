@@ -1,4 +1,4 @@
-# FT Anim Picker
+# FT Anim Picker (Maya)
 
 A powerful animation picker tool for Maya, part of the Floating Tools (FT) collection.
 
