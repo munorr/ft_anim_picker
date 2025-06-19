@@ -752,7 +752,7 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.mel_editor.setStyleSheet(editor_style)
         self.mel_highlighter = ScriptSyntaxHighlighter(self.mel_editor.document())
         # Force document margin to create space for line numbers
-        self.mel_editor.document().setDocumentMargin(15)
+        self.mel_editor.document().setDocumentMargin(5)
         
         # Set tab width for both editors
         font = self.python_editor.font()
