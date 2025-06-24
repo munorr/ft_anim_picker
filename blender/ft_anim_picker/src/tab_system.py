@@ -294,7 +294,7 @@ class TabSystem(QtCore.QObject):
         parent_widget = self.tab_layout.parentWidget()
         
         if len(self.tabs) <= 1:
-            dialog = CD.CustomDialog(parent_widget, "Cannot Delete", (200, 100))
+            dialog = CD.CustomDialog(self, "Cannot Delete", (200, 100))
             dialog.add_widget(QtWidgets.QLabel("You must have at least one tab."))
             accept_button, _ = dialog.add_button_box()
             accept_button.setText("OK")
@@ -309,6 +309,8 @@ class TabSystem(QtCore.QObject):
         accept_button.setText("Yes")
         close_button.setText("No")
 
+        
+        
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             del self.tabs[tab_name]
             self.tab_layout.removeWidget(button)

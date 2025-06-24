@@ -62,7 +62,11 @@ class ButtonClipboard:
                     'relative_position': button.scene_position - center,
                     'assigned_objects': self._safe_copy_list(button.assigned_objects),
                     'mode': button.mode,
-                    'script_data': self._safe_copy_dict(button.script_data)
+                    'script_data': self._safe_copy_dict(button.script_data),
+                    'thumbnail_path': button.thumbnail_path,
+                    'shape_type': button.shape_type,
+                    'svg_path_data': button.svg_path_data,
+                    'svg_file_path': button.svg_file_path
                 }
                 
                 # Add pose-specific data if this is a pose button
@@ -119,7 +123,7 @@ class PickerButton(QtWidgets.QWidget):
     selected = Signal(object, bool)
     changed = Signal(object)
     
-    def __init__(self, label, parent=None, unique_id=None, color='#444444', opacity=1, width=80, height=30, selectable=True):
+    def __init__(self, label, parent=None, unique_id=None, color='#444444', opacity=1, width=80, height=30, selectable=True, shape_type='rounded_rect', svg_path_data=None, svg_file_path=None):
         super(PickerButton, self).__init__(parent)
         self.label = label
         self.unique_id = unique_id
@@ -136,6 +140,17 @@ class PickerButton(QtWidgets.QWidget):
         self.radius = [3, 3, 3, 3]  # [top_left, top_right, bottom_right, bottom_left]
         self.is_selected = False
         self.selectable = selectable  # Whether the button can be selected in select mode (not edit mode)
+        
+        self.shape_type = shape_type  # 'rounded_rect' or 'custom_path'
+        self.svg_path_data = svg_path_data  # Store the SVG path string
+        self.svg_file_path = svg_file_path  # Store the original SVG file path
+
+        self.cached_mask = None
+        self.last_mask_zoom_factor = 0
+        self.last_mask_size = None
+        self.last_mask_radius = None
+        self.last_mask_shape_type = None
+        self.last_mask_svg_data = None
 
         self.rotation = 0
     
@@ -318,6 +333,44 @@ class PickerButton(QtWidgets.QWidget):
             # Draw the thumbnail
             pose_painter.drawPixmap(pixmap_rect.toRect(), scaled_pixmap)
             pose_painter.setClipping(False)
+        
+        elif self.thumbnail_path:
+            # We have a path but the image didn't load - show "broken" indicator with icon
+            
+            # Get error icon using the get_icon function
+            error_icon = UT.get_icon("error_01.png",opacity=.5,size=128)
+            
+            if error_icon and not error_icon.isNull():
+                # Set clipping path for the thumbnail area (same as working thumbnails)
+                pose_painter.setClipPath(thumbnail_path)
+                
+                # Scale the error icon to fit within the thumbnail area, similar to how thumbnails are handled
+                scaled_error_icon = error_icon.scaled(
+                    int(thumbnail_rect.width() * 0.8),  # Make it 60% of thumbnail size for better visibility
+                    int(thumbnail_rect.height() * 0.8),
+                    QtCore.Qt.KeepAspectRatio,
+                    QtCore.Qt.SmoothTransformation
+                )
+                
+                # Center the error icon in the thumbnail area
+                icon_rect = QtCore.QRectF(
+                    thumbnail_rect.x() + (thumbnail_rect.width() - scaled_error_icon.width()) / 2,
+                    thumbnail_rect.y() + (thumbnail_rect.height() - scaled_error_icon.height()) / 2,
+                    scaled_error_icon.width(),
+                    scaled_error_icon.height()
+                )
+                
+                # Draw the scaled error icon (retains full resolution)
+                pose_painter.drawPixmap(icon_rect.toRect(), scaled_error_icon)
+                
+                # Remove clipping
+                pose_painter.setClipping(False)
+                
+            else:
+                # Fallback to text if icon fails to load (same as before)
+                pose_painter.setPen(QtGui.QColor(255, 100, 100, 150))
+                pose_painter.drawText(thumbnail_rect, QtCore.Qt.AlignCenter, "Missing\nThumbnail")
+
         else:
             # Draw placeholder text
             pose_painter.setPen(QtGui.QColor(255, 255, 255, 120))
@@ -404,7 +457,6 @@ class PickerButton(QtWidgets.QWidget):
             if self.is_hovered and self.selectable:
                 hover_color = UT.rgba_value(self.color, 1.2, alpha=1)
                 painter.setBrush(QtGui.QColor(hover_color))
-                painter.setBrush(QtGui.QColor(self.color))
             else:
                 # Use normal color
                 painter.setBrush(QtGui.QColor(self.color))
@@ -426,7 +478,7 @@ class PickerButton(QtWidgets.QWidget):
 
         # Create button path with rounded corners
         rect = self.rect().adjusted(zoom_factor, zoom_factor, -zoom_factor, -zoom_factor)
-        path = self._create_rounded_rect_path(rect, self.radius, zoom_factor)
+        path = self._create_button_path(rect, self.radius, zoom_factor)
         painter.drawPath(path)
 
         # Draw selection border if selected
@@ -446,6 +498,27 @@ class PickerButton(QtWidgets.QWidget):
         # Reset opacity for text/thumbnail rendering
         painter.setOpacity(1.0)
         
+        # Check if mask needs to be updated (similar to pixmap checking)
+        current_size = self.size()
+        current_radius = self.radius.copy()  # Make a copy to compare
+        current_shape_type = self.shape_type
+        current_svg_data = self.svg_path_data
+        
+        if self._should_update_mask(zoom_factor, current_size, current_radius, current_shape_type, current_svg_data):
+            # Update cached parameters
+            self.last_mask_zoom_factor = zoom_factor
+            self.last_mask_size = current_size
+            self.last_mask_radius = current_radius
+            self.last_mask_shape_type = current_shape_type
+            self.last_mask_svg_data = current_svg_data
+            
+            # Generate new mask
+            self.cached_mask = self._generate_mask(zoom_factor)
+            
+            # Apply the cached mask
+            if self.cached_mask:
+                self.setMask(self.cached_mask)
+
         # Check if pixmaps need to be updated
         current_size = self.size()
         current_radius = self.radius
@@ -472,6 +545,528 @@ class PickerButton(QtWidgets.QWidget):
         else:
             if self.text_pixmap and not self.text_pixmap.isNull():
                 painter.drawPixmap(0, 0, self.text_pixmap)
+    
+    #---------------------------------------------------------------------------------------
+    def _create_button_path(self, rect, radii, zoom_factor):
+        """Create button path based on shape type"""
+        if self.shape_type == 'custom_path' and self.svg_path_data:
+            return self._create_svg_path(rect, zoom_factor)
+        else:
+            return self._create_rounded_rect_path(rect, radii, zoom_factor)
+
+    def _create_svg_path(self, rect, zoom_factor):
+        """Create a QPainterPath from SVG path data, scaled to fit the button rect"""
+        try:
+            path = QtGui.QPainterPath()
+            
+            # Parse the SVG path data
+            svg_path = self._parse_svg_path(self.svg_path_data)
+            if not svg_path:
+                # Fallback to rounded rect if parsing fails
+                return self._create_rounded_rect_path(rect, self.radius, zoom_factor)
+            
+            # Get the original path bounds
+            original_bounds = svg_path.boundingRect()
+            if original_bounds.isEmpty():
+                return self._create_rounded_rect_path(rect, self.radius, zoom_factor)
+            
+            # Calculate scaling factors to fit the button rect
+            scale_x = rect.width() / original_bounds.width()
+            scale_y = rect.height() / original_bounds.height()
+            
+            # Use uniform scaling to maintain aspect ratio
+            scale = min(scale_x, scale_y) * 0.9  # 0.9 for slight padding
+            
+            # Calculate centering offsets
+            scaled_width = original_bounds.width() * scale
+            scaled_height = original_bounds.height() * scale
+            offset_x = rect.center().x() - (scaled_width / 2) - (original_bounds.x() * scale)
+            offset_y = rect.center().y() - (scaled_height / 2) - (original_bounds.y() * scale)
+            
+            # Create transformation matrix
+            transform = QtGui.QTransform()
+            transform.translate(offset_x, offset_y)
+            transform.scale(scale, scale)
+            
+            # Apply transformation to the SVG path
+            return transform.map(svg_path)
+            
+        except Exception as e:
+            print(f"Error creating SVG path: {e}")
+            # Fallback to rounded rect
+            return self._create_rounded_rect_path(rect, self.radius, zoom_factor)
+
+    def _parse_svg_path(self, path_data):
+        """Parse SVG path data string into QPainterPath"""
+        if not path_data:
+            return None
+            
+        try:
+            path = QtGui.QPainterPath()
+            
+            # Clean up the path data
+            path_data = re.sub(r'[,\s]+', ' ', path_data.strip())
+            
+            # Split path data into commands and coordinates
+            commands = re.findall(r'[MmLlHhVvCcSsQqTtAaZz][^MmLlHhVvCcSsQqTtAaZz]*', path_data)
+            
+            current_point = QtCore.QPointF(0, 0)
+            path_start = QtCore.QPointF(0, 0)
+            
+            for command_str in commands:
+                command = command_str[0]
+                coords_str = command_str[1:].strip()
+                
+                if coords_str:
+                    coords = [float(x) for x in coords_str.split() if x]
+                else:
+                    coords = []
+                
+                # Handle different SVG path commands
+                if command.upper() == 'M':  # Move to
+                    if len(coords) >= 2:
+                        if command.islower():  # Relative
+                            current_point += QtCore.QPointF(coords[0], coords[1])
+                        else:  # Absolute
+                            current_point = QtCore.QPointF(coords[0], coords[1])
+                        
+                        path.moveTo(current_point)
+                        path_start = current_point
+                        
+                        # Handle additional coordinate pairs as line-to commands
+                        for i in range(2, len(coords), 2):
+                            if i + 1 < len(coords):
+                                if command.islower():
+                                    current_point += QtCore.QPointF(coords[i], coords[i + 1])
+                                else:
+                                    current_point = QtCore.QPointF(coords[i], coords[i + 1])
+                                path.lineTo(current_point)
+                
+                elif command.upper() == 'L':  # Line to
+                    for i in range(0, len(coords), 2):
+                        if i + 1 < len(coords):
+                            if command.islower():  # Relative
+                                current_point += QtCore.QPointF(coords[i], coords[i + 1])
+                            else:  # Absolute
+                                current_point = QtCore.QPointF(coords[i], coords[i + 1])
+                            path.lineTo(current_point)
+                
+                elif command.upper() == 'H':  # Horizontal line
+                    for coord in coords:
+                        if command.islower():  # Relative
+                            current_point += QtCore.QPointF(coord, 0)
+                        else:  # Absolute
+                            current_point = QtCore.QPointF(coord, current_point.y())
+                        path.lineTo(current_point)
+                
+                elif command.upper() == 'V':  # Vertical line
+                    for coord in coords:
+                        if command.islower():  # Relative
+                            current_point += QtCore.QPointF(0, coord)
+                        else:  # Absolute
+                            current_point = QtCore.QPointF(current_point.x(), coord)
+                        path.lineTo(current_point)
+                
+                elif command.upper() == 'C':  # Cubic Bezier curve
+                    for i in range(0, len(coords), 6):
+                        if i + 5 < len(coords):
+                            if command.islower():  # Relative
+                                c1 = current_point + QtCore.QPointF(coords[i], coords[i + 1])
+                                c2 = current_point + QtCore.QPointF(coords[i + 2], coords[i + 3])
+                                end = current_point + QtCore.QPointF(coords[i + 4], coords[i + 5])
+                            else:  # Absolute
+                                c1 = QtCore.QPointF(coords[i], coords[i + 1])
+                                c2 = QtCore.QPointF(coords[i + 2], coords[i + 3])
+                                end = QtCore.QPointF(coords[i + 4], coords[i + 5])
+                            
+                            path.cubicTo(c1, c2, end)
+                            current_point = end
+                
+                elif command.upper() == 'Q':  # Quadratic Bezier curve
+                    for i in range(0, len(coords), 4):
+                        if i + 3 < len(coords):
+                            if command.islower():  # Relative
+                                c1 = current_point + QtCore.QPointF(coords[i], coords[i + 1])
+                                end = current_point + QtCore.QPointF(coords[i + 2], coords[i + 3])
+                            else:  # Absolute
+                                c1 = QtCore.QPointF(coords[i], coords[i + 1])
+                                end = QtCore.QPointF(coords[i + 2], coords[i + 3])
+                            
+                            path.quadTo(c1, end)
+                            current_point = end
+                
+                elif command.upper() == 'A':  # Elliptical arc
+                    # Simplified arc implementation - for full arc support, 
+                    # you might need a more complex implementation
+                    for i in range(0, len(coords), 7):
+                        if i + 6 < len(coords):
+                            if command.islower():  # Relative
+                                end = current_point + QtCore.QPointF(coords[i + 5], coords[i + 6])
+                            else:  # Absolute
+                                end = QtCore.QPointF(coords[i + 5], coords[i + 6])
+                            
+                            # For simplicity, draw a line (you can implement proper arc later)
+                            path.lineTo(end)
+                            current_point = end
+                
+                elif command.upper() == 'Z':  # Close path
+                    path.closeSubpath()
+                    current_point = path_start
+            
+            return path
+            
+        except Exception as e:
+            print(f"Error parsing SVG path: {e}")
+            return None
+
+    def set_custom_shape(self, preserve_individual=True):
+        """Set buttons to use custom SVG shapes with option to preserve individual data"""
+        canvas = self.parent()
+        if canvas:
+            selected_buttons = canvas.get_selected_buttons()
+            if not selected_buttons:
+                selected_buttons = [self]
+        else:
+            selected_buttons = [self]
+        
+        # Apply custom shape type to all selected buttons
+        for button in selected_buttons:
+            button.shape_type = 'custom_path'
+            
+            if preserve_individual:
+                # Only apply SVG data to buttons that don't have any
+                if not button.svg_path_data:
+                    button.svg_path_data = self.svg_path_data
+                    button.svg_file_path = self.svg_file_path
+            else:
+                # Apply the same SVG data to all buttons
+                button.svg_path_data = self.svg_path_data
+                button.svg_file_path = self.svg_file_path
+            
+            # Force update of the button
+            button._invalidate_mask_cache()
+            button.update()
+            button.changed.emit(button)
+
+    def apply_same_shape_to_selected(self):
+        """Apply this button's SVG shape to all selected buttons"""
+        self.set_custom_shape(preserve_individual=False)
+
+    def enable_custom_shapes_for_selected(self):
+        """Enable custom shape mode for selected buttons while preserving their individual SVG data"""
+        self.set_custom_shape(preserve_individual=True)
+    
+    def load_svg_shape(self):
+        """Load SVG file and extract path data for the button shape"""
+        # Get the SVG directory from data management (similar to thumbnail directory)
+        data = DM.PickerDataManager.get_data()
+        svg_dir = data.get('svg_directory', '')
+        
+        # If no SVG directory is set, use a dedicated directory
+        if not svg_dir:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            svg_dir = os.path.join(script_dir, 'picker_shapes')
+        
+        # Make sure the directory exists
+        if not os.path.exists(svg_dir):
+            try:
+                os.makedirs(svg_dir)
+            except:
+                svg_dir = os.path.expanduser("~")
+        
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select SVG Shape", svg_dir,
+            "SVG Files (*.svg)"
+        )
+        
+        if file_path:
+            try:
+                # Parse the SVG file
+                tree = ET.parse(file_path)
+                root = tree.getroot()
+                
+                # Find the first path element
+                path_element = root.find('.//{http://www.w3.org/2000/svg}path')
+                if path_element is None:
+                    # Try without namespace
+                    path_element = root.find('.//path')
+                
+                if path_element is not None and 'd' in path_element.attrib:
+                    # Get all selected buttons to apply the shape to
+                    canvas = self.parent()
+                    if canvas:
+                        selected_buttons = canvas.get_selected_buttons()
+                        if not selected_buttons:
+                            selected_buttons = [self]
+                    else:
+                        selected_buttons = [self]
+                    
+                    # Apply the SVG shape to all selected buttons
+                    for button in selected_buttons:
+                        button.shape_type = 'custom_path'
+                        button.svg_path_data = path_element.attrib['d']
+                        button.svg_file_path = file_path
+                        
+                        # Force update of the button
+                        button.update()
+                        button.changed.emit(button)
+                    
+                    return True
+                else:
+                    # Show error dialog
+                    dialog = CD.CustomDialog(self, title="Invalid SVG", size=(250, 100), info_box=True)
+                    message_label = QtWidgets.QLabel("The selected SVG file does not contain a valid path element.")
+                    message_label.setWordWrap(True)
+                    dialog.add_widget(message_label)
+                    dialog.add_button_box()
+                    dialog.exec_()
+                    
+            except Exception as e:
+                # Show error dialog
+                dialog = CD.CustomDialog(self, title="Error", size=(250, 100), info_box=True)
+                message_label = QtWidgets.QLabel(f"Error loading SVG file: {str(e)}")
+                message_label.setWordWrap(True)
+                dialog.add_widget(message_label)
+                dialog.add_button_box()
+                dialog.exec_()
+        
+        return False
+
+    def reset_to_rounded_rect(self):
+        """Reset button shape to default rounded rectangle"""
+        canvas = self.parent()
+        if canvas:
+            selected_buttons = canvas.get_selected_buttons()
+            if not selected_buttons:
+                selected_buttons = [self]
+        else:
+            selected_buttons = [self]
+        
+        for button in selected_buttons:
+            button.shape_type = 'rounded_rect'
+            #button.svg_path_data = None
+            #button.svg_file_path = None
+            button._invalidate_mask_cache()
+            button.update()
+            button.changed.emit(button)
+    
+    def mirror_svg_path_horizontal(self, svg_path_data, canvas_width=None):
+        """
+        Mirror SVG path data horizontally (flip left-right).
+        
+        Args:
+            svg_path_data (str): The SVG path data string (d attribute)
+            canvas_width (float, optional): Width of the canvas/button. If None, uses the path's bounding box
+        
+        Returns:
+            str: The horizontally mirrored SVG path data
+        """
+        if not svg_path_data:
+            return svg_path_data
+        
+        try:
+            # Use existing parsing method to create QPainterPath
+            from PySide6 import QtGui, QtCore
+            
+            # Create a temporary path using your existing parser
+            temp_path = self._parse_svg_path(svg_path_data)
+            if not temp_path:
+                return svg_path_data
+            
+            # Get bounding box
+            bounds = temp_path.boundingRect()
+            if bounds.isEmpty():
+                return svg_path_data
+            
+            # Calculate center point for mirroring
+            if canvas_width is None:
+                center_x = bounds.center().x()
+            else:
+                center_x = canvas_width / 2
+            
+            # Create transformation matrix for horizontal mirroring
+            transform = QtGui.QTransform()
+            transform.translate(center_x, 0)
+            transform.scale(-1, 1)  # Flip horizontally
+            transform.translate(-center_x, 0)
+            
+            # Apply transformation
+            mirrored_path = transform.map(temp_path)
+            
+            # Convert back to SVG path string
+            return self._path_to_svg_string(mirrored_path)
+            
+        except Exception as e:
+            print(f"Error mirroring SVG path horizontally: {e}")
+            return svg_path_data
+
+    def mirror_svg_path_vertical(self, svg_path_data, canvas_height=None):
+        """
+        Mirror SVG path data vertically (flip top-bottom).
+        
+        Args:
+            svg_path_data (str): The SVG path data string (d attribute)
+            canvas_height (float, optional): Height of the canvas/button. If None, uses the path's bounding box
+        
+        Returns:
+        str: The vertically mirrored SVG path data
+        """
+        if not svg_path_data:
+            return svg_path_data
+        
+        try:
+            # Use existing parsing method to create QPainterPath
+            from PySide6 import QtGui, QtCore
+            
+            # Create a temporary path using your existing parser
+            temp_path = self._parse_svg_path(svg_path_data)
+            if not temp_path:
+                return svg_path_data
+            
+            # Get bounding box
+            bounds = temp_path.boundingRect()
+            if bounds.isEmpty():
+                return svg_path_data
+            
+            # Calculate center point for mirroring
+            if canvas_height is None:
+                center_y = bounds.center().y()
+            else:
+                center_y = canvas_height / 2
+            
+            # Create transformation matrix for vertical mirroring
+            transform = QtGui.QTransform()
+            transform.translate(0, center_y)
+            transform.scale(1, -1)  # Flip vertically
+            transform.translate(0, -center_y)
+            
+            # Apply transformation
+            mirrored_path = transform.map(temp_path)
+            
+            # Convert back to SVG path string
+            return self._path_to_svg_string(mirrored_path)
+            
+        except Exception as e:
+            print(f"Error mirroring SVG path vertically: {e}")
+            return svg_path_data
+
+    def _path_to_svg_string(self, qpainter_path):
+        """
+        Convert a QPainterPath back to an SVG path string.
+        This is a simplified conversion that handles basic path elements.
+        
+        Args:
+            qpainter_path (QPainterPath): The QPainterPath to convert
+        
+        Returns:
+            str: SVG path data string
+        """
+        if not qpainter_path:
+            return ""
+        
+        try:
+            from PySide6 import QtGui, QtCore
+            
+            svg_commands = []
+            
+            # Iterate through path elements
+            for i in range(qpainter_path.elementCount()):
+                element = qpainter_path.elementAt(i)
+                x, y = element.x, element.y
+                
+                if element.type == QtGui.QPainterPath.MoveToElement:
+                    svg_commands.append(f"M{x:.6g},{y:.6g}")
+                elif element.type == QtGui.QPainterPath.LineToElement:
+                    svg_commands.append(f"L{x:.6g},{y:.6g}")
+                elif element.type == QtGui.QPainterPath.CurveToElement:
+                    # For cubic curves, we need the next two control points
+                    if i + 2 < qpainter_path.elementCount():
+                        cp1 = qpainter_path.elementAt(i + 1)
+                        cp2 = qpainter_path.elementAt(i + 2)
+                        svg_commands.append(f"C{x:.6g},{y:.6g},{cp1.x:.6g},{cp1.y:.6g},{cp2.x:.6g},{cp2.y:.6g}")
+            
+            # Add close path if needed
+            if qpainter_path.elementCount() > 0:
+                first_element = qpainter_path.elementAt(0)
+                last_element = qpainter_path.elementAt(qpainter_path.elementCount() - 1)
+                if (abs(first_element.x - last_element.x) < 0.001 and 
+                    abs(first_element.y - last_element.y) < 0.001):
+                    svg_commands.append("Z")
+            
+            return "".join(svg_commands)
+            
+        except Exception as e:
+            print(f"Error converting path to SVG string: {e}")
+            return ""
+    #---------------------------------------------------------------------------------------
+    def _should_update_mask(self, zoom_factor, current_size, current_radius, current_shape_type, current_svg_data):
+        """Check if mask needs to be regenerated based on cached parameters"""
+        
+        # Check if mask is missing
+        mask_missing = self.cached_mask is None
+        
+        # Check if parameters changed significantly
+        zoom_threshold = 0.2  # Only update mask for significant zoom changes
+        size_threshold = 2    # Pixels threshold for size changes
+        radius_threshold = 1  # Radius threshold
+        
+        zoom_changed = abs(self.last_mask_zoom_factor - zoom_factor) > zoom_threshold
+        size_changed = (self.last_mask_size is None or 
+                    abs(self.last_mask_size.width() - current_size.width()) > size_threshold or
+                    abs(self.last_mask_size.height() - current_size.height()) > size_threshold)
+        radius_changed = self.last_mask_radius != current_radius
+        shape_changed = self.last_mask_shape_type != current_shape_type
+        svg_data_changed = self.last_mask_svg_data != current_svg_data
+        
+        return mask_missing or zoom_changed or size_changed or radius_changed or shape_changed or svg_data_changed
+
+    def _generate_mask(self, zoom_factor):
+        """Generate smooth mask using high-resolution rendering"""
+        if not self.isVisible():
+            return None
+        
+        rect = self.rect()
+        
+        try:
+            # Create high-resolution pixmap (2x or 4x)
+            scale_factor = 4
+            high_res_size = rect.size() * scale_factor
+            pixmap = QtGui.QPixmap(high_res_size)
+            pixmap.fill(QtCore.Qt.transparent)
+            
+            painter = QtGui.QPainter(pixmap)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+            
+            # Scale the painter to high resolution
+            painter.scale(scale_factor, scale_factor)
+            
+            # Create and fill path
+            path = self._create_button_path(QtCore.QRect(0, 0, rect.width(), rect.height()), 
+                                        self.radius, zoom_factor)
+            painter.fillPath(path, QtCore.Qt.black)
+            painter.end()
+            
+            # Scale back down with smooth transformation
+            smooth_pixmap = pixmap.scaled(rect.size(), 
+                                        QtCore.Qt.KeepAspectRatio, 
+                                        QtCore.Qt.SmoothTransformation)
+            
+            # Create mask from the smooth pixmap
+            return QtGui.QRegion(smooth_pixmap.createMaskFromColor(QtCore.Qt.transparent))
+            
+        except Exception as e:
+            print(f"Warning: mask generation failed, using rectangular fallback: {e}")
+            return QtGui.QRegion(rect)
+
+    def _invalidate_mask_cache(self):
+        """Invalidate the mask cache to force regeneration"""
+        self.cached_mask = None
+        self.last_mask_zoom_factor = 0
+        self.last_mask_size = None
+        self.last_mask_radius = None
+        self.last_mask_shape_type = None
+        self.last_mask_svg_data = None
     #---------------------------------------------------------------------------------------
     def mousePressEvent(self, event):
         """Button mouse press with alt-click duplication support - ENHANCED VERSION"""
@@ -522,10 +1117,7 @@ class PickerButton(QtWidgets.QWidget):
                             if not shift_held:
                                 canvas.clear_selection()
                             
-                            if shift_held:
-                                self.is_selected = not self.is_selected
-                            else:
-                                self.is_selected = True
+                            self.is_selected = not self.is_selected if shift_held and ctrl_held else True
                             
                             if self.is_selected:
                                 canvas.last_selected_button = self
@@ -534,7 +1126,11 @@ class PickerButton(QtWidgets.QWidget):
                             canvas.button_selection_changed.emit()
                             self.update()
                             
-                            canvas.apply_final_selection(shift_held)
+                            if ctrl_held and shift_held:
+                                canvas.apply_final_selection(shift_held)
+                                canvas.apply_final_selection(shift_held,ctrl_held)
+                            else:
+                                canvas.apply_final_selection(shift_held,ctrl_held)
                             
                     elif self.mode == 'script':
                         self.execute_script_command()
@@ -1031,6 +1627,9 @@ class PickerButton(QtWidgets.QWidget):
                 remove_thumbnail_action.triggered.connect(self.remove_thumbnail)
                 remove_thumbnail_action.setEnabled(bool(self.thumbnail_path))
                 
+                repath_thumbnail_action = thumbnail_menu.addAction("Repath Thumbnail")
+                repath_thumbnail_action.triggered.connect(partial(self.repath_thumbnails_for_selected_buttons))
+                repath_thumbnail_action.setEnabled(bool(self.thumbnail_path))
                 menu.addMenu(thumbnail_menu)
             
             #---------------------------------------------------------------------------------------
@@ -1046,8 +1645,15 @@ class PickerButton(QtWidgets.QWidget):
             bring_forward_action = placement_menu.addAction("Bring Forward")
             bring_forward_action.triggered.connect(self.bring_button_forward)
 
-            mirror_action = placement_menu.addAction("Mirror Selected")
-            mirror_action.triggered.connect(self.parent().mirror_button_positions)
+            horizontal_mirror_action = placement_menu.addAction("Horizontal Mirror")
+            horizontal_mirror_action.triggered.connect(partial(self.parent().horizontal_mirror_button_positions))
+            
+            horizontal_mirror_flip_action = placement_menu.addAction("Horizontal Mirror (WC)")
+            horizontal_mirror_flip_action.triggered.connect(partial(self.parent().horizontal_mirror_button_positions, apply_counterparts=True))
+            horizontal_mirror_flip_action.setToolTip("Mirror selected buttons horizontally and assigne counterpart objects")
+
+            vertical_mirror_action = placement_menu.addAction("Vertical Mirror")
+            vertical_mirror_action.triggered.connect(partial(self.parent().vertical_mirror_button_positions))
             
             placement_menu.addSeparator()
             
@@ -1101,6 +1707,32 @@ class PickerButton(QtWidgets.QWidget):
             placement_menu.addAction(grid_action)
 
             menu.addMenu(placement_menu)
+            #---------------------------------------------------------------------------------------
+            shape_menu = QtWidgets.QMenu("Shape", menu)
+            shape_menu.setIcon(QtGui.QIcon(UT.get_icon('shape.png')))  # You'll need a shape icon
+            shape_menu.setStyleSheet(menu.styleSheet())
+            
+            # Add shape options
+            rounded_rect_action = shape_menu.addAction("Rounded Rectangle")
+            rounded_rect_action.setCheckable(True)
+            rounded_rect_action.setChecked(self.shape_type == 'rounded_rect')
+            rounded_rect_action.triggered.connect(self.reset_to_rounded_rect)
+            
+            custom_shape_action = shape_menu.addAction("Enable Custom Shapes")
+            custom_shape_action.setCheckable(True)
+            custom_shape_action.setChecked(self.shape_type == 'custom_path')
+            custom_shape_action.triggered.connect(self.enable_custom_shapes_for_selected)
+
+            shape_menu.addSeparator()
+
+            apply_shape_action = shape_menu.addAction("Apply This Shape to Selected")
+            apply_shape_action.setEnabled(bool(self.svg_path_data))
+            apply_shape_action.triggered.connect(self.apply_same_shape_to_selected)
+
+            load_svg_action = shape_menu.addAction("Load SVG")
+            load_svg_action.triggered.connect(self.load_svg_shape)
+            
+            menu.addMenu(shape_menu)
             #---------------------------------------------------------------------------------------
             # Copy Action
             menu.addSeparator()
@@ -1201,6 +1833,10 @@ class PickerButton(QtWidgets.QWidget):
                 remove_thumbnail_action = thumbnail_menu.addAction("Remove Thumbnail")
                 remove_thumbnail_action.triggered.connect(self.remove_thumbnail)
                 remove_thumbnail_action.setEnabled(bool(self.thumbnail_path))
+
+                repath_thumbnail_action = thumbnail_menu.addAction("Repath Thumbnail")
+                repath_thumbnail_action.triggered.connect(partial(self.repath_thumbnails_for_selected_buttons))
+                repath_thumbnail_action.setEnabled(bool(self.thumbnail_path))
                 
                 menu.addMenu(thumbnail_menu)    
         
@@ -1629,7 +2265,10 @@ class PickerButton(QtWidgets.QWidget):
                             button.assigned_objects = attributes.get('assigned_objects', []).copy()
                             button.mode = attributes.get('mode', 'select')
                             button.script_data = attributes.get('script_data', {}).copy()
-                            
+                            button.shape_type = attributes.get('shape_type', 'rounded_rect')
+                            button.svg_path_data = attributes.get('svg_path_data', None)
+                            button.svg_file_path = attributes.get('svg_file_path', None) 
+
                             # Handle pose data if available
                             if 'pose_data' in attributes:
                                 button.pose_data = attributes['pose_data'].copy()
@@ -2426,6 +3065,586 @@ class PickerButton(QtWidgets.QWidget):
             # Update the button
             button.update()
             button.changed.emit(button)
+    #---------------------------------------------------------------------------------------
+    def repath_thumbnails_for_selected_buttons(self):
+        """Repath thumbnails for selected pose buttons by choosing a new directory"""
+        # Get the parent canvas and selected buttons
+        canvas = self.parent()
+        if not canvas:
+            return
+            
+        selected_buttons = canvas.get_selected_buttons()
+        # Filter to only include pose mode buttons with thumbnails
+        pose_buttons_with_thumbnails = [button for button in selected_buttons 
+                                    if button.mode == 'pose' and button.thumbnail_path]
+        
+        if not pose_buttons_with_thumbnails:
+            # If no pose buttons with thumbnails are selected, just use this button if applicable
+            if self.mode == 'pose' and self.thumbnail_path:
+                pose_buttons_with_thumbnails = [self]
+            else:
+                dialog = CD.CustomDialog(self, title="No Thumbnails", size=(250, 100), info_box=True)
+                message_label = QtWidgets.QLabel("No pose buttons with thumbnails selected.")
+                message_label.setWordWrap(True)
+                dialog.add_widget(message_label)
+                dialog.add_button_box()
+                dialog.exec_()
+                return
+        
+        # Show directory selection dialog
+        from . import data_management as DM
+        data = DM.PickerDataManager.get_data()
+        initial_dir = data.get('thumbnail_directory', '')
+        
+        # If no initial directory, use the directory of the first button's thumbnail
+        if not initial_dir and pose_buttons_with_thumbnails:
+            first_thumbnail = pose_buttons_with_thumbnails[0].thumbnail_path
+            if first_thumbnail and os.path.exists(first_thumbnail):
+                initial_dir = os.path.dirname(first_thumbnail)
+            else:
+                initial_dir = os.path.expanduser("~")
+        
+        new_directory = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select New Thumbnail Directory (will search subdirectories)", initial_dir
+        )
+        
+        if not new_directory:
+            return  # User cancelled
+        
+        # Show progress dialog for file scanning
+        progress_dialog = QtWidgets.QProgressDialog(
+            "Scanning directories for thumbnails...", "Cancel", 0, 100, self
+        )
+        progress_dialog.setWindowModality(QtCore.Qt.WindowModal)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
+        progress_dialog.show()
+        
+        try:
+            # Analyze thumbnails and prepare repath data
+            repath_results = []
+            successful_repaths = []
+            failed_repaths = []
+            
+            total_buttons = len(pose_buttons_with_thumbnails)
+            
+            for i, button in enumerate(pose_buttons_with_thumbnails):
+                if progress_dialog.wasCanceled():
+                    return
+                
+                progress_dialog.setValue(int((i / total_buttons) * 100))
+                progress_dialog.setLabelText(f"Searching for: {os.path.basename(button.thumbnail_path)}")
+                QtWidgets.QApplication.processEvents()
+                
+                old_path = button.thumbnail_path
+                filename = os.path.basename(old_path)
+                
+                # Search for the file recursively
+                found_files = self._find_thumbnail_files_recursive(new_directory, filename)
+                
+                if found_files:
+                    # File(s) found - use the best match
+                    best_match = found_files[0]  # Already sorted by relevance
+                    repath_results.append({
+                        'button': button,
+                        'old_path': old_path,
+                        'new_path': best_match['path'],
+                        'filename': filename,
+                        'status': 'found',
+                        'all_matches': found_files,
+                        'relative_path': os.path.relpath(best_match['path'], new_directory)
+                    })
+                else:
+                    # Try to find similar files
+                    similar_files = self._find_similar_thumbnail_files_recursive(new_directory, filename)
+                    repath_results.append({
+                        'button': button,
+                        'old_path': old_path,
+                        'new_path': '',
+                        'filename': filename,
+                        'status': 'missing',
+                        'similar_files': similar_files
+                    })
+            
+            progress_dialog.setValue(100)
+            progress_dialog.close()
+            
+        except Exception as e:
+            progress_dialog.close()
+            error_dialog = CD.CustomDialog(self, title="Error", size=(300, 150), info_box=True)
+            error_label = QtWidgets.QLabel(f"Error scanning directories: {str(e)}")
+            error_label.setWordWrap(True)
+            error_dialog.add_widget(error_label)
+            error_dialog.add_button_box()
+            error_dialog.exec_()
+            return
+        
+        # Show repath preview dialog
+        if self._show_repath_preview_dialog(repath_results, new_directory):
+            # User confirmed, apply the repaths
+            for result in repath_results:
+                if result['status'] == 'found' or (result['status'] == 'manual' and result.get('selected_path')):
+                    button = result['button']
+                    final_path = result.get('selected_path', result['new_path'])
+                    
+                    try:
+                        # Update the button's thumbnail path
+                        button.thumbnail_path = final_path
+                        
+                        # Reload the thumbnail pixmap
+                        button.thumbnail_pixmap = QtGui.QPixmap(final_path)
+                        
+                        # Force regeneration of the pose_pixmap
+                        button.pose_pixmap = None
+                        button.last_zoom_factor = 0
+                        button.last_size = None
+                        
+                        # Update the button
+                        button.update()
+                        button.update_tooltip()
+                        button.changed.emit(button)
+                        
+                        successful_repaths.append({
+                            'button': button.label,
+                            'filename': os.path.basename(final_path)
+                        })
+                        
+                    except Exception as e:
+                        failed_repaths.append({
+                            'button': button.label,
+                            'filename': result['filename'],
+                            'error': str(e)
+                        })
+            
+            # Show results
+            self._show_repath_results_dialog(successful_repaths, failed_repaths)
+            
+            # Update thumbnail directory preference
+            DM.PickerDataManager.set_thumbnail_directory(new_directory)
+
+    def _find_thumbnail_files_recursive(self, root_directory, target_filename, max_depth=10):
+        """Find files recursively that match the target filename exactly"""
+        if not os.path.exists(root_directory):
+            return []
+        
+        found_files = []
+        valid_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp']
+        
+        def scan_directory(directory, current_depth=0):
+            if current_depth > max_depth:
+                return
+            
+            try:
+                for item in os.listdir(directory):
+                    item_path = os.path.join(directory, item)
+                    
+                    if os.path.isfile(item_path):
+                        # Check for exact filename match
+                        if item.lower() == target_filename.lower():
+                            # Verify it's an image file
+                            _, ext = os.path.splitext(item)
+                            if ext.lower() in valid_extensions:
+                                # Calculate priority based on directory depth and name
+                                priority = self._calculate_file_priority(item_path, root_directory, target_filename)
+                                found_files.append({
+                                    'filename': item,
+                                    'path': item_path,
+                                    'priority': priority,
+                                    'depth': current_depth,
+                                    'directory': directory
+                                })
+                    
+                    elif os.path.isdir(item_path):
+                        # Skip hidden directories and common non-image directories
+                        if not item.startswith('.') and item.lower() not in ['__pycache__', 'node_modules', '.git']:
+                            scan_directory(item_path, current_depth + 1)
+            
+            except (PermissionError, OSError) as e:
+                # Skip directories we can't access
+                pass
+        
+        scan_directory(root_directory)
+        
+        # Sort by priority (higher priority first)
+        found_files.sort(key=lambda x: x['priority'], reverse=True)
+        
+        return found_files
+
+    def _find_similar_thumbnail_files_recursive(self, root_directory, target_filename, max_depth=10):
+        """Find files recursively that might be similar to the target filename"""
+        if not os.path.exists(root_directory):
+            return []
+        
+        similar_files = []
+        valid_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp']
+        
+        # Extract base name for comparison
+        target_base = os.path.splitext(target_filename)[0]
+        
+        def scan_directory(directory, current_depth=0):
+            if current_depth > max_depth:
+                return
+            
+            try:
+                for item in os.listdir(directory):
+                    item_path = os.path.join(directory, item)
+                    
+                    if os.path.isfile(item_path):
+                        file_base = os.path.splitext(item)[0]
+                        file_ext = os.path.splitext(item)[1].lower()
+                        
+                        # Only consider image files
+                        if file_ext in valid_extensions:
+                            # Calculate similarity
+                            similarity = self._calculate_filename_similarity(target_base, file_base)
+                            
+                            if similarity > 0.4:  # Lower threshold for recursive search
+                                priority = self._calculate_file_priority(item_path, root_directory, target_filename)
+                                similar_files.append({
+                                    'filename': item,
+                                    'path': item_path,
+                                    'similarity': similarity,
+                                    'priority': priority,
+                                    'depth': current_depth,
+                                    'directory': directory
+                                })
+                    
+                    elif os.path.isdir(item_path):
+                        # Skip hidden directories and common non-image directories
+                        if not item.startswith('.') and item.lower() not in ['__pycache__', 'node_modules', '.git']:
+                            scan_directory(item_path, current_depth + 1)
+            
+            except (PermissionError, OSError) as e:
+                # Skip directories we can't access
+                pass
+        
+        scan_directory(root_directory)
+        
+        # Sort by similarity first, then by priority
+        similar_files.sort(key=lambda x: (x['similarity'], x['priority']), reverse=True)
+        
+        # Return top 10 matches to avoid overwhelming the user
+        return similar_files[:10]
+
+    def _calculate_file_priority(self, file_path, root_directory, target_filename):
+        """Calculate priority for file selection based on various factors"""
+        priority = 0
+        
+        directory = os.path.dirname(file_path)
+        filename = os.path.basename(file_path)
+        relative_path = os.path.relpath(directory, root_directory)
+        
+        # Higher priority for files closer to root
+        depth = len(relative_path.split(os.sep)) if relative_path != '.' else 0
+        priority += max(0, 10 - depth)  # Max 10 points for depth
+        
+        # Higher priority for directories with thumbnail-related names
+        thumbnail_keywords = ['thumb', 'thumbnail', 'preview', 'icon', 'image', 'pic']
+        dir_name_lower = os.path.basename(directory).lower()
+        for keyword in thumbnail_keywords:
+            if keyword in dir_name_lower:
+                priority += 5
+                break
+        
+        # Higher priority for exact filename matches (case insensitive)
+        if filename.lower() == target_filename.lower():
+            priority += 20
+        
+        # Slight priority for common image formats
+        _, ext = os.path.splitext(filename)
+        if ext.lower() in ['.png', '.jpg']:
+            priority += 2
+        
+        # Priority for files that contain original filename parts
+        target_base = os.path.splitext(target_filename)[0].lower()
+        file_base = os.path.splitext(filename)[0].lower()
+        
+        if target_base in file_base or file_base in target_base:
+            priority += 3
+        
+        return priority
+
+    def _find_similar_thumbnail_files(self, directory, target_filename):
+        """Legacy method - now calls the recursive version with depth 0"""
+        return self._find_similar_thumbnail_files_recursive(directory, target_filename, max_depth=0)
+
+    def _calculate_filename_similarity(self, name1, name2):
+        """Calculate similarity between two filenames using improved string matching"""
+        # Convert to lowercase for comparison
+        name1 = name1.lower()
+        name2 = name2.lower()
+        
+        # Exact match
+        if name1 == name2:
+            return 1.0
+        
+        # Check if one contains the other
+        if name1 in name2 or name2 in name1:
+            return 0.9
+        
+        # Check for common patterns (like thumbnail_001, thumbnail_002, etc.)
+        import re
+        
+        # Remove numbers and compare
+        name1_no_numbers = re.sub(r'\d+', '', name1)
+        name2_no_numbers = re.sub(r'\d+', '', name2)
+        
+        if name1_no_numbers == name2_no_numbers and name1_no_numbers:
+            return 0.8
+        
+        # Remove common separators and compare
+        name1_clean = re.sub(r'[_\-\s]+', '', name1)
+        name2_clean = re.sub(r'[_\-\s]+', '', name2)
+        
+        if name1_clean == name2_clean:
+            return 0.7
+        
+        # Check for word overlap
+        words1 = set(re.split(r'[_\-\s]+', name1))
+        words2 = set(re.split(r'[_\-\s]+', name2))
+        
+        if words1 and words2:
+            common_words = words1 & words2
+            total_words = words1 | words2
+            word_similarity = len(common_words) / len(total_words)
+            if word_similarity > 0.5:
+                return 0.6 + (word_similarity * 0.2)
+        
+        # Basic character overlap (Jaccard similarity)
+        common_chars = set(name1) & set(name2)
+        total_chars = set(name1) | set(name2)
+        
+        if total_chars:
+            char_similarity = len(common_chars) / len(total_chars)
+            return char_similarity * 0.6  # Scale down character-based similarity
+        
+        return 0.0
+
+    def get_thumbnail_status(self):
+        """Get the current status of the thumbnail."""
+        if not self.thumbnail_path:
+            return {
+                'status': 'none',
+                'message': 'No thumbnail assigned',
+                'path': '',
+                'exists': False,
+                'loaded': False
+            }
+        
+        exists = os.path.exists(self.thumbnail_path)
+        loaded = self.thumbnail_pixmap is not None and not self.thumbnail_pixmap.isNull()
+        
+        if exists and loaded:
+            status = 'valid'
+            message = 'Thumbnail loaded successfully'
+        elif exists and not loaded:
+            status = 'load_error'
+            message = 'Thumbnail file exists but failed to load'
+        elif not exists:
+            status = 'missing'
+            message = 'Thumbnail file not found'
+        else:
+            status = 'unknown'
+            message = 'Unknown thumbnail status'
+        
+        return {
+            'status': status,
+            'message': message,
+            'path': self.thumbnail_path,
+            'exists': exists,
+            'loaded': loaded,
+            'filename': os.path.basename(self.thumbnail_path) if self.thumbnail_path else ''
+        }
+
+    def _show_repath_preview_dialog(self, repath_results, new_directory):
+        """Show a dialog previewing the repath operations with enhanced recursive search results"""
+        dialog = CD.CustomDialog(self, title="Repath Thumbnails Preview", size=(600, 500))
+        
+        # Create main layout
+        main_layout = QtWidgets.QVBoxLayout()
+        
+        # Info label
+        info_label = QtWidgets.QLabel(f"Repath thumbnails to: {new_directory}\n(Searched subdirectories recursively)")
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("font-weight: bold; color: #00ade6;")
+        main_layout.addWidget(info_label)
+        
+        # Create scroll area for results
+        scroll_area = QtWidgets.QScrollArea()
+        scroll_widget = QtWidgets.QWidget()
+        scroll_layout = QtWidgets.QVBoxLayout(scroll_widget)
+        
+        # Store widgets for later access
+        self._repath_widgets = []
+        
+        found_count = 0
+        missing_count = 0
+        
+        for result in repath_results:
+            # Create frame for each button
+            frame = QtWidgets.QFrame()
+            frame.setFrameStyle(QtWidgets.QFrame.Box)
+            frame_layout = QtWidgets.QVBoxLayout(frame)
+            
+            # Button info
+            button_info = QtWidgets.QLabel(f"Button: {result['button'].label}")
+            button_info.setStyleSheet("font-weight: bold;")
+            frame_layout.addWidget(button_info)
+            
+            # Original path
+            orig_label = QtWidgets.QLabel(f"Original: {result['filename']}")
+            frame_layout.addWidget(orig_label)
+            
+            if result['status'] == 'found':
+                # File found - show success with path
+                relative_path = result.get('relative_path', 'Found')
+                status_label = QtWidgets.QLabel(f"✓ Found at: {relative_path}")
+                status_label.setStyleSheet("color: green;")
+                frame_layout.addWidget(status_label)
+                
+                # Show multiple matches if available
+                if 'all_matches' in result and len(result['all_matches']) > 1:
+                    matches_label = QtWidgets.QLabel(f"Found {len(result['all_matches'])} matches - using best match")
+                    matches_label.setStyleSheet("color: #666; font-size: 10px;")
+                    frame_layout.addWidget(matches_label)
+                    
+                    # Create combo box for alternative matches
+                    file_combo = QtWidgets.QComboBox()
+                    
+                    for i, match in enumerate(result['all_matches']):
+                        rel_path = os.path.relpath(match['path'], new_directory)
+                        display_text = f"{rel_path}" + (" (Best Match)" if i == 0 else "")
+                        file_combo.addItem(display_text, match['path'])
+                    
+                    frame_layout.addWidget(file_combo)
+                    result['combo_widget'] = file_combo
+                
+                found_count += 1
+                
+            else:
+                # File missing - show options
+                status_label = QtWidgets.QLabel("✗ File not found in any subdirectory")
+                status_label.setStyleSheet("color: red;")
+                frame_layout.addWidget(status_label)
+                
+                # Show similar files if any
+                if result['similar_files']:
+                    similar_label = QtWidgets.QLabel(f"Found {len(result['similar_files'])} similar files:")
+                    frame_layout.addWidget(similar_label)
+                    
+                    # Create combo box for file selection
+                    file_combo = QtWidgets.QComboBox()
+                    file_combo.addItem("-- Select a file --", "")
+                    
+                    for similar in result['similar_files']:
+                        rel_path = os.path.relpath(similar['path'], new_directory)
+                        display_text = f"{rel_path} ({similar['similarity']:.0%} match)"
+                        file_combo.addItem(display_text, similar['path'])
+                    
+                    frame_layout.addWidget(file_combo)
+                    
+                    # Store combo box reference
+                    result['combo_widget'] = file_combo
+                else:
+                    no_similar_label = QtWidgets.QLabel("No similar files found in directory tree")
+                    no_similar_label.setStyleSheet("color: #888; font-style: italic;")
+                    frame_layout.addWidget(no_similar_label)
+                
+                missing_count += 1
+            
+            scroll_layout.addWidget(frame)
+            self._repath_widgets.append(result)
+        
+        scroll_area.setWidget(scroll_widget)
+        scroll_area.setWidgetResizable(True)
+        main_layout.addWidget(scroll_area)
+        
+        # Summary
+        summary_label = QtWidgets.QLabel(f"Found: {found_count}, Missing: {missing_count}")
+        summary_label.setStyleSheet("font-weight: bold;")
+        main_layout.addWidget(summary_label)
+        
+        # Buttons
+        button_layout = QtWidgets.QHBoxLayout()
+        
+        apply_button = QtWidgets.QPushButton("Apply Repath")
+        apply_button.setStyleSheet("background-color: #4CAF50; color: white;")
+        cancel_button = QtWidgets.QPushButton("Cancel")
+        
+        button_layout.addWidget(cancel_button)
+        button_layout.addWidget(apply_button)
+        main_layout.addLayout(button_layout)  
+        
+        # Use dialog.frame.layout instead of dialog.layout()
+        dialog.frame.layout().addLayout(main_layout)
+        
+        # Connect buttons
+        result = [False]  # Use list to allow modification in nested function
+        
+        def on_apply():
+            # Process combo box selections
+            for repath_result in repath_results:
+                if 'combo_widget' in repath_result:
+                    combo = repath_result['combo_widget']
+                    selected_path = combo.currentData()
+                    if selected_path:
+                        repath_result['status'] = 'manual'
+                        repath_result['selected_path'] = selected_path
+            
+            result[0] = True
+            dialog.accept()
+        
+        def on_cancel():
+            result[0] = False
+            dialog.reject()
+        
+        apply_button.clicked.connect(on_apply)
+        cancel_button.clicked.connect(on_cancel)
+        
+        dialog.exec_()
+        return result[0]
+
+    def _show_repath_results_dialog(self, successful_repaths, failed_repaths):
+        """Show results of the repath operation"""
+        title = "Repath Results"
+        if successful_repaths and not failed_repaths:
+            title = "Repath Successful"
+        elif failed_repaths and not successful_repaths:
+            title = "Repath Failed"
+        
+        dialog = CD.CustomDialog(self, title=title, size=(400, 300), info_box=True)
+        
+        # Create layout
+        layout = QtWidgets.QVBoxLayout()
+        
+        if successful_repaths:
+            success_label = QtWidgets.QLabel(f"Successfully repathed {len(successful_repaths)} thumbnails:")
+            success_label.setStyleSheet("color: green; font-weight: bold;")
+            layout.addWidget(success_label)
+            
+            for item in successful_repaths:
+                item_label = QtWidgets.QLabel(f"✓ {item['button']}: {item['filename']}")
+                layout.addWidget(item_label)
+        
+        if failed_repaths:
+            if successful_repaths:
+                layout.addWidget(QtWidgets.QLabel(""))  # Spacer
+            
+            failed_label = QtWidgets.QLabel(f"Failed to repath {len(failed_repaths)} thumbnails:")
+            failed_label.setStyleSheet("color: red; font-weight: bold;")
+            layout.addWidget(failed_label)
+            
+            for item in failed_repaths:
+                item_label = QtWidgets.QLabel(f"✗ {item['button']}: {item['filename']}")
+                error_label = QtWidgets.QLabel(f"   Error: {item['error']}")
+                error_label.setStyleSheet("color: #888; font-size: 10px;")
+                layout.addWidget(item_label)
+                layout.addWidget(error_label)
+        
+        # Use dialog.frame.layout() instead of dialog.layout()
+        dialog.frame.layout().addLayout(layout)
+        dialog.add_button_box()
+        dialog.exec_()
     #---------------------------------------------------------------------------------------
     # POSE APPLICATION
     #---------------------------------------------------------------------------------------

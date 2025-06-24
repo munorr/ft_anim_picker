@@ -259,7 +259,7 @@ class ColorPicker(QWidget):
         
         if not self.sample_hex_mode and not self.palette_mode:
             self.color_label = QLabel("Color")
-            self.color_label.setStyleSheet("color: #444444;")
+            self.color_label.setStyleSheet("color: #666666;")
             self.frame_layout.addWidget(self.color_label)
 
         # Top section with color display and hex input (always visible)
@@ -351,8 +351,7 @@ class ColorPicker(QWidget):
             
             # Color picker button
             self.picker_btn = QPushButton("")
-            self.picker_btn.setIcon(QtGui.QIcon(get_icon('color_picker.png', opacity=0.8)))
-            self.picker_btn.setIconSize(QtCore.QSize(22, 22))
+            self.picker_btn.setIcon(QtGui.QIcon(get_icon('color_picker.png', opacity=0.8,size=18)))
             self.picker_btn.setFixedSize(24, 24)
             self.picker_btn.setStyleSheet("border: 0px solid #666; border-radius: 3px; background-color: #333333;")
             self.picker_btn.setToolTip("Pick color from screen")
@@ -362,12 +361,25 @@ class ColorPicker(QWidget):
             self.color_display = QPushButton()
             self.color_display.setFixedHeight(24)
             self.color_display.setStyleSheet(f"border: 1px solid {UT.rgba_value(self.current_color,1.2)}; border-radius: 3px;")
-            self.color_display.setToolTip("Left click: show/hide sliders\nRight click: show color palette")
-            self.color_display.clicked.connect(self.toggle_sliders)
-            self.color_display.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.color_display.setToolTip("Color palette")
+            #self.color_display.clicked.connect(self.toggle_sliders)
+            #self.color_display.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.color_display.clicked.connect(self.show_color_palette)
             self.color_display.customContextMenuRequested.connect(self.show_color_palette)
 
+            # Color dropdown
+            self.color_dropdown = QPushButton()
+            self.color_dropdown.setFixedSize(24, 24)
+            self.color_dropdown.setStyleSheet(f"background-color: #333333; border-radius: 3px; border: 0px solid #666666;")
+            self.color_dropdown.setIcon(QtGui.QIcon(get_icon('hamburger.png', opacity=0.8,size=18)))
+            
+            self.color_dropdown.setToolTip("Hide HSV sliders" if self.sliders_visible else "Show HSV sliders")
+            self.color_dropdown.clicked.connect(self.toggle_sliders)
+            self.color_dropdown.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.color_dropdown.customContextMenuRequested.connect(self.show_color_palette)
+
             top_layout.addWidget(self.color_display)
+            top_layout.addWidget(self.color_dropdown)
             top_layout.addWidget(self.picker_btn)
 
             layout.addLayout(top_layout)
@@ -509,8 +521,10 @@ class ColorPicker(QWidget):
             # Update gradients when showing sliders
             self.update_saturation_gradient()
             self.update_value_gradient()
+            self.color_dropdown.setToolTip("Hide HSV sliders")
         else:
             self.sliders_widget.hide()
+            self.color_dropdown.setToolTip("Show HSV sliders")
         
         # Adjust window size to fit content
         self.adjustSize()

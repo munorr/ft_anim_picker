@@ -350,9 +350,17 @@ class TransformGuides(QtWidgets.QWidget):
             
             original = self.original_states[button]
             
-            # Scale dimensions from original size
-            new_width = original['width'] * scale_x
-            new_height = original['height'] * scale_y
+            # Check if this is a pose mode button
+            if button.mode == 'pose':
+                new_width = original['width'] * scale_x
+                new_height = new_width * 1.25  # Maintain pose mode ratio
+            else:
+                if button.shape_type == 'custom_path':
+                    new_width = original['width'] * scale_x
+                    new_height = original['height'] * scale_y
+                else:
+                    new_width = original['width'] * scale_x
+                    new_height = original['height'] * scale_y
             
             # Clamp to reasonable sizes
             button.width = round(max(5, min(new_width, 2000)), 1)
@@ -375,43 +383,6 @@ class TransformGuides(QtWidgets.QWidget):
         # Update canvas
         self.canvas.update_button_positions()
     #---------------------------------------------------------------------------
-    def apply_scale_to_buttons(self, scale_x, scale_y):
-        """Apply scaling to all selected buttons based on original states"""
-        for button in self.selected_buttons:
-            if button not in self.original_states:
-                continue
-            
-            original = self.original_states[button]
-            
-            # Scale button dimensions from original size
-            new_width = original['width'] * scale_x
-            new_height = original['height'] * scale_y
-            
-            # Clamp to reasonable button sizes
-            button.width = max(5, min(new_width, 500))
-            button.height = max(5, min(new_height, 500))
-            
-            # Calculate new position relative to transform origin
-            original_pos = original['position']
-            
-            # Vector from transform origin to original position
-            offset_from_origin = original_pos - self.transform_origin
-            
-            # Scale the offset
-            scaled_offset = QtCore.QPointF(
-                offset_from_origin.x() * scale_x,
-                offset_from_origin.y() * scale_y
-            )
-            
-            # New position = origin + scaled offset
-            button.scene_position = self.transform_origin + scaled_offset
-            
-            # Update button visual
-            button.update()
-        
-        # Update button positions on canvas
-        self.canvas.update_button_positions()
-
     def get_transform_origin(self, handle_name):
         """Get the transform origin point for a given handle in scene coordinates"""
         # For proper 1:1 scaling, use the opposite edge/corner as the anchor point

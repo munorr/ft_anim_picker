@@ -23,17 +23,23 @@ from . import custom_color_picker as CCP
 def create_button_edit_widgets(parent):
     """Optimized widget creation with better performance and batching support"""
     widgets = {}
-    
+
+    label_color = "#666666"
+    widget_color = "#1d1d1d"
+
     def set_margin_space(layout,margin,space):
         layout.setContentsMargins(margin,margin,margin,margin)
         layout.setSpacing(space)
     
-    label_color = "#666666"
-    widget_color = "#1e1e1e"
+    def set_widget_style(widget, color):
+        widget.setStyleSheet(f"""QWidget {{background-color: {color}; padding: 0px; border-radius: 3px; border: 0px solid #666666;}}
+        QLabel {{color: {label_color}; border: none;font-size: 11px;}}
+        """)
+
     #---------------------------------------------------------------------------------------------------------------------------------------
     # Rename widget - simplified
     rename_widget = QtWidgets.QWidget()
-    rename_widget.setStyleSheet("border: 1px solid #5c7918; background-color: #222222;")
+    rename_widget.setStyleSheet(f"border: 1px solid #5c7918; background-color: {widget_color};")
     rename_widget.setFixedHeight(30)
     rename_layout = QtWidgets.QHBoxLayout(rename_widget)
     set_margin_space(rename_layout,0,0)
@@ -75,9 +81,7 @@ def create_button_edit_widgets(parent):
     #---------------------------------------------------------------------------------------------------------------------------------------
     # Transform widget
     transform_widget = QtWidgets.QWidget()
-    transform_widget.setStyleSheet(f"""QWidget {{background-color: {widget_color}; padding: 0px; border-radius: 3px; border: 0px solid #666666;}}
-    QLabel {{color: #aaaaaa; border: none;font-size: 11px;}}
-    """)
+    set_widget_style(transform_widget, widget_color)
     transform_main_layout = QtWidgets.QVBoxLayout(transform_widget)
     set_margin_space(transform_main_layout,6,4)
 
@@ -113,9 +117,7 @@ def create_button_edit_widgets(parent):
     #---------------------------------------------------------------------------------------------------------------------------------------
     # Radius widget
     radius_widget = QtWidgets.QWidget()
-    radius_widget.setStyleSheet(f"""QWidget {{background-color: {widget_color}; padding: 0px; border-radius: 3px; border: 0px solid #666666;}}
-    QLabel {{color: #aaaaaa; border: none;font-size: 11px;}}
-    """)
+    set_widget_style(radius_widget, widget_color)
     radius_main_layout = QtWidgets.QVBoxLayout(radius_widget)
     set_margin_space(radius_main_layout,6,4)
     
@@ -166,9 +168,7 @@ def create_button_edit_widgets(parent):
     #---------------------------------------------------------------------------------------------------------------------------------------
     # Opacity widget
     opacity_widget = QtWidgets.QWidget()
-    opacity_widget.setStyleSheet(f"""QWidget {{background-color: {widget_color}; padding: 0px; border-radius: 3px; border: 0px solid #666666;}}
-    QLabel {{color: #aaaaaa; border: none;font-size: 11px;}}
-    """)
+    set_widget_style(opacity_widget, widget_color)
     opacity_layout = QtWidgets.QVBoxLayout(opacity_widget)
     set_margin_space(opacity_layout,6,6)
 
@@ -190,14 +190,12 @@ def create_button_edit_widgets(parent):
     #---------------------------------------------------------------------------------------------------------------------------------------
     # Thumbnail directory widget
     thumbnail_dir_widget = QtWidgets.QWidget()
-    thumbnail_dir_widget.setStyleSheet(f"""QWidget {{background-color: {widget_color}; padding: 0px; border-radius: 3px; border: 0px solid #666666;}}
-    QLabel {{color: #aaaaaa; border: none;font-size: 11px;}}
-    """)
+    set_widget_style(thumbnail_dir_widget, widget_color)
     thumbnail_dir_layout = QtWidgets.QVBoxLayout(thumbnail_dir_widget)
     set_margin_space(thumbnail_dir_layout,6,6)
     
     thumbnail_dir_label = QtWidgets.QLabel("Thumbnail Directory:")
-    thumbnail_dir_label.setStyleSheet("color: #aaaaaa;")
+    thumbnail_dir_label.setStyleSheet("color: #666666;")
     
     thumbnail_dir_edit = QtWidgets.QLineEdit()
     thumbnail_dir_edit.setStyleSheet("background-color: #222222; color: #dddddd; border: 1px solid #444444; border-radius: 3px; padding: 2px;")
@@ -247,7 +245,7 @@ def create_button_edit_widgets(parent):
     #---------------------------------------------------------------------------------------------------------------------------------------
     # Color widget
     color_widget = QtWidgets.QWidget()
-    color_widget.setStyleSheet('background-color:#222222;')
+    set_widget_style(color_widget, widget_color)
     color_layout = QtWidgets.QGridLayout(color_widget)
     color_layout.setSpacing(5)
     color_layout.setContentsMargins(3, 5, 3, 5)
@@ -296,8 +294,106 @@ def create_button_edit_widgets(parent):
     color_picker.colorChanged.connect(handle_color_picker_change)
     widgets['color_picker'] = color_picker
 
+    #---------------------------------------------------------------------------------------------------------------------------------------
+    # Placement widget
+    placement_widget = QtWidgets.QWidget()
+    set_widget_style(placement_widget, widget_color)
+    placement_layout = QtWidgets.QVBoxLayout(placement_widget)
+    set_margin_space(placement_layout, 6, 4)
+
+    placement_label = QtWidgets.QLabel("Placement")
+    placement_label.setStyleSheet(f"color: {label_color};")
+    placement_layout.addWidget(placement_label)
+
+    # Z-order and mirror buttons
+    zorder_layout = QtWidgets.QVBoxLayout()
+    set_margin_space(zorder_layout, 4, 6)
+
+    def placement_button_style():
+        return """
+        QPushButton {
+            background-color: #333333;
+        }
+        QPushButton:hover {
+            background-color: #444444;
+        }
+        QPushButton:pressed {
+            background-color: #555555;
+        }
+        """
+    def zorder_button(btn, tooltip, callback):
+        btn.setStyleSheet(placement_button_style())
+        btn.setToolTip(tooltip)
+        btn.setFixedHeight(24)
+        btn.clicked.connect(callback)
+        return btn
+
+    move_behind_btn = QtWidgets.QPushButton("Move Behind")
+    move_behind_btn = zorder_button(move_behind_btn, "Move selected button behind", lambda: move_selected_buttons_behind(parent))
+    zorder_layout.addWidget(move_behind_btn)
+
+    bring_forward_btn = QtWidgets.QPushButton("Bring Forward")
+    bring_forward_btn = zorder_button(bring_forward_btn, "Bring selected button forward", lambda: bring_selected_buttons_forward(parent))
+    zorder_layout.addWidget(bring_forward_btn)
+
+    horizontal_mirror_btn = QtWidgets.QPushButton("Horizontal Mirror")
+    horizontal_mirror_btn = zorder_button(horizontal_mirror_btn, "Mirror selected button positions horizontally", lambda: horizontal_mirror_selected_buttons(parent))
+    zorder_layout.addWidget(horizontal_mirror_btn)
+
+    horizontal_mirror_flip_btn = QtWidgets.QPushButton("Horizontal Mirror (WC)")
+    horizontal_mirror_flip_btn = zorder_button(horizontal_mirror_flip_btn, "Mirror selected button positions horizontally and assigne counterpart objects", lambda: horizontal_mirror_selected_buttons_wc(parent))
+    zorder_layout.addWidget(horizontal_mirror_flip_btn)
+
+    vertical_mirror_btn = QtWidgets.QPushButton("Vertical Mirror")
+    vertical_mirror_btn = zorder_button(vertical_mirror_btn, "Mirror selected button positions vertically", lambda: vertical_mirror_selected_buttons(parent))
+    zorder_layout.addWidget(vertical_mirror_btn)
+
+
+    # Create a grid widget for alignment options
+    grid_widget = QtWidgets.QWidget()
+    grid_layout = QtWidgets.QGridLayout(grid_widget)
+    set_margin_space(grid_layout, 4, 6)
+
+    def create_alignment_button(icon_path, tooltip, callback):
+        btn = QtWidgets.QPushButton()
+        btn.setStyleSheet(placement_button_style())
+        btn.setFixedHeight(24)
+        btn.setIcon(UT.get_icon(icon_path, opacity=0.9))
+        btn.setIconSize(QtCore.QSize(20, 20))
+        btn.setToolTip(tooltip)
+        btn.clicked.connect(callback)
+        return btn
+
+    # Row 1: Vertical alignment options
+    align_left_btn = create_alignment_button("align_left.png", "Align Left", lambda: align_selected_buttons_left(parent))
+    align_center_btn = create_alignment_button("align_vCenter.png", "Align Vertical Center", lambda: align_selected_buttons_vcenter(parent))
+    align_right_btn = create_alignment_button("align_right.png", "Align Right", lambda: align_selected_buttons_right(parent))
+    v_space_btn = create_alignment_button("v_spacing.png", "Distribute Evenly (Vertical)", lambda: evenly_space_selected_buttons_vertical(parent))
+
+    # Row 2: Horizontal alignment options
+    align_top_btn = create_alignment_button("align_top.png", "Align Top", lambda: align_selected_buttons_top(parent))
+    align_middle_btn = create_alignment_button("align_hCenter.png", "Align Horizontal Center", lambda: align_selected_buttons_hcenter(parent))
+    align_bottom_btn = create_alignment_button("align_bottom.png", "Align Bottom", lambda: align_selected_buttons_bottom(parent))
+    h_space_btn = create_alignment_button("h_spacing.png", "Distribute Evenly (Horizontal)", lambda: evenly_space_selected_buttons_horizontal(parent))
+
+    grid_layout.addWidget(align_left_btn, 0, 0)
+    grid_layout.addWidget(align_center_btn, 0, 1)
+    grid_layout.addWidget(align_right_btn, 0, 2)
+    grid_layout.addWidget(v_space_btn, 0, 3)
+
+    grid_layout.addWidget(align_top_btn, 1, 0)
+    grid_layout.addWidget(align_middle_btn, 1, 1)
+    grid_layout.addWidget(align_bottom_btn, 1, 2)
+    grid_layout.addWidget(h_space_btn, 1, 3)
+
+    placement_layout.addWidget(grid_widget)
+    placement_layout.addLayout(zorder_layout)
+
+    widgets['placement_widget'] = placement_widget
+    #---------------------------------------------------------------------------------------------------------------------------------------
+
     return widgets
-#---------------------------------------------------------------------------------------------------------------------------------------
+
 # Helper functions
 def queue_color_change(main_window, color):
     """FIXED: Queue color changes for batch processing with proper color handling"""
@@ -333,3 +429,92 @@ def set_radius_for_selected_buttons(main_window, tl, tr, br, bl):
 def change_color_for_selected_buttons(main_window, color):
     if isinstance(main_window, UI.AnimPickerWindow):
         main_window.change_color_for_selected_buttons(color)
+
+#---------------------------------------------------------------------------------------------------------------------------------------
+# Placement widget helper functions
+#---------------------------------------------------------------------------------------------------------------------------------------
+def get_selected_picker_buttons(main_window):
+    """Return a list of selected PickerButton objects from the current canvas."""
+    canvas = getattr(main_window, 'get_canvas', lambda: None)()
+    if not canvas and hasattr(main_window, 'tab_system'):
+        # Try to get canvas from tab_system
+        tab = getattr(main_window.tab_system, 'current_tab', None)
+        if tab and hasattr(main_window.tab_system, 'tabs'):
+            canvas = main_window.tab_system.tabs[tab].get('canvas', None)
+    if canvas and hasattr(canvas, 'get_selected_buttons'):
+        return canvas.get_selected_buttons()
+    return []
+
+def move_selected_buttons_behind(main_window):
+    for button in get_selected_picker_buttons(main_window):
+        if hasattr(button, 'move_button_behind'):
+            button.move_button_behind()
+
+def bring_selected_buttons_forward(main_window):
+    for button in get_selected_picker_buttons(main_window):
+        if hasattr(button, 'bring_button_forward'):
+            button.bring_button_forward()
+
+def horizontal_mirror_selected_buttons(main_window):
+    for button in get_selected_picker_buttons(main_window):
+        if hasattr(button.parent(), 'horizontal_mirror_button_positions'):
+            button.parent().horizontal_mirror_button_positions()
+            break
+
+def horizontal_mirror_selected_buttons_wc(main_window):
+    for button in get_selected_picker_buttons(main_window):
+        if hasattr(button.parent(), 'horizontal_mirror_button_positions'):
+            button.parent().horizontal_mirror_button_positions(apply_counterparts=True)
+            break
+
+def vertical_mirror_selected_buttons(main_window):
+    for button in get_selected_picker_buttons(main_window):
+        if hasattr(button.parent(), 'vertical_mirror_button_positions'):
+            button.parent().vertical_mirror_button_positions()
+            break
+
+def align_selected_buttons_left(main_window):
+    for button in get_selected_picker_buttons(main_window):
+        if hasattr(button, 'align_button_left'):
+            button.align_button_left()
+
+def align_selected_buttons_vcenter(main_window):
+    for button in get_selected_picker_buttons(main_window):
+        if hasattr(button, 'align_button_center'):
+            button.align_button_center()
+
+def align_selected_buttons_right(main_window):
+    for button in get_selected_picker_buttons(main_window):
+        if hasattr(button, 'align_button_right'):
+            button.align_button_right()
+
+def align_selected_buttons_top(main_window):
+    for button in get_selected_picker_buttons(main_window):
+        if hasattr(button, 'align_button_top'):
+            button.align_button_top()
+
+def align_selected_buttons_hcenter(main_window):
+    for button in get_selected_picker_buttons(main_window):
+        if hasattr(button, 'align_button_middle'):
+            button.align_button_middle()
+
+def align_selected_buttons_bottom(main_window):
+    for button in get_selected_picker_buttons(main_window):
+        if hasattr(button, 'align_button_bottom'):
+            button.align_button_bottom()
+
+def evenly_space_selected_buttons_horizontal(main_window):
+    for button in get_selected_picker_buttons(main_window):
+        if hasattr(button, 'evenly_space_horizontal'):
+            button.evenly_space_horizontal()
+
+def evenly_space_selected_buttons_vertical(main_window):
+    for button in get_selected_picker_buttons(main_window):
+        if hasattr(button, 'evenly_space_vertical'):
+            button.evenly_space_vertical()
+
+def get_current_selected_button_color(main_window):
+    buttons = get_selected_picker_buttons(main_window)
+    if buttons:
+        return getattr(buttons[0], 'color', '#444444')
+    return '#444444'

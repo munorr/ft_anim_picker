@@ -1379,7 +1379,10 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 color=button_data.get("color", "#444444"),
                 opacity=button_data.get("opacity", 1.0),
                 width=button_data.get("width", 80),
-                height=button_data.get("height", 30)
+                height=button_data.get("height", 30),
+                shape_type=button_data.get("shape_type", "rounded_rect"),
+                svg_path_data=button_data.get("svg_path_data", None),
+                svg_file_path=button_data.get("svg_file_path", None)
             )
             
             # Set basic properties
@@ -1406,9 +1409,18 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 button.thumbnail_path = button_data["thumbnail_path"]
                 # Load the thumbnail image if the file exists
                 if os.path.exists(button.thumbnail_path):
-                    button.thumbnail_pixmap = QtGui.QPixmap(button.thumbnail_path)
+                    try:
+                        button.thumbnail_pixmap = QtGui.QPixmap(button.thumbnail_path)
+                        if button.thumbnail_pixmap.isNull():
+                            #print(f"Warning: Thumbnail file exists but failed to load: {button.thumbnail_path}")
+                            button.thumbnail_pixmap = None
+                            # Keep the path for potential repath operation
+                    except Exception as e:
+                        #print(f"Warning: Error loading thumbnail {button.thumbnail_path}: {e}")
+                        button.thumbnail_pixmap = None
+                        # Keep the path for potential repath operation
                 else:
-                    button.thumbnail_path = ''  # Reset if file doesn't exist
+                    #print(f"Warning: Thumbnail file not found: {button.thumbnail_path}")
                     button.thumbnail_pixmap = None
             
             button.scene_position = QtCore.QPointF(*button_data["position"])
@@ -1487,7 +1499,10 @@ class AnimPickerWindow(QtWidgets.QWidget):
                     "mode": button.mode,
                     "script_data": button.script_data,
                     "pose_data": button.pose_data,
-                    "thumbnail_path": getattr(button, 'thumbnail_path', '')
+                    "thumbnail_path": getattr(button, 'thumbnail_path', ''),
+                    "shape_type": button.shape_type,
+                    "svg_path_data": button.svg_path_data,
+                    "svg_file_path": button.svg_file_path
                 }
                 buttons_to_update.append(button_data)
         
@@ -1549,7 +1564,10 @@ class AnimPickerWindow(QtWidgets.QWidget):
                     "mode": getattr(canvas_button, 'mode', 'select'),
                     "script_data": getattr(canvas_button, 'script_data', {'code': '', 'type': 'python'}),
                     "pose_data": getattr(canvas_button, 'pose_data', {}),
-                    "thumbnail_path": getattr(canvas_button, 'thumbnail_path', '')
+                    "thumbnail_path": getattr(canvas_button, 'thumbnail_path', ''),
+                    "shape_type": canvas_button.shape_type,
+                    "svg_path_data": canvas_button.svg_path_data,
+                    "svg_file_path": canvas_button.svg_file_path
                 })
                 
                 ordered_buttons.append(button_data)
@@ -2022,6 +2040,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.edit_value_layout.addWidget(widgets['radius_widget'])
         self.edit_value_layout.addWidget(widgets['opacity_widget'])
         self.edit_value_layout.addWidget(widgets['color_picker'])
+        self.edit_value_layout.addWidget(widgets['placement_widget'])
         self.edit_value_layout.addWidget(widgets['thumbnail_dir_widget'])
 
         self.is_updating_widgets = False

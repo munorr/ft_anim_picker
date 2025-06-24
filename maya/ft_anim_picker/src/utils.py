@@ -1,3 +1,5 @@
+import sys
+import os
 import maya.cmds as cmds
 from maya import OpenMayaUI as omui
 from functools import wraps
@@ -13,6 +15,28 @@ except ImportError:
     from PySide2.QtCore import QTimer, QPropertyAnimation, QEasingCurve
     from shiboken2 import wrapInstance
     
+
+def get_module(relative_path, package_name):
+    """
+    Helper function to handle both relative and absolute imports for Python 2/3 compatibility.
+    Args:
+        relative_path (str): The relative import path (e.g., '.main')
+        package_name (str): The actual module name (e.g., 'main')
+    Returns:
+        module: The imported module
+    """
+    try:
+        # Python 3 style relative import
+        if relative_path.startswith('.'):
+            # Remove the leading dot for absolute import fallback
+            package_name = relative_path[1:]
+        return __import__(relative_path, globals(), locals(), ['*'], 1)
+    except (ImportError, ValueError, SystemError):
+        # Python 2 fallback - attempt absolute import from the same directory
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if current_dir not in sys.path:
+            sys.path.append(current_dir)
+        return __import__(package_name)
 
 def undoable(func):
     @wraps(func)

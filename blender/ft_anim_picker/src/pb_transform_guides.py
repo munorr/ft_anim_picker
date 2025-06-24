@@ -344,9 +344,18 @@ class TransformGuides(QtWidgets.QWidget):
             
             original = self.original_states[button]
             
-            # Scale dimensions from original size
-            new_width = original['width'] * scale_x
-            new_height = original['height'] * scale_y
+            # Check if this is a pose mode button
+            if button.mode == 'pose':
+                new_width = original['width'] * scale_x
+                new_height = new_width * 1.25  # Maintain pose mode ratio
+            else:
+                if button.shape_type == 'custom_path':
+                    new_width = original['width'] * scale_x
+                    new_height = original['height'] * scale_y
+                else:
+                    new_width = original['width'] * scale_x
+                    new_height = original['height'] * scale_y
+
             
             # Clamp to reasonable sizes
             button.width = round(max(5, min(new_width, 2000)), 1)

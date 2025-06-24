@@ -9,8 +9,15 @@ class CustomDialog(QtWidgets.QDialog):
         super(CustomDialog, self).__init__(parent)
         self.info_box = info_box
         self.setWindowTitle(title)
+        self.setWindowFlags(self.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setFixedSize(*size)
         self.setStyleSheet('''
+            QFrame {
+                background-color: rgba(40, 40, 40, 1);
+                border-radius: 5px;
+                border: 1px solid #444444;
+            }
             QDialog {
                 background-color: rgba(40, 40, 40, 0.9);
                 border-radius: 5px;
@@ -18,12 +25,13 @@ class CustomDialog(QtWidgets.QDialog):
             QLabel, QRadioButton {
                 color: white;
                 background-color: transparent;
+                border: none;
             }
             QLineEdit {
                 background-color: #4d4d4d;
                 color: white;
                 border: none;
-                padding: 2px;
+                padding: 5px;
                 border-radius: 3px;
             }
             QPushButton {
@@ -39,11 +47,10 @@ class CustomDialog(QtWidgets.QDialog):
                 background-color: #00ade6;
             }
             QPushButton#closeButton {
-                background-color: #444444;
+                background-color: #a30000;
             }
             QPushButton#closeButton:hover {
                 background-color: #ff0000;
-            }
             }
             QPushButton#okayButton {
                 background-color: #00749a;
@@ -57,7 +64,10 @@ class CustomDialog(QtWidgets.QDialog):
                 padding: 5px;
             }
         ''')
-        self.layout = QtWidgets.QVBoxLayout(self)
+        self.frame = QtWidgets.QFrame(self)
+        self.frame.setFixedSize(*size)
+
+        self.layout = QtWidgets.QVBoxLayout(self.frame)
         self.layout.setContentsMargins(10, 10, 10, 10)
         self.layout.setSpacing(10)
 
@@ -101,4 +111,4 @@ class CustomDialog(QtWidgets.QDialog):
             accept_button.clicked.connect(self.accept)
             close_button.clicked.connect(self.reject)
             return accept_button, close_button
-    
+     

@@ -14,6 +14,7 @@ from . import tool_functions as TF
 from . import data_management as DM
 from . import custom_dialog as CD
 from . import pb_transform_guides as TG
+from .blender_curve_converter import create_buttons_from_blender_curves
 
 class HUDWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -336,7 +337,7 @@ class PickerCanvas(QtWidgets.QWidget):
             self.button_selection_changed.emit()
             self.update_hud_counts()
 
-    def update_visual_selection(self, rect, add_to_selection=False):
+    def update_visual_selection(self, rect, add_to_selection=False, remove_from_selection=False):
         """Update button selection visually during rubber band drag"""
         # Get buttons in current rectangle
         current_buttons = set()
@@ -377,12 +378,14 @@ class PickerCanvas(QtWidgets.QWidget):
             
             if button in current_buttons:
                 # Button is in selection rectangle
-                if add_to_selection:
-                    # Toggle from initial state when shift is held
-                    initial_state = self.initial_selection_state.get(button, False)
-                    button.is_selected = not initial_state
+                if remove_from_selection:
+                    # CTRL+SHIFT: Remove from selection when in rectangle
+                    button.is_selected = False
+                elif add_to_selection:
+                    # SHIFT only: Add to selection when in rectangle
+                    button.is_selected = True
                 else:
-                    # Select when shift not held
+                    # No modifiers: Select when in rectangle
                     button.is_selected = True
             else:
                 # Button not in rectangle - restore initial state
@@ -411,38 +414,103 @@ class PickerCanvas(QtWidgets.QWidget):
     #------------------------------------------------------------------------------
     # SELECTION LOGIC
     #------------------------------------------------------------------------------
-    def apply_final_selection(self, add_to_selection=False):
-        """Apply final selection with Blender object lookup and selection"""
+    
+    def apply_final_selection(self, add_to_selection=False, ctrl_held=False):
+        """Apply final selection with Blender object lookup and counterpart selection"""
         if self.edit_mode:
             return
         
-        # Get buttons that should be selected
-        if self.buttons_in_current_drag:
-            # Use rubber band selection
-            final_selections = []
-            
-            # Add existing selection if shift held
-            if add_to_selection:
-                for button in self.buttons:
-                    if button.is_selected and button not in self.buttons_in_current_drag:
-                        final_selections.append(button)
-            
-            # Add new selections from drag
+        # Check if we're in deselection mode (ctrl+shift was held during drag)
+        # We can detect this by checking if buttons in the drag area are now deselected
+        # compared to their initial state
+        deselection_mode = False
+        if add_to_selection:  # shift was held
             for button in self.buttons_in_current_drag:
-                if button.is_selected:
-                    final_selections.append(button)
+                initial_state = self.initial_selection_state.get(button, False)
+                if initial_state and not button.is_selected:
+                    deselection_mode = True
+                    break
+        
+        if deselection_mode:
+            # Handle deselection in Blender
+            objects_to_deselect = []
+            bones_to_deselect = []
+            
+            for button in self.buttons_in_current_drag:
+                if not button.is_selected and button.assigned_objects:
+                    # This button was deselected, so deselect its objects/bones in Blender
+                    for obj_data in button.assigned_objects:
+                        if obj_data.get('is_bone', False):
+                            bone_info = self._resolve_bone(obj_data)
+                            if bone_info:
+                                bones_to_deselect.append(bone_info)
+                        else:
+                            obj_info = self._resolve_object(obj_data, self._get_current_namespace())
+                            if obj_info:
+                                objects_to_deselect.append(obj_info)
+            
+            # Apply Blender deselection
+            try:
+                import bpy
+                with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+                    # Deselect bones
+                    for bone_info in bones_to_deselect:
+                        armature_name = bone_info['armature']
+                        bone_name = bone_info['bone']
+                        if (armature_name in bpy.data.objects and 
+                            bpy.data.objects[armature_name].type == 'ARMATURE' and
+                            bone_name in bpy.data.objects[armature_name].pose.bones):
+                            try:
+                                bpy.data.objects[armature_name].pose.bones[bone_name].bone.select = False
+                            except:
+                                pass
+                    
+                    # Deselect objects
+                    for obj_info in objects_to_deselect:
+                        obj_name = obj_info['name']
+                        if obj_name in bpy.data.objects:
+                            try:
+                                bpy.data.objects[obj_name].select_set(False)
+                            except:
+                                pass
+            except Exception as e:
+                print(f"Error during Blender deselection: {e}")
+            
+            return  # Exit early for deselection mode
+        
+        # Original selection logic for normal cases
+        # Get buttons that should be selected in proper order
+        if self.buttons_in_current_drag:
+            # Use ordered selection for rubber band
+            final_selections = self._get_ordered_selections(add_to_selection)
         else:
-            # Use current selection (for single clicks)
+            # Use current selection (for single clicks) - maintain last selected button
             final_selections = [button for button in self.buttons if button.is_selected]
+            
+            # For single clicks with add_to_selection=True, ensure proper ordering
+            if add_to_selection and hasattr(self, 'last_clicked_button') and self.last_clicked_button:
+                # Move the last clicked button to the end if it's in the selection
+                if self.last_clicked_button in final_selections:
+                    final_selections.remove(self.last_clicked_button)
+                    final_selections.append(self.last_clicked_button)
         
         if not final_selections:
             return
         
-        # Resolve objects and bones from button data
-        resolved_items, missing_objects = self._resolve_selection_items(final_selections)
+        # Check if we should select counterparts instead of regular objects
+        if ctrl_held and final_selections:
+            # Select counterparts for all selected buttons
+            resolved_items, missing_objects = self._resolve_counterpart_items(final_selections)
+        else:
+            # Regular selection - resolve objects and bones from button data
+            resolved_items, missing_objects = self._resolve_selection_items(final_selections)
         
-        # Apply selection in Blender
-        self._apply_blender_selection(resolved_items, add_to_selection)
+        # Switch to pose mode if bones are being selected
+        if resolved_items['bones']:
+            self._enter_pose_mode_for_bones(resolved_items['bones'])
+        
+        # Apply selection in Blender with proper active item
+        self._apply_blender_selection(resolved_items, add_to_selection, final_selections[-1] if final_selections else None)
         
         # Handle UI updates
         self._handle_post_selection_updates(missing_objects)
@@ -451,8 +519,8 @@ class PickerCanvas(QtWidgets.QWidget):
         """Build ordered list of buttons to select based on drag operation"""
         final_selections = []
         
-        # Get the last clicked button from current drag
-        last_clicked = next(reversed(list(self.buttons_in_current_drag)), None)
+        # For rubber band selection, we need to determine the last selected button differently
+        # Since buttons_in_current_drag is a set, we can't rely on iteration order
         
         # Add previously selected buttons if adding to selection
         if add_to_selection:
@@ -460,14 +528,26 @@ class PickerCanvas(QtWidgets.QWidget):
                 if button.is_selected and button not in self.buttons_in_current_drag:
                     final_selections.append(button)
         
-        # Add buttons from current drag (except last clicked)
+        # Add buttons from current drag operation
+        # Since we can't determine the exact order from the set, we'll add them in a consistent order
+        # and rely on the last mouse interaction to determine the active button
+        current_drag_buttons = []
         for button in self.buttons_in_current_drag:
-            if button.is_selected and button != last_clicked:
-                final_selections.append(button)
+            if button.is_selected:
+                current_drag_buttons.append(button)
         
-        # Add last clicked button at the end (for active selection)
-        if last_clicked and last_clicked.is_selected:
-            final_selections.append(last_clicked)
+        # Sort by some consistent criteria (e.g., position) to ensure predictable ordering
+        current_drag_buttons.sort(key=lambda b: (b.scene_position.y(), b.scene_position.x()))
+        
+        # Add all current drag buttons except the one we'll designate as "last"
+        if len(current_drag_buttons) > 1:
+            final_selections.extend(current_drag_buttons[:-1])
+        
+        # Add the last button from current drag (or the only one if there's just one)
+        if current_drag_buttons:
+            # For rubber band selection, use the last button in our sorted list
+            # For single button selection, this will be the clicked button
+            final_selections.append(current_drag_buttons[-1])
         
         return final_selections
 
@@ -563,19 +643,40 @@ class PickerCanvas(QtWidgets.QWidget):
         
         return None
 
-    def _apply_blender_selection(self, resolved_items, add_to_selection):
+    def _apply_blender_selection(self, resolved_items, add_to_selection, last_selected_button=None):
         """Apply the actual selection in Blender"""
         import bpy
         
         bones = resolved_items['bones']
         objects = resolved_items['objects']
         
+        # Find the active item from the last selected button
+        active_bone_info = None
+        active_object_info = None
+        
+        if last_selected_button and last_selected_button.assigned_objects:
+            for obj_data in last_selected_button.assigned_objects:
+                if obj_data.get('is_bone', False):
+                    # Find this bone in our resolved bones
+                    bone_name = obj_data.get('name', '')
+                    for bone_info in bones:
+                        if bone_info['bone'] == bone_name:
+                            active_bone_info = bone_info
+                            break
+                else:
+                    # Find this object in our resolved objects
+                    obj_name = obj_data.get('name', '')
+                    for obj_info in objects:
+                        if obj_info['name'] == obj_name or obj_info['name'].endswith(f"_{obj_name}"):
+                            active_object_info = obj_info
+                            break
+        
         try:
             if bones:
-                self._select_bones_with_namespace(bones, add_to_selection)
+                self._select_bones_with_namespace(bones, add_to_selection, active_bone_info)
             
             if objects:
-                self._select_objects(objects, add_to_selection, has_bones=bool(bones))
+                self._select_objects(objects, add_to_selection, has_bones=bool(bones), active_object_info=active_object_info)
                 
         except Exception as e:
             print(f"Error during Blender selection: {e}")
@@ -604,8 +705,8 @@ class PickerCanvas(QtWidgets.QWidget):
             print(f"Error deselecting bones in armature {armature_name}: {e}")
             return []
 
-    def _select_bones_with_namespace(self, bones, add_to_selection):
-        """Updated bone selection with namespace priority - FIXED VERSION"""
+    def _select_bones_with_namespace(self, bones, add_to_selection, active_bone_info=None):
+        """Updated bone selection with namespace priority and proper active bone"""
         if not bones:
             return
         
@@ -658,6 +759,7 @@ class PickerCanvas(QtWidgets.QWidget):
                 self._deselect_bones(armature_name)
         
         # Select all the bones by armature
+        active_bone_set = False
         for armature_name, bone_names in armature_bones.items():
             try:
                 armature_obj = bpy.data.objects[armature_name]
@@ -668,6 +770,14 @@ class PickerCanvas(QtWidgets.QWidget):
                         bone_to_select.select = True
                         selected_bones.append(f"{bone_name} (in {armature_name})")
                         
+                        # Set as active if this is the active bone or if no active bone specified and not set yet
+                        if ((active_bone_info and 
+                            active_bone_info['bone'] == bone_name and 
+                            active_bone_info['armature'] == armature_name) or
+                            (not active_bone_info and not active_bone_set)):
+                            armature_obj.data.bones.active = bone_to_select
+                            active_bone_set = True
+                            
             except Exception as e:
                 print(f"Error selecting bones in armature {armature_name}: {e}")
                 continue
@@ -677,12 +787,94 @@ class PickerCanvas(QtWidgets.QWidget):
         else:
             print("No bones were selected")
     
+    def _enter_pose_mode_for_bones(self, bones):
+        """Switch to pose mode for the armature containing the selected bones"""
+        import bpy
+        
+        if not bones:
+            return
+        
+        try:
+            with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+                # Get the first armature from the bone selection
+                first_bone = bones[0]
+                armature_name = first_bone['armature']
+                
+                if armature_name not in bpy.data.objects:
+                    print(f"Warning: Armature '{armature_name}' not found")
+                    return
+                
+                armature_obj = bpy.data.objects[armature_name]
+                
+                # First, ensure we're in object mode to properly set the active object
+                if bpy.context.mode != 'OBJECT':
+                    try:
+                        bpy.ops.object.mode_set(mode='OBJECT')
+                    except RuntimeError:
+                        # If we can't switch to object mode, clear selections manually
+                        pass
+                
+                # Clear all object selections using direct API instead of operators
+                for obj in bpy.context.scene.objects:
+                    obj.select_set(False)
+                
+                # Set the armature as the active and selected object
+                bpy.context.view_layer.objects.active = armature_obj
+                armature_obj.select_set(True)
+                
+                # Now switch to pose mode
+                if bpy.context.mode != 'POSE':
+                    try:
+                        bpy.ops.object.mode_set(mode='POSE')
+                    except RuntimeError as e:
+                        print(f"Failed to switch to pose mode: {e}")
+                        return
+                
+                # Clear any existing pose bone selections
+                if bpy.context.mode == 'POSE' and armature_obj.pose:
+                    for pose_bone in armature_obj.pose.bones:
+                        pose_bone.bone.select = False
+                
+                #print(f"Successfully switched to pose mode for armature: {armature_name}")
+            
+        except Exception as e:
+            print(f"Error entering pose mode for bones: {e}")
+            # Fallback: try without temp_override
+            try:
+                with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+                    # Get the first armature from the bone selection
+                    first_bone = bones[0]
+                    armature_name = first_bone['armature']
+                    
+                    if armature_name not in bpy.data.objects:
+                        return
+                    
+                    armature_obj = bpy.data.objects[armature_name]
+                    
+                    # Simple approach without operators that might fail
+                    # Clear selections using direct API
+                    for obj in bpy.context.scene.objects:
+                        obj.select_set(False)
+                    
+                    # Set active object
+                    bpy.context.view_layer.objects.active = armature_obj
+                    armature_obj.select_set(True)
+                    
+                    # Try to switch mode
+                    if bpy.context.active_object == armature_obj and armature_obj.type == 'ARMATURE':
+                        if bpy.context.mode != 'POSE':
+                            bpy.ops.object.mode_set(mode='POSE')
+                            
+                        #print(f"Fallback: Successfully switched to pose mode for armature: {armature_name}")
+            except Exception as fallback_error:
+                print(f"Fallback also failed: {fallback_error}")
+        
     def _get_selected_bones(self):
         """Get currently selected bones in pose mode"""
         pass
 
-    def _select_objects(self, objects, add_to_selection, has_bones=False):
-        """Select regular objects"""
+    def _select_objects(self, objects, add_to_selection, has_bones=False, active_object_info=None):
+        """Select regular objects with proper active object"""
         import bpy
         
         # Only switch to object mode if we don't have bones selected
@@ -694,16 +886,20 @@ class PickerCanvas(QtWidgets.QWidget):
             bpy.ops.object.select_all(action='DESELECT')
         
         selected_objects = []
+        active_object_set = False
         
         for obj_info in objects:
             obj_name = obj_info['name']
             if obj_name in bpy.data.objects:
                 bpy.data.objects[obj_name].select_set(True)
                 selected_objects.append(obj_name)
-        
-        # Set last object as active (only if no bones)
-        if selected_objects and not has_bones:
-            bpy.context.view_layer.objects.active = bpy.data.objects[selected_objects[-1]]
+                
+                # Set as active if this is the active object or if no active object specified and not set yet
+                if not has_bones:  # Only set active object if no bones are selected
+                    if ((active_object_info and active_object_info['name'] == obj_name) or
+                        (not active_object_info and not active_object_set)):
+                        bpy.context.view_layer.objects.active = bpy.data.objects[obj_name]
+                        active_object_set = True
         
         print(f"Selected objects: {', '.join(selected_objects)}")
 
@@ -765,6 +961,160 @@ class PickerCanvas(QtWidgets.QWidget):
         print(message_txt)
         print(details_txt)
         print(note_txt)
+    #------------------------------------------------------------------------------
+    def _resolve_counterpart_items(self, buttons):
+        """Resolve counterpart objects/bones for selected buttons"""
+        resolved_items = {'bones': [], 'objects': []}
+        missing_objects = set()
+        
+        # Get current namespace for object resolution
+        current_namespace = self._get_current_namespace()
+        
+        # Get naming conventions and mirror preferences
+        naming_conventions = self._get_naming_conventions("", "")
+        
+        for button in buttons:
+            if not button.assigned_objects:
+                continue
+                
+            for obj_data in button.assigned_objects:
+                try:
+                    if obj_data.get('is_bone', False):
+                        counterpart_bone = self._resolve_bone_counterpart(obj_data, naming_conventions, current_namespace)
+                        if counterpart_bone:
+                            resolved_items['bones'].append(counterpart_bone)
+                        else:
+                            missing_objects.add(f"- {obj_data.get('name', '')} (bone counterpart)")
+                    else:
+                        counterpart_obj = self._resolve_object_counterpart(obj_data, naming_conventions, current_namespace)
+                        if counterpart_obj:
+                            resolved_items['objects'].append(counterpart_obj)
+                        else:
+                            missing_objects.add(f"- {obj_data.get('name', '')} (object counterpart)")
+                except Exception as e:
+                    print(f"Error resolving counterpart item: {e}")
+                    continue
+        
+        return resolved_items, missing_objects
+
+    def _resolve_bone_counterpart(self, obj_data, naming_conventions, current_namespace):
+        """Resolve bone counterpart using naming conventions"""
+        import bpy
+        
+        bone_name = obj_data.get('name', '')
+        original_armature_name = obj_data.get('armature', '')
+        
+        # Find the mirrored bone name
+        mirrored_bone_name, is_center_bone = self._find_mirrored_name(bone_name, naming_conventions)
+        
+        # If it's the same name (center bone), return the original
+        if mirrored_bone_name == bone_name:
+            return self._resolve_bone_with_namespace(obj_data, current_namespace)
+        
+        # Create counterpart bone data
+        counterpart_data = {
+            'name': mirrored_bone_name,
+            'armature': original_armature_name,
+            'is_bone': True
+        }
+        
+        # Try to resolve the counterpart bone
+        return self._resolve_bone_with_namespace(counterpart_data, current_namespace)
+
+    def _resolve_object_counterpart(self, obj_data, naming_conventions, current_namespace):
+        """Resolve object counterpart using naming conventions"""
+        import bpy
+        
+        obj_name = obj_data.get('name', '')
+        
+        # Find the mirrored object name
+        mirrored_obj_name, is_center_object = self._find_mirrored_name(obj_name, naming_conventions)
+        
+        # If it's the same name (center object), return the original
+        if mirrored_obj_name == obj_name:
+            return self._resolve_object(obj_data, current_namespace)
+        
+        # Create counterpart object data
+        counterpart_data = {
+            'name': mirrored_obj_name,
+            'is_bone': False
+        }
+        
+        # Try to resolve the counterpart object
+        return self._resolve_object(counterpart_data, current_namespace)
+
+    def _get_naming_conventions(self, L, R):
+        """
+        Returns a list of naming conventions for left and right sides.
+        
+        Args:
+            L (str): Custom left side identifier
+            R (str): Custom right side identifier
+            
+        Returns:
+            list: List of dictionaries with left and right patterns
+        """
+        naming_conventions = [
+            # Prefix
+            {"left": "L_", "right": "R_"},
+            {"left": "left_", "right": "right_"},
+            {"left": "Lf_", "right": "Rt_"},
+            {"left": "lt_", "right": "rt_"},
+            
+            # Suffix
+            {"left": "_L", "right": "_R"},
+            {"left": "_left", "right": "_right"},
+            {"left": "_lt", "right": "_rt"},
+            {"left": "_lf", "right": "_rf"},
+            {"left": "_l_", "right": "_r_"},
+            {"left": ".L", "right": ".R"},  # Blender bone naming convention
+            {"left": ".l", "right": ".r"},  # Blender bone naming convention
+            
+            # Other patterns
+            {"left": ":l_", "right": ":r_"},
+            {"left": "^l_", "right": "^r_"},
+            {"left": "_l$", "right": "_r$"},
+            {"left": ":L", "right": ":R"},
+            {"left": "^L", "right": "^R"},
+            {"left": "Left", "right": "Right"},
+            {"left": "left", "right": "right"}
+        ]
+        
+        # Add custom naming convention if provided
+        if L and R:
+            naming_conventions.append({"left": L, "right": R})
+            
+        return naming_conventions
+
+    def _find_mirrored_name(self, obj_name, naming_conventions):
+        """
+        Finds the mirrored name for the given object/bone name.
+        
+        Args:
+            obj_name (str): Object/bone name to find mirror for
+            naming_conventions (list): List of naming conventions
+            
+        Returns:
+            tuple: (mirrored_name, is_center_object) where mirrored_name is the name of the mirrored object/bone
+                and is_center_object is a boolean indicating if the object is a center object
+        """
+        is_center_object = True  # Assume it's a center object until proven otherwise
+        
+        for convention in naming_conventions:
+            left_pattern = convention["left"]
+            right_pattern = convention["right"]
+            
+            if left_pattern in obj_name:
+                is_center_object = False
+                mirrored_name = obj_name.replace(left_pattern, right_pattern)
+                return mirrored_name, is_center_object
+            elif right_pattern in obj_name:
+                is_center_object = False
+                mirrored_name = obj_name.replace(right_pattern, left_pattern)
+                return mirrored_name, is_center_object
+        
+        # If no pattern matched, it's a center object - return the same name
+        return obj_name, is_center_object
     #------------------------------------------------------------------------------
     def get_selected_buttons(self):
         """Cached version of get_selected_buttons for better performance"""
@@ -1162,12 +1512,12 @@ class PickerCanvas(QtWidgets.QWidget):
         return False
         
     def dragEnterEvent(self, event):
-        """Handle drag enter events for image files"""
+        """Handle drag enter events for image and SVG files"""
         if event.mimeData().hasUrls():
-            # Check if any of the URLs are image files
+            # Check if any of the URLs are image or SVG files
             for url in event.mimeData().urls():
                 file_path = url.toLocalFile()
-                if self._is_valid_image_file(file_path):
+                if self._is_valid_image_file(file_path) or self._is_valid_svg_file(file_path):
                     event.acceptProposedAction()
                     return
         event.ignore()
@@ -1180,18 +1530,35 @@ class PickerCanvas(QtWidgets.QWidget):
             event.ignore()
     
     def dropEvent(self, event):
-        """Handle drop events for image files"""
+        """Handle drop events for image and SVG files"""
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 file_path = url.toLocalFile()
-                if self._is_valid_image_file(file_path):
-                    # Process regardless of edit mode
+                if self._is_valid_svg_file(file_path):
+                    # Handle SVG file - create buttons from paths
+                    
+                    drop_position = QtCore.QPointF(event.pos())
+                    self._create_buttons_from_svg(file_path, drop_position)
+                    event.acceptProposedAction()
+                    return
+                   
+                elif self._is_valid_image_file(file_path):
+                    # Handle image file - set as background
                     main_window = self.window()
                     if isinstance(main_window, UI.BlenderAnimPickerWindow):
                         self.set_background_image(file_path)
                         event.acceptProposedAction()
                         return
         event.ignore()
+    
+    def _is_valid_svg_file(self, file_path):
+        """Check if the file is a valid SVG file"""
+        if not os.path.isfile(file_path):
+            return False
+            
+        # Get the file extension
+        _, ext = os.path.splitext(file_path)
+        return ext.lower() == '.svg'
     
     def _is_valid_image_file(self, file_path):
         """Check if the file is a valid image file"""
@@ -1302,6 +1669,490 @@ class PickerCanvas(QtWidgets.QWidget):
 
         return QtCore.QRectF(min_x, min_y, width, height)
     #------------------------------------------------------------------------------
+    def _create_buttons_from_svg(self, svg_file_path, drop_position):
+        """Create picker buttons from all paths in an SVG file with proper positioning"""
+        import xml.etree.ElementTree as ET
+        
+        try:
+            # Parse the SVG file
+            tree = ET.parse(svg_file_path)
+            root = tree.getroot()
+            
+            # Find all path elements
+            path_elements = []
+            
+            # Try with namespace first
+            path_elements = root.findall('.//{http://www.w3.org/2000/svg}path')
+            if not path_elements:
+                # Try without namespace
+                path_elements = root.findall('.//path')
+            
+            if not path_elements:
+                # Show error dialog
+                dialog = CD.CustomDialog(self, title="No Paths Found", size=(250, 100), info_box=True)
+                message_label = QtWidgets.QLabel("The SVG file does not contain any path elements.")
+                message_label.setWordWrap(True)
+                dialog.add_widget(message_label)
+                dialog.add_button_box()
+                dialog.exec_()
+                return
+            
+            # Store SVG path for ID generation
+            self._current_svg_path = svg_file_path
+            
+            # ALTERNATIVE APPROACH: Use SVG rendering to get exact positions
+            # This preserves the exact layout as it appears in the SVG
+            
+            # Get SVG dimensions for scaling reference
+            svg_bounds = self._get_svg_bounds(root)
+            svg_width = svg_bounds['width']
+            svg_height = svg_bounds['height']
+            
+            # Convert drop position to scene coordinates
+            scene_drop_pos = self.canvas_to_scene_coords(drop_position)
+            
+            # STEP 1: Use parsed SVG dimensions directly
+            render_width = svg_width
+            render_height = svg_height
+            
+            # Calculate scale factor for reasonable button sizes
+            target_max_dimension = 1000  # Max size for the entire SVG layout
+            svg_scale = target_max_dimension / max(render_width, render_height)
+            
+            # STEP 2: Process each path and extract its visual bounds
+            valid_paths = []
+            path_positions = []
+            
+            for i, path_element in enumerate(path_elements):
+                if 'd' not in path_element.attrib:
+                    continue
+                
+                path_data = path_element.attrib['d']
+                
+                # Get the visual bounding box of this path
+                path_bounds = self._get_accurate_path_bounds(path_data, path_element)
+                
+                if path_bounds and not path_bounds.isEmpty():
+                    # Calculate the center position in SVG coordinate space
+                    center_x = path_bounds.center().x()
+                    center_y = path_bounds.center().y()
+                    
+                    # Store the path data and its center position
+                    valid_paths.append((i, path_element, path_data, path_bounds))
+                    path_positions.append((center_x, center_y))
+            
+            if not valid_paths:
+                print("No valid paths found")
+                return
+            
+            # STEP 3: Calculate the layout bounds to center the entire arrangement
+            if path_positions:
+                min_x = min(pos[0] for pos in path_positions)
+                max_x = max(pos[0] for pos in path_positions)
+                min_y = min(pos[1] for pos in path_positions)
+                max_y = max(pos[1] for pos in path_positions)
+                
+                # Calculate the center of the entire layout in SVG coordinates
+                layout_center_x = (min_x + max_x) / 2
+                layout_center_y = (min_y + max_y) / 2
+            else:
+                layout_center_x = render_width / 2
+                layout_center_y = render_height / 2
+            
+            # Create buttons for each valid path
+            created_buttons = []
+            main_window = self.window()
+            
+            if isinstance(main_window, UI.BlenderAnimPickerWindow):
+                current_tab = main_window.tab_system.current_tab
+                
+                # Get existing IDs to avoid conflicts
+                existing_ids = set()
+                tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+                for button in tab_data.get('buttons', []):
+                    existing_ids.add(button['id'])
+                
+                # Also add IDs from current canvas buttons
+                for button in self.buttons:
+                    existing_ids.add(button.unique_id)
+                
+                # Add any pending IDs from available_ids cache
+                if current_tab in main_window.available_ids:
+                    existing_ids.update(main_window.available_ids[current_tab])
+                
+                # Prepare for batch database update
+                new_buttons_data = []
+                
+                for j, (original_index, path_element, path_data, path_bounds) in enumerate(valid_paths):
+                    # Generate unique ID
+                    unique_id = self._generate_svg_unique_id(current_tab, existing_ids, original_index)
+                    existing_ids.add(unique_id)
+                    
+                    # Create button label
+                    button_label = path_element.get('id', '')
+                    if not button_label:
+                        button_label = ''
+                    
+                    
+                    # Create the button
+                    new_button = PB.PickerButton(button_label, self, unique_id=unique_id, color="#3096bb")
+                    
+                    # Set up the button with SVG path
+                    new_button.shape_type = 'custom_path'
+                    new_button.svg_path_data = path_data
+                    new_button.svg_file_path = svg_file_path
+                    
+                    # STEP 4: Calculate position preserving exact SVG layout
+                    # Get this path's center position from our stored positions
+                    path_center_x, path_center_y = path_positions[j]
+                    
+                    # Calculate offset from the layout center
+                    offset_x = (path_center_x - layout_center_x) * svg_scale
+                    offset_y = (path_center_y - layout_center_y) * svg_scale
+                    
+                    # Position the button relative to the drop position
+                    button_x = scene_drop_pos.x() + offset_x
+                    button_y = scene_drop_pos.y() + offset_y
+                    
+                    new_button.scene_position = QtCore.QPointF(button_x, button_y)
+                    
+                    # STEP 5: Set button size based on path bounds
+                    scaled_width = max(25, path_bounds.width() * svg_scale)
+                    scaled_height = max(25, path_bounds.height() * svg_scale)
+                    new_button.width = min(150, max(30, scaled_width))
+                    new_button.height = min(150, max(30, scaled_height))
+                    
+                    # Apply SVG styling
+                    self._apply_svg_styling(new_button, path_element)
+                    
+                    # Add to canvas
+                    self.add_button(new_button)
+                    created_buttons.append(new_button)
+                    
+                    # Prepare database entry
+                    button_data_for_db = {
+                        "id": unique_id,
+                        "selectable": new_button.selectable,
+                        "label": new_button.label,
+                        "color": new_button.color,
+                        "opacity": new_button.opacity,
+                        "position": (new_button.scene_position.x(), new_button.scene_position.y()),
+                        "width": new_button.width,
+                        "height": new_button.height,
+                        "radius": new_button.radius,
+                        "assigned_objects": new_button.assigned_objects,
+                        "mode": new_button.mode,
+                        "script_data": new_button.script_data,
+                        "shape_type": new_button.shape_type,
+                        "svg_path_data": new_button.svg_path_data,
+                        "svg_file_path": new_button.svg_file_path
+                    }
+                    new_buttons_data.append(button_data_for_db)
+                
+                # Batch database update
+                if new_buttons_data:
+                    tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+                    tab_data['buttons'].extend(new_buttons_data)
+                    DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                    DM.PickerDataManager.save_data(DM.PickerDataManager.get_data(), force_immediate=True)
+                
+                # Select all created buttons
+                if created_buttons:
+                    self.clear_selection()
+                    for button in created_buttons:
+                        button.toggle_selection()
+                    
+                    # Update UI
+                    self.update_button_positions()
+                    self.update()
+                    self.update_hud_counts()
+                    
+                    print(f"Created {len(created_buttons)} buttons from SVG with preserved layout")
+                    
+        except Exception as e:
+            # Show error dialog
+            dialog = CD.CustomDialog(self, title="Error", size=(250, 100), info_box=True)
+            message_label = QtWidgets.QLabel(f"Error processing SVG file: {str(e)}")
+            message_label.setWordWrap(True)
+            dialog.add_widget(message_label)
+            dialog.add_button_box()
+            dialog.exec_()
+
+    def _get_accurate_path_bounds(self, path_data, path_element):
+        """Get accurate path bounds considering transforms and actual visual placement"""
+        try:
+            # Create QPainterPath from the SVG path data
+            path = QtGui.QPainterPath()
+            
+            # Enhanced SVG path parser
+            import re
+            
+            # Extract coordinates and commands more reliably
+            # This regex captures SVG path commands and their parameters
+            tokens = re.findall(r'[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d*\.?\d+)(?:[eE][-+]?\d+)?', path_data)
+            
+            current_pos = QtCore.QPointF(0, 0)
+            start_pos = QtCore.QPointF(0, 0)
+            
+            i = 0
+            while i < len(tokens):
+                command = tokens[i]
+                
+                if command.upper() == 'M':  # Move to
+                    try:
+                        x, y = float(tokens[i+1]), float(tokens[i+2])
+                        if command.islower():  # Relative
+                            x += current_pos.x()
+                            y += current_pos.y()
+                        
+                        path.moveTo(x, y)
+                        current_pos = QtCore.QPointF(x, y)
+                        start_pos = QtCore.QPointF(x, y)
+                        i += 3
+                    except (IndexError, ValueError):
+                        i += 1
+                        
+                elif command.upper() == 'L':  # Line to
+                    try:
+                        x, y = float(tokens[i+1]), float(tokens[i+2])
+                        if command.islower():  # Relative
+                            x += current_pos.x()
+                            y += current_pos.y()
+                        
+                        path.lineTo(x, y)
+                        current_pos = QtCore.QPointF(x, y)
+                        i += 3
+                    except (IndexError, ValueError):
+                        i += 1
+                        
+                elif command.upper() == 'H':  # Horizontal line
+                    try:
+                        x = float(tokens[i+1])
+                        if command.islower():  # Relative
+                            x += current_pos.x()
+                        
+                        path.lineTo(x, current_pos.y())
+                        current_pos = QtCore.QPointF(x, current_pos.y())
+                        i += 2
+                    except (IndexError, ValueError):
+                        i += 1
+                        
+                elif command.upper() == 'V':  # Vertical line
+                    try:
+                        y = float(tokens[i+1])
+                        if command.islower():  # Relative
+                            y += current_pos.y()
+                        
+                        path.lineTo(current_pos.x(), y)
+                        current_pos = QtCore.QPointF(current_pos.x(), y)
+                        i += 2
+                    except (IndexError, ValueError):
+                        i += 1
+                        
+                elif command.upper() == 'C':  # Cubic Bezier curve
+                    try:
+                        x1, y1 = float(tokens[i+1]), float(tokens[i+2])
+                        x2, y2 = float(tokens[i+3]), float(tokens[i+4])
+                        x, y = float(tokens[i+5]), float(tokens[i+6])
+                        
+                        if command.islower():  # Relative
+                            x1 += current_pos.x()
+                            y1 += current_pos.y()
+                            x2 += current_pos.x()
+                            y2 += current_pos.y()
+                            x += current_pos.x()
+                            y += current_pos.y()
+                        
+                        path.cubicTo(x1, y1, x2, y2, x, y)
+                        current_pos = QtCore.QPointF(x, y)
+                        i += 7
+                    except (IndexError, ValueError):
+                        i += 1
+                        
+                elif command.upper() == 'S':  # Smooth cubic Bezier
+                    try:
+                        x2, y2 = float(tokens[i+1]), float(tokens[i+2])
+                        x, y = float(tokens[i+3]), float(tokens[i+4])
+                        
+                        if command.islower():  # Relative
+                            x2 += current_pos.x()
+                            y2 += current_pos.y()
+                            x += current_pos.x()
+                            y += current_pos.y()
+                        
+                        # For smooth curves, we approximate with a simple cubic
+                        path.cubicTo(current_pos.x(), current_pos.y(), x2, y2, x, y)
+                        current_pos = QtCore.QPointF(x, y)
+                        i += 5
+                    except (IndexError, ValueError):
+                        i += 1
+                        
+                elif command.upper() == 'Q':  # Quadratic Bezier curve
+                    try:
+                        x1, y1 = float(tokens[i+1]), float(tokens[i+2])
+                        x, y = float(tokens[i+3]), float(tokens[i+4])
+                        
+                        if command.islower():  # Relative
+                            x1 += current_pos.x()
+                            y1 += current_pos.y()
+                            x += current_pos.x()
+                            y += current_pos.y()
+                        
+                        path.quadTo(x1, y1, x, y)
+                        current_pos = QtCore.QPointF(x, y)
+                        i += 5
+                    except (IndexError, ValueError):
+                        i += 1
+                        
+                elif command.upper() == 'A':  # Arc - simplified approximation
+                    try:
+                        # Arc parameters: rx ry x-axis-rotation large-arc-flag sweep-flag x y
+                        rx, ry = float(tokens[i+1]), float(tokens[i+2])
+                        x_axis_rotation = float(tokens[i+3])
+                        large_arc_flag = int(float(tokens[i+4]))
+                        sweep_flag = int(float(tokens[i+5]))
+                        x, y = float(tokens[i+6]), float(tokens[i+7])
+                        
+                        if command.islower():  # Relative
+                            x += current_pos.x()
+                            y += current_pos.y()
+                        
+                        # Simplified: just draw a line for now (arcs are complex)
+                        path.lineTo(x, y)
+                        current_pos = QtCore.QPointF(x, y)
+                        i += 8
+                    except (IndexError, ValueError):
+                        i += 1
+                        
+                elif command.upper() == 'Z':  # Close path
+                    path.lineTo(start_pos.x(), start_pos.y())
+                    current_pos = start_pos
+                    i += 1
+                    
+                else:
+                    # Skip unknown commands
+                    i += 1
+            
+            bounds = path.boundingRect()
+            
+            # Check for any transform attribute on the path element
+            transform = path_element.get('transform')
+            if transform:
+                # Apply basic transform parsing (simplified)
+                bounds = self._apply_simple_transform(bounds, transform)
+            
+            return bounds
+            
+        except Exception as e:
+            print(f"Error in accurate path bounds calculation: {e}")
+            return None
+
+    def _apply_simple_transform(self, rect, transform_string):
+        """Apply basic SVG transforms to bounding rect"""
+        try:
+            import re
+            
+            # Handle translate transform
+            translate_match = re.search(r'translate\(\s*([-+]?\d*\.?\d+)(?:\s*,\s*([-+]?\d*\.?\d+))?\s*\)', transform_string)
+            if translate_match:
+                tx = float(translate_match.group(1))
+                ty = float(translate_match.group(2)) if translate_match.group(2) else 0
+                rect = QtCore.QRectF(rect.x() + tx, rect.y() + ty, rect.width(), rect.height())
+            
+            # Handle scale transform
+            scale_match = re.search(r'scale\(\s*([-+]?\d*\.?\d+)(?:\s*,\s*([-+]?\d*\.?\d+))?\s*\)', transform_string)
+            if scale_match:
+                sx = float(scale_match.group(1))
+                sy = float(scale_match.group(2)) if scale_match.group(2) else sx
+                rect = QtCore.QRectF(rect.x() * sx, rect.y() * sy, rect.width() * sx, rect.height() * sy)
+            
+            return rect
+            
+        except Exception as e:
+            print(f"Error applying transform: {e}")
+            return rect
+    
+    def _generate_svg_unique_id(self, tab_name, existing_ids, path_index):
+        """Generate a unique ID specifically for SVG-created buttons"""
+        # Try different naming strategies until we find a unique ID
+        
+        # Strategy 1: Use SVG filename + path index
+        import os
+        svg_filename = os.path.splitext(os.path.basename(getattr(self, '_current_svg_path', 'svg')))[0]
+        
+        base_patterns = [
+            f"{tab_name}_{svg_filename}_path_{path_index+1:03d}",
+            f"{tab_name}_svg_path_{path_index+1:03d}",
+            f"{tab_name}_shape_{path_index+1:03d}",
+            f"{tab_name}_button_{len(existing_ids)+path_index+1:03d}"
+        ]
+        
+        for base_pattern in base_patterns:
+            if base_pattern not in existing_ids:
+                return base_pattern
+            
+            # If base pattern exists, try with incremental suffix
+            counter = 1
+            while counter < 1000:  # Safety limit
+                candidate_id = f"{base_pattern}_{counter:03d}"
+                if candidate_id not in existing_ids:
+                    return candidate_id
+                counter += 1
+        
+        # Fallback: use timestamp-based ID (should never reach this)
+        import time
+        timestamp_id = f"{tab_name}_svg_{int(time.time() * 1000)}_{path_index}"
+        return timestamp_id
+
+    def _get_svg_bounds(self, svg_root):
+        """Extract SVG viewBox or calculate bounds from width/height"""
+        # Try to get viewBox first
+        viewbox = svg_root.get('viewBox')
+        if viewbox:
+            try:
+                x, y, width, height = map(float, viewbox.split())
+                return {'x': x, 'y': y, 'width': width, 'height': height}
+            except:
+                pass
+        
+        # Fallback to width/height attributes
+        try:
+            width = float(svg_root.get('width', '100').replace('px', ''))
+            height = float(svg_root.get('height', '100').replace('px', ''))
+            return {'x': 0, 'y': 0, 'width': width, 'height': height}
+        except:
+            # Default bounds
+            return {'x': 0, 'y': 0, 'width': 100, 'height': 100}
+
+    def _apply_svg_styling(self, button, path_element):
+        """Apply SVG styling to the button"""
+        # Extract fill color
+        fill = path_element.get('fill')
+        if fill and fill != 'none' and not fill.startswith('url('):
+            try:
+                # Convert SVG color to hex
+                if fill.startswith('#'):
+                    button.color = fill
+                elif fill.startswith('rgb'):
+                    # Basic RGB parsing - you might want to enhance this
+                    import re
+                    rgb_match = re.search(r'rgb\((\d+),\s*(\d+),\s*(\d+)\)', fill)
+                    if rgb_match:
+                        r, g, b = map(int, rgb_match.groups())
+                        button.color = f"#{r:02x}{g:02x}{b:02x}"
+            except:
+                pass  # Keep default color
+        
+        # Extract opacity
+        opacity = path_element.get('opacity')
+        if opacity:
+            try:
+                button.opacity = float(opacity)
+            except:
+                pass
+        
+        # You can add more styling extraction here (stroke, etc.)
+    #------------------------------------------------------------------------------
     def show_context_menu(self, position):
         if not hasattr(self, 'context_menu'):
             self.context_menu = QtWidgets.QMenu()
@@ -1331,6 +2182,9 @@ class PickerCanvas(QtWidgets.QWidget):
             add_button_action = menu.addAction(QtGui.QIcon(UT.get_icon('add.png')), "Add Button")
             add_button_action.triggered.connect(lambda: self.add_button_at_position(position))
 
+            scene_pos = self.get_center_position()  # Use canvas center
+            create_button_from_blender_curve_action = menu.addAction(QtGui.QIcon(UT.get_icon('add.png')), "Create Button from Curve")
+            create_button_from_blender_curve_action.triggered.connect(lambda: create_buttons_from_blender_curves(self, scene_pos, show_options_dialog=True))
             # Get clipboard state to determine if paste actions should be enabled
             has_clipboard = bool(PB.ButtonClipboard.instance().get_all_buttons())
             
@@ -1395,6 +2249,7 @@ class PickerCanvas(QtWidgets.QWidget):
             self.update()
 
     def paste_buttons_at_position(self, position, mirror=False):
+        """REFACTORED: Simplified paste function that uses horizontal_mirror_button_positions for mirroring"""
         scene_pos = self.canvas_to_scene_coords(QtCore.QPointF(position))
         copied_buttons = PB.ButtonClipboard.instance().get_all_buttons()
         
@@ -1410,8 +2265,6 @@ class PickerCanvas(QtWidgets.QWidget):
             # This ensures each button update is processed immediately
             was_batch_active = getattr(main_window, 'batch_update_active', False)
             main_window.batch_update_active = False
-            
-            # Disable canvas updates during batch operation
             self.setUpdatesEnabled(False)
             
             try:
@@ -1429,9 +2282,14 @@ class PickerCanvas(QtWidgets.QWidget):
                     new_button.width = button_data['width']
                     new_button.height = button_data['height']
                     new_button.radius = button_data['radius'].copy()
-                    new_button.assigned_objects = button_data['assigned_objects'].copy()
                     new_button.mode = button_data.get('mode', 'select')
                     new_button.script_data = button_data.get('script_data', {}).copy()
+                    new_button.shape_type = button_data.get('shape_type', 'rect')
+                    new_button.svg_path_data = button_data.get('svg_path_data', '')
+                    new_button.svg_file_path = button_data.get('svg_file_path', '')
+                    
+                    # Always use original assigned objects - counterpart mirroring handled in horizontal_mirror_button_positions
+                    new_button.assigned_objects = button_data['assigned_objects'].copy()
                     
                     # Apply pose-specific data if this is a pose button
                     if new_button.mode == 'pose':
@@ -1447,12 +2305,8 @@ class PickerCanvas(QtWidgets.QWidget):
                         if 'pose_data' in button_data:
                             new_button.pose_data = button_data['pose_data'].copy()
                     
-                    # Position relative to cursor point, with mirroring option
+                    # Position relative to cursor point (position mirroring handled separately)
                     relative_position = button_data['relative_position']
-                    if mirror:
-                        # Mirror the X position (horizontal mirroring)
-                        relative_position = QtCore.QPointF(-relative_position.x(), relative_position.y())
-                        
                     new_button.scene_position = scene_pos + relative_position
                     
                     # Add button to canvas
@@ -1472,7 +2326,10 @@ class PickerCanvas(QtWidgets.QWidget):
                         "radius": new_button.radius,
                         "assigned_objects": new_button.assigned_objects,
                         "mode": new_button.mode,
-                        "script_data": new_button.script_data
+                        "script_data": new_button.script_data,
+                        "shape_type": new_button.shape_type,
+                        "svg_path_data": new_button.svg_path_data,
+                        "svg_file_path": new_button.svg_file_path
                     }
                     
                     # Add pose-specific data to database if this is a pose button
@@ -1488,12 +2345,10 @@ class PickerCanvas(QtWidgets.QWidget):
                     # CRITICAL FIX: Add to tab_data immediately
                     tab_data['buttons'].append(button_data_for_db)
                 
-                # CRITICAL FIX: Update database once with all new buttons
+                # Save the initial button state to database
                 DM.PickerDataManager.update_tab_data(current_tab, tab_data)
                 
-                print(f"Pasted {len(new_buttons)} buttons - All saved to database in batch")
-                
-                # Select all newly pasted buttons
+                # Select all newly pasted buttons BEFORE mirroring
                 if new_buttons:
                     # Clear current selection
                     self.clear_selection()
@@ -1502,7 +2357,17 @@ class PickerCanvas(QtWidgets.QWidget):
                     for button in new_buttons:
                         button.toggle_selection()
                     
-                    print(f"Selected {len(new_buttons)} newly pasted buttons")
+                    #print(f"Selected {len(new_buttons)} newly pasted buttons")
+                
+                # Apply position/SVG/counterpart mirroring if requested using existing function
+                if mirror and new_buttons:
+                    #print("Applying position, SVG, and counterpart mirroring using horizontal_mirror_button_positions...")
+                    # Use existing horizontal mirror function with counterpart mirroring enabled
+                    self.horizontal_mirror_button_positions(apply_counterparts=True)
+                    # Note: horizontal_mirror_button_positions handles its own database updates
+                
+                action_word = "Mirror pasted" if mirror else "Pasted"
+                #print(f"{action_word} {len(new_buttons)} buttons - All saved to database")
             
             finally:
                 # Restore batch mode state
@@ -1520,27 +2385,262 @@ class PickerCanvas(QtWidgets.QWidget):
             # Force immediate main window update
             if hasattr(main_window, 'update_buttons_for_current_tab'):
                 main_window.update_buttons_for_current_tab(force_update=True)
-    
-    def mirror_button_positions(self):
+
+    def horizontal_mirror_button_positions(self, apply_counterparts=False):
+        """Mirror button positions horizontally with optional counterpart object assignment"""
         selected_buttons = self.get_selected_buttons()
-        if selected_buttons:
+        if not selected_buttons:
+            return
+        
+        main_window = self.window()
+        if not isinstance(main_window, UI.BlenderAnimPickerWindow):
+            return
+        
+        # CRITICAL FIX: Disable batch updates to ensure immediate processing
+        was_batch_active = getattr(main_window, 'batch_update_active', False)
+        main_window.batch_update_active = False
+        self.setUpdatesEnabled(False)
+        
+        try:
             # Get the center of the selected buttons
             min_x = min(button.scene_position.x() for button in selected_buttons)
             max_x = max(button.scene_position.x() for button in selected_buttons)
             center_x = (min_x + max_x) / 2
             
+            # Get current tab data for batch database update
+            current_tab = main_window.tab_system.current_tab
+            tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+            
+            # Get namespace and naming conventions for counterpart resolution if needed
+            if apply_counterparts:
+                current_namespace = self._get_current_namespace()
+                naming_conventions = self._get_naming_conventions("", "")
+            
+            # Track which buttons were updated for database batch update
+            updated_button_data = []
+            
             # Mirror positions around the center
             for button in selected_buttons:
+                # Mirror position
                 button.scene_position.setX(center_x - (button.scene_position.x() - center_x))
+                
+                # Mirror SVG path if applicable
+                if button.shape_type == 'custom_path' and button.svg_path_data:
+                    button.svg_path_data = button.mirror_svg_path_horizontal(button.svg_path_data, button.width)
+                    button._invalidate_mask_cache()
+                
+                # Apply counterpart mirroring to assigned objects if requested
+                if apply_counterparts and button.assigned_objects:
+                    mirrored_assigned_objects = []
+                    
+                    for obj_data in button.assigned_objects:
+                        try:
+                            if obj_data.get('is_bone', False):
+                                # Handle bone mirroring
+                                bone_name = obj_data.get('name', '')
+                                original_armature_name = obj_data.get('armature', '')
+                                
+                                # Find the mirrored bone name
+                                mirrored_bone_name, is_center_bone = self._find_mirrored_name(bone_name, naming_conventions)
+                                
+                                # Create counterpart bone data
+                                mirrored_obj_data = {
+                                    'name': mirrored_bone_name,
+                                    'armature': original_armature_name,
+                                    'is_bone': True
+                                }
+                                
+                                # Verify the counterpart bone exists
+                                counterpart_bone = self._resolve_bone_with_namespace(mirrored_obj_data, current_namespace)
+                                if counterpart_bone:
+                                    mirrored_assigned_objects.append(mirrored_obj_data)
+                                    print(f"Mirrored bone: {bone_name} -> {mirrored_bone_name}")
+                                else:
+                                    # If counterpart doesn't exist, keep original
+                                    mirrored_assigned_objects.append(obj_data.copy())
+                                    print(f"Counterpart bone not found for {bone_name}, keeping original")
+                            else:
+                                # Handle object mirroring
+                                obj_name = obj_data.get('name', '')
+                                
+                                # Find the mirrored object name
+                                mirrored_obj_name, is_center_object = self._find_mirrored_name(obj_name, naming_conventions)
+                                
+                                # Create counterpart object data
+                                mirrored_obj_data = {
+                                    'name': mirrored_obj_name,
+                                    'is_bone': False
+                                }
+                                
+                                # Verify the counterpart object exists
+                                counterpart_object = self._resolve_object(mirrored_obj_data, current_namespace)
+                                if counterpart_object:
+                                    mirrored_assigned_objects.append(mirrored_obj_data)
+                                    print(f"Mirrored object: {obj_name} -> {mirrored_obj_name}")
+                                else:
+                                    # If counterpart doesn't exist, keep original
+                                    mirrored_assigned_objects.append(obj_data.copy())
+                                    print(f"Counterpart object not found for {obj_name}, keeping original")
+                                    
+                        except Exception as e:
+                            print(f"Error mirroring assigned object {obj_data}: {e}")
+                            # If there's an error, keep the original object
+                            mirrored_assigned_objects.append(obj_data.copy())
+                    
+                    # Update button's assigned objects
+                    button.assigned_objects = mirrored_assigned_objects
+                
+                # Force immediate visual update
                 button.update()
-                button.changed.emit(button)
+                
+                # Prepare button data for database update
+                button_data = {
+                    "id": button.unique_id,
+                    "selectable": button.selectable,
+                    "label": button.label,
+                    "color": button.color,
+                    "opacity": button.opacity,
+                    "position": (button.scene_position.x(), button.scene_position.y()),
+                    "width": button.width,
+                    "height": button.height,
+                    "radius": button.radius,
+                    "assigned_objects": getattr(button, 'assigned_objects', []),
+                    "mode": getattr(button, 'mode', 'select'),
+                    "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
+                    "pose_data": getattr(button, 'pose_data', {}),
+                    "thumbnail_path": getattr(button, 'thumbnail_path', ''),
+                    "shape_type": button.shape_type,
+                    "svg_path_data": button.svg_path_data,  # This includes the mirrored path
+                    "svg_file_path": button.svg_file_path
+                }
+                updated_button_data.append(button_data)
+                
+                counterpart_info = " with counterparts" if apply_counterparts else ""
+                print(f"Mirrored button {button.unique_id}: position={button.scene_position.x():.2f}, svg_updated={bool(button.svg_path_data)}{counterpart_info}")
             
-            # Update the canvas
+            # CRITICAL FIX: Batch update the database with ALL mirrored buttons at once
+            for button_data in updated_button_data:
+                # Find and update the existing button data in the tab
+                for i, existing_button in enumerate(tab_data['buttons']):
+                    if existing_button['id'] == button_data['id']:
+                        tab_data['buttons'][i] = button_data
+                        break
+                else:
+                    # If not found (shouldn't happen), add it
+                    tab_data['buttons'].append(button_data)
+            
+            # Single database update for all buttons
+            DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+            
+            action_type = "with counterpart assignment" if apply_counterparts else "position/SVG only"
+            print(f"Horizontally mirrored {len(selected_buttons)} buttons ({action_type}) - All changes saved to database in batch")
+            
+        finally:
+            # Restore previous batch mode state
+            main_window.batch_update_active = was_batch_active
+            
+            # Re-enable canvas updates
+            self.setUpdatesEnabled(True)
             self.update_button_positions()
-            # Update the database
+            self.update()
         
         # Force a final database flush to ensure everything is saved
+        if hasattr(main_window, '_flush_pending_updates'):
+            main_window._flush_pending_updates()
+
+        if hasattr(main_window, 'update_buttons_for_current_tab'):
+            main_window.update_buttons_for_current_tab(force_update=True)
+
+    def vertical_mirror_button_positions(self):
+        selected_buttons = self.get_selected_buttons()
+        if not selected_buttons:
+            return
+        
         main_window = self.window()
+        if not isinstance(main_window, UI.BlenderAnimPickerWindow):
+            return
+        
+        # CRITICAL FIX: Disable batch updates to ensure immediate processing
+        was_batch_active = getattr(main_window, 'batch_update_active', False)
+        main_window.batch_update_active = False
+        self.setUpdatesEnabled(False)
+        
+        try:
+            # Get the center of the selected buttons
+            min_y = min(button.scene_position.y() for button in selected_buttons)
+            max_y = max(button.scene_position.y() for button in selected_buttons)
+            center_y = (min_y + max_y) / 2
+            
+            # Get current tab data for batch database update
+            current_tab = main_window.tab_system.current_tab
+            tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+            
+            # Track which buttons were updated for database batch update
+            updated_button_data = []
+            
+            # Mirror positions around the center
+            for button in selected_buttons:
+                # Mirror position
+                button.scene_position.setY(center_y - (button.scene_position.y() - center_y))
+                
+                # Mirror SVG path if applicable
+                if button.shape_type == 'custom_path' and button.svg_path_data:
+                    button.svg_path_data = button.mirror_svg_path_vertical(button.svg_path_data, button.height)
+                    button._invalidate_mask_cache()
+                
+                # Force immediate visual update
+                button.update()
+                
+                # Prepare button data for database update
+                button_data = {
+                    "id": button.unique_id,
+                    "selectable": button.selectable,
+                    "label": button.label,
+                    "color": button.color,
+                    "opacity": button.opacity,
+                    "position": (button.scene_position.x(), button.scene_position.y()),
+                    "width": button.width,
+                    "height": button.height,
+                    "radius": button.radius,
+                    "assigned_objects": getattr(button, 'assigned_objects', []),
+                    "mode": getattr(button, 'mode', 'select'),
+                    "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
+                    "pose_data": getattr(button, 'pose_data', {}),
+                    "thumbnail_path": getattr(button, 'thumbnail_path', ''),
+                    "shape_type": button.shape_type,
+                    "svg_path_data": button.svg_path_data,  # This includes the mirrored path
+                    "svg_file_path": button.svg_file_path
+                }
+                updated_button_data.append(button_data)
+                
+                print(f"Mirrored button {button.unique_id}: position={button.scene_position.y():.2f}, svg_updated={bool(button.svg_path_data)}")
+            
+            # CRITICAL FIX: Batch update the database with ALL mirrored buttons at once
+            for button_data in updated_button_data:
+                # Find and update the existing button data in the tab
+                for i, existing_button in enumerate(tab_data['buttons']):
+                    if existing_button['id'] == button_data['id']:
+                        tab_data['buttons'][i] = button_data
+                        break
+                else:
+                    # If not found (shouldn't happen), add it
+                    tab_data['buttons'].append(button_data)
+            
+            # Single database update for all buttons
+            DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+            
+            print(f"Vertically mirrored {len(selected_buttons)} buttons - All changes saved to database in batch")
+            
+        finally:
+            # Restore previous batch mode state
+            main_window.batch_update_active = was_batch_active
+            
+            # Re-enable canvas updates
+            self.setUpdatesEnabled(True)
+            self.update_button_positions()
+            self.update()
+        
+        # Force a final database flush to ensure everything is saved
         if hasattr(main_window, '_flush_pending_updates'):
             main_window._flush_pending_updates()
 
@@ -1616,7 +2716,7 @@ class PickerCanvas(QtWidgets.QWidget):
         super().mouseDoubleClickEvent(event)
 
     def mousePressEvent(self, event):
-        """Simplified mouse press handler that restores original selection behavior"""
+        """Enhanced mouse press handler to track last clicked button"""
         if (hasattr(self, 'transform_guides') and self.transform_guides.isVisible() and event.button() == QtCore.Qt.LeftButton):
             # Convert to transform guides coordinates
             guides_pos = self.transform_guides.mapFromParent(event.pos())
@@ -1653,16 +2753,22 @@ class PickerCanvas(QtWidgets.QWidget):
         if event.button() == QtCore.Qt.LeftButton:
             # Check for Alt+Left click for panning
             alt_pressed = bool(event.modifiers() & QtCore.Qt.AltModifier)
+            ctrl_pressed = bool(event.modifiers() & QtCore.Qt.ControlModifier)
             
             # Store initial selection state for rubber band operations
             self.initial_selection_state = {button: button.is_selected for button in self.buttons}
+            self.ctrl_held_during_selection = ctrl_pressed
             
-            # Check if we clicked on a button
+            # CRITICAL FIX: Track which button was actually clicked
             clicked_button = None
             for button in self.buttons:
                 if button.isVisible() and button.geometry().contains(event.pos()):
                     clicked_button = button
                     break
+            
+            # Store the last clicked button for proper active selection
+            if clicked_button:
+                self.last_clicked_button = clicked_button
             
             if clicked_button and not alt_pressed:
                 # Button was clicked and Alt not pressed - let it handle the event normally
@@ -1675,6 +2781,9 @@ class PickerCanvas(QtWidgets.QWidget):
             else:
                 # Empty space clicked without Alt
                 shift_held = event.modifiers() & QtCore.Qt.ShiftModifier
+                
+                # Clear last clicked button when clicking empty space
+                self.last_clicked_button = None
                 
                 # Clear selection if shift not held
                 if not shift_held:
@@ -1718,7 +2827,7 @@ class PickerCanvas(QtWidgets.QWidget):
             self.setFocus()
         
         UT.blender_main_window()
-
+    
     def mouseMoveEvent(self, event):
         """Handle mouse move events"""
         
@@ -1730,12 +2839,25 @@ class PickerCanvas(QtWidgets.QWidget):
             selection_rect = QtCore.QRect(self.rubberband_origin, event.pos()).normalized()
             self.rubberband.setGeometry(selection_rect)
             
-            # Update visual selection during drag
-            self.update_visual_selection(selection_rect, event.modifiers() & QtCore.Qt.ShiftModifier)
+            # Check modifier combinations
+            shift_pressed = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
+            ctrl_pressed = bool(event.modifiers() & QtCore.Qt.ControlModifier)
+            
+            # Determine selection mode
+            if ctrl_pressed and shift_pressed:
+                # Ctrl+Shift: Remove from selection
+                self.update_visual_selection(selection_rect, add_to_selection=False, remove_from_selection=True)
+            elif shift_pressed:
+                # Shift only: Add to selection
+                self.update_visual_selection(selection_rect, add_to_selection=True, remove_from_selection=False)
+            else:
+                # No modifiers: Replace selection
+                self.update_visual_selection(selection_rect, add_to_selection=False, remove_from_selection=False)
+            
             event.accept()
             
         elif ((event.buttons() == QtCore.Qt.LeftButton and alt_pressed) or 
-              event.buttons() == QtCore.Qt.MiddleButton) and self.last_pan_pos:
+            event.buttons() == QtCore.Qt.MiddleButton) and self.last_pan_pos:
             # Handle panning (Alt+Left drag or Middle mouse drag)
             self.setUpdatesEnabled(False)
             try:
@@ -1757,16 +2879,41 @@ class PickerCanvas(QtWidgets.QWidget):
         event.accept()
 
     def mouseReleaseEvent(self, event):
-        """Handle mouse release events"""
+        """Enhanced mouse release handler to properly handle last selected button"""
         
         if event.button() == QtCore.Qt.LeftButton and self.is_selecting:
             # End rubber band selection
             self.is_selecting = False
             self.rubberband.hide()
             
+            # For rubber band selection, determine the "last selected" based on mouse position
+            if self.buttons_in_current_drag:
+                # Find the button closest to the final mouse position among selected buttons
+                mouse_scene_pos = self.canvas_to_scene_coords(QtCore.QPointF(event.pos()))
+                closest_button = None
+                min_distance = float('inf')
+                
+                for button in self.buttons_in_current_drag:
+                    if button.is_selected:
+                        distance = ((button.scene_position.x() - mouse_scene_pos.x()) ** 2 + 
+                                (button.scene_position.y() - mouse_scene_pos.y()) ** 2) ** 0.5
+                        if distance < min_distance:
+                            min_distance = distance
+                            closest_button = button
+                
+                if closest_button:
+                    self.last_clicked_button = closest_button
+            
+            # Check modifier combinations for apply_final_selection
+            shift_pressed = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
+            ctrl_pressed = bool(event.modifiers() & QtCore.Qt.ControlModifier)
+            ctrl_held = getattr(self, 'ctrl_held_during_selection', False)
+            
+            # For counterpart selection, we only want ctrl without shift
+            counterpart_mode = ctrl_held and not shift_pressed
+            
             # Apply final selection from rubber band
-            shift_held = event.modifiers() & QtCore.Qt.ShiftModifier
-            self.apply_final_selection(shift_held)
+            self.apply_final_selection(shift_pressed, counterpart_mode)
             
             # Ensure final selection state is properly set and signals are emitted
             final_selection_changed = False
@@ -1775,13 +2922,17 @@ class PickerCanvas(QtWidgets.QWidget):
                 
                 # Finalize selection state based on current drag
                 if button in self.buttons_in_current_drag:
-                    if shift_held:
-                        # Toggle from initial state
-                        initial_state = self.initial_selection_state.get(button, False)
-                        button.is_selected = not initial_state
-                    else:
+                    if shift_pressed and not ctrl_pressed:
+                        # Shift only: Add to selection
                         button.is_selected = True
-                elif not shift_held:
+                    elif ctrl_pressed and shift_pressed:
+                        # Ctrl+Shift: Remove from selection
+                        button.is_selected = False
+                    elif not shift_pressed and not ctrl_pressed:
+                        # No modifiers: Replace selection
+                        button.is_selected = True
+                    # Note: ctrl_only case is handled in apply_final_selection for counterparts
+                elif not shift_pressed:
                     # Clear non-dragged buttons if shift not held
                     button.is_selected = False
                 # If shift held, preserve existing selection for non-dragged buttons
@@ -1795,14 +2946,18 @@ class PickerCanvas(QtWidgets.QWidget):
             
             # Update last selected button for edit widgets
             if self.buttons_in_current_drag:
-                # Set the last button in the drag as the reference for edit widgets
-                last_selected = None
-                for button in reversed(list(self.buttons_in_current_drag)):
-                    if button.is_selected:
-                        last_selected = button
-                        break
-                if last_selected:
-                    self.last_selected_button = last_selected
+                # Use the stored last_clicked_button if available
+                if hasattr(self, 'last_clicked_button') and self.last_clicked_button and self.last_clicked_button.is_selected:
+                    self.last_selected_button = self.last_clicked_button
+                else:
+                    # Fallback: Set the last button in the drag as the reference for edit widgets
+                    last_selected = None
+                    for button in reversed(list(self.buttons_in_current_drag)):
+                        if button.is_selected:
+                            last_selected = button
+                            break
+                    if last_selected:
+                        self.last_selected_button = last_selected
             
             # Important: Clear the drag tracking after rubber band selection
             self.buttons_in_current_drag.clear()
@@ -1858,7 +3013,7 @@ class PickerCanvas(QtWidgets.QWidget):
         self.clicked.emit()
         UT.blender_main_window()
         event.accept()
-    
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.update_button_positions()
