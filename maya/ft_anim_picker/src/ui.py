@@ -28,6 +28,7 @@ from . import button_edit_widgets as BEW
 from . import tool_functions as TF
 from . import custom_dialog as CD
 from . fade_away_logic import FadeAway
+from .update_ui import UpdateWidget
 
 # Get version from __init__
 import ft_anim_picker
@@ -187,7 +188,8 @@ class AnimPickerWindow(QtWidgets.QWidget):
         
         
         info_util.addMenuLabel(f"Anim Picker{anim_picker_version}",position=(0,0))
-        info_util.addToMenu(f"Manual", self.info, icon='info.png', position=(1,0))
+        info_util.addToMenu(f"Manual", self.info, icon=UT.get_icon('manual.png'), position=(1,0))
+        info_util.addToMenu(f"Update", self.update, icon=UT.get_icon('update.png'), position=(2,0))
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         #-Close button
         self.close_button = CB.CustomButton(icon=UT.get_icon('close_01.png',size=12,opacity=.7), height=16, width=16, radius=3,color='#c0091a',tooltip='Close')
@@ -553,6 +555,9 @@ class AnimPickerWindow(QtWidgets.QWidget):
         # Force update of the layout
         self.update()
         QtCore.QTimer.singleShot(0, self.update_buttons_for_current_tab)
+
+    def update(self):
+        UpdateWidget(self).show()
 
     def setup_layout(self):
         # Add widgets to layouts

@@ -21,6 +21,7 @@ from . import custom_line_edit as CLE
 from . import button_edit_widgets as BEW
 from . fade_away_logic import FadeAway
 from . import custom_color_picker as CCP
+from .update_ui import UpdateWidget
 
 # Get version from __init__
 import ft_anim_picker
@@ -201,6 +202,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                                     cmColor='#333333',tooltip='Info Utilities', flat=True)
         info_util.addMenuLabel(f"Anim Picker{anim_picker_version}",position=(0,0))
         info_util.addToMenu(f"Manual", self.info, icon=UT.get_icon('manual.png'), position=(1,0))
+        info_util.addToMenu(f"Update", self.update, icon=UT.get_icon('update.png'), position=(2,0))
         #-----------------------------------------------------------------------------------------------------------------------------------
         # Close button
         self.close_button = CB.CustomButton(icon=UT.get_icon('close_01.png',size=12,opacity=.7), height=16, width=16, radius=3,color='#c0091a',tooltip='Close')
@@ -626,6 +628,8 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.update()
         QtCore.QTimer.singleShot(0, self.update_buttons_for_current_tab)
     
+    def update(self):
+        UpdateWidget(self).show()
     #----------------------------------------------------------------------------------------------------------------------------------------
     def setup_conditional_stay_on_top(self):
         """Setup conditional stay-on-top using hide/show instead of flag changes"""

@@ -84,7 +84,7 @@ class TwoColumnMenu(QtWidgets.QMenu):
                 background-color: {self.bg_color};
                 color: white;
                 border: none;
-                padding: 3px 10px;
+                padding: 2px 10px;
                 border-radius: 3px;
                 text-align: left;
             }}
@@ -198,7 +198,7 @@ class CustomButton(QtWidgets.QPushButton):
             self.setLayoutDirection(QtCore.Qt.LeftToRight)
         
         self.setToolTip(f"<html><body><p style='color:white; white-space:nowrap; '>{tooltip}</p></body></html>")
-        
+
         self.context_menu = None
         if ContextMenu or onlyContext:
             self.context_menu = TwoColumnMenu(self)
@@ -216,7 +216,25 @@ class CustomButton(QtWidgets.QPushButton):
     
     def get_style_sheet(self, color, flat, radius):
         if flat:
-            return "background-color: transparent;"
+            return f'''
+                QPushButton {{
+                    background-color: transparent;
+                    color: {self.textColor};
+                    border: none;
+                    padding: 1px;
+                    border-radius: {radius}px;
+                    font-size: {self.textSize}px;
+                }}
+                QPushButton:hover {{
+                    color: {UT.rgba_value(self.textColor, 1.2)};
+                }}
+                QToolTip {{background-color: #222222; 
+                    color: #eeeeee ; 
+                    border: 1px solid rgba(255,255,255,.2); 
+                    padding: 0px;
+                    border-radius: 0px;
+                }}
+            '''
         else:
             return f'''
                 QPushButton {{
@@ -233,10 +251,11 @@ class CustomButton(QtWidgets.QPushButton):
                 QPushButton:pressed {{
                     background-color: {UT.rgba_value(color, 0.8)};
                 }}
-                QToolTip {{
-                    background-color: {color};
-                    color: white;
-                    border: 0px;
+                QToolTip {{background-color: {UT.rgba_value(color,.8,alpha=1)}; 
+                    color: #eeeeee ; 
+                    border: 1px solid rgba(255,255,255,.2); 
+                    padding: 0px;
+                    border-radius: 0px;
                 }}
             '''
         
@@ -276,10 +295,10 @@ class CustomButton(QtWidgets.QPushButton):
             position (tuple, optional): (row, column) position in the grid
         """
         if self.context_menu:
-            action = QAction(name, self)
+            action = QtGui.QAction(name, self)
             if icon:
-                if isinstance(icon, QtGui.QIcon):
-                    action.setIcon(icon)
+                if isinstance(icon, QtGui.QPixmap):
+                    action.setIcon(QtGui.QIcon(icon))
                 else:
                     action.setIcon(QtGui.QIcon(f":/{icon}"))
             action.triggered.connect(function)
@@ -290,8 +309,7 @@ class CustomButton(QtWidgets.QPushButton):
     def show_context_menu(self, pos):
         if self.context_menu:
             self.reset_button_state()
-            self.context_menu.exec_(self.mapToGlobal(pos))
-                  
+            self.context_menu.exec_(self.mapToGlobal(pos))             
     #--------------------------------------------------------------------------------------------------------
     def mousePressEvent(self, event):
         if self.onlyContext:
@@ -306,7 +324,7 @@ class CustomButton(QtWidgets.QPushButton):
             elif event.button() == QtCore.Qt.RightButton:
                 self.rightClicked.emit(event.pos())
             super(CustomButton, self).mousePressEvent(event)
-        UT.maya_main_window().activateWindow()
+        #UT.maya_main_window().activateWindow()
         
     def mouseReleaseEvent(self, event):
         if not self.onlyContext:
@@ -316,6 +334,7 @@ class CustomButton(QtWidgets.QPushButton):
                     self.click_count = 0
                     self.doubleClicked.emit()
         super(CustomButton, self).mouseReleaseEvent(event)
+        #UT.maya_main_window().activateWindow() 
         
     def performSingleClick(self):
         if not self.onlyContext:
@@ -440,7 +459,6 @@ class CustomRadioButton(QtWidgets.QRadioButton):
                 CustomRadioButton.groups[group_name] = QtWidgets.QButtonGroup()
             CustomRadioButton.groups[group_name].addButton(self)
             self.setAutoExclusive(True)  # Enable auto-exclusive for grouped buttons
-
 
 class CustomToolTip(QtWidgets.QWidget):
     def __init__(self, parent=None, color='#444444'):
