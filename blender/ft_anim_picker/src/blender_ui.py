@@ -35,6 +35,11 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WA_AlwaysShowToolTips, True)
         self.setStyleSheet('''QWidget {background-color: rgba(40, 40, 40, 0.5); border-radius: 4px;}''')
         
+        # Track our visibility state for centralized management
+        self.should_be_visible = True
+        self.stored_geometry = None
+        #self.setup_conditional_stay_on_top()
+
         # Enable drag and drop for the window
         self.setAcceptDrops(True)
         self.drag_highlight_active = False
@@ -102,7 +107,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
 
         # Set the affected widgets in the fade manager
         self.fade_manager.set_minimal_affected_widgets(minimal_affected_widgets)
-
+        
         # Add batch update system variables (similar to Maya version)
         self.batch_update_timer = QTimer()
         self.batch_update_timer.setSingleShot(True)
@@ -116,7 +121,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.widget_update_timer.timeout.connect(self._apply_widget_changes)
         self.pending_widget_changes = {}
         self.widget_update_delay = 10  # ms delay for widget updates
-
+        
         # Edit widget update control
         self.is_updating_widgets = False
         self.populate_namespace_dropdown()
@@ -188,7 +193,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                                     cmColor='#333333',tooltip='Edit Utilities', flat=True)
         edit_util.addMenuLabel("Edit Utilities",position=(0,0))
         edit_util.addToMenu("Edit Mode", self.toggle_edit_mode, icon=UT.get_icon('edit.png'), position=(1,0))
-        edit_util.addToMenu("Minimal Mode", self.fade_manager.toggle_minimal_mode, icon=UT.get_icon('visible.png'), position=(2,0))
+        edit_util.addToMenu("Toggle Minimal Mode", self.fade_manager.toggle_minimal_mode, icon=UT.get_icon('visible.png'), position=(2,0))
         edit_util.addToMenu("Toggle Fade Away", self.fade_manager.toggle_fade_away, icon=UT.get_icon('visible.png'), position=(3,0))
         #-----------------------------------------------------------------------------------------------------------------------------------
         #Info Util
@@ -307,19 +312,24 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             }
             QScrollBar:vertical {
                 border: none;
-                background: transparent;
+                background: rgba(30, 30, 30, 0.3);
                 width: 8px;
-                margin: 0px 0px 0px 0px;
-                
+                margin: 0px;
             }
             QScrollBar::handle:vertical {
-                background: rgba(30, 30, 30, 0.7);
+                background: rgba(100, 100, 100, 0.5);
                 min-height: 20px;
-                width: 6px;
-                border-radius: 0px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(120, 120, 120, 0.7);
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                 height: 0px;
+                background: transparent;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
             }
                                             
         """)
@@ -615,23 +625,350 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         # Force update of the layout
         self.update()
         QtCore.QTimer.singleShot(0, self.update_buttons_for_current_tab)
+    
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    def setup_conditional_stay_on_top(self):
+        """Setup conditional stay-on-top using hide/show instead of flag changes"""
+        self.stay_on_top_timer = QTimer(self)
+        self.stay_on_top_timer.timeout.connect(self.check_window_visibility)
+        self.stay_on_top_timer.start(100)  # Check every 10ms
+        
+        # Track our visibility state
+        self.should_be_visible = True
+        self.last_visibility_state = True
+        
+        # Store geometry when hiding to restore later
+        self.stored_geometry = None
+
+    def setup_conditional_stay_on_top(self):
+        """Setup conditional stay-on-top using hide/show instead of flag changes"""
+        self.stay_on_top_timer = QTimer(self)
+        self.stay_on_top_timer.timeout.connect(self.check_window_visibility)
+        self.stay_on_top_timer.start(100)  # Check every 10ms
+        
+        # Track our visibility state
+        self.should_be_visible = True
+        self.last_visibility_state = True
+        
+        # Store geometry when hiding to restore later
+        self.stored_geometry = None
+
+    def _is_task_switcher_active(self):
+        """Check if Windows task switcher is currently active"""
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import wintypes
+                
+                # Get the foreground window
+                hwnd = ctypes.windll.user32.GetForegroundWindow()
+                if not hwnd:
+                    return False
+                
+                # Get window class name
+                class_buffer = ctypes.create_unicode_buffer(256)
+                ctypes.windll.user32.GetClassNameW(hwnd, class_buffer, 256)
+                class_name = class_buffer.value
+                
+                # Task switcher class names
+                task_switcher_classes = [
+                    "MultitaskingViewFrame",      # Windows 10+ Task View
+                    "XamlExplorerHostIslandWindow", # Alt+Tab
+                    "TaskSwitcherWnd",            # Legacy Alt+Tab
+                    "TaskSwitcherOverlayWnd"      # Another variant
+                ]
+                
+                return any(tc in class_name for tc in task_switcher_classes)
+                
+            except Exception:
+                return False
+        
+        # For other platforms, return False
+        return False
+
+    def _ensure_window_visible(self):
+        """Ensure window is visible - show if hidden (called by centralized manager)"""
+        if not self.should_be_visible:
+            self.should_be_visible = True
+            print(f"Showing window {id(self)}")
+            
+            # Restore geometry if we stored it
+            if self.stored_geometry:
+                self.setGeometry(self.stored_geometry)
+                self.stored_geometry = None
+            
+            # Show the window
+            if not self.isVisible():
+                self.show()
+                self.raise_()
+                self.activateWindow()
+
+    def _ensure_window_hidden(self):
+        """Ensure window is hidden when not needed (called by centralized manager)"""
+        if self.should_be_visible:
+            self.should_be_visible = False
+            print(f"Hiding window {id(self)}")
+            
+            # Store current geometry before hiding
+            if self.isVisible():
+                self.stored_geometry = self.geometry()
+                self.hide()
+
+    def _is_blender_window_active(self):
+        """Check if any Blender window is currently active using the same logic as utils.py"""
+        system = sys.platform
+        
+        if system == "win32":
+            return self._is_blender_active_windows()
+        elif system == "darwin":
+            return self._is_blender_active_macos()
+        elif system.startswith("linux"):
+            return self._is_blender_active_linux()
+        else:
+            return True  # Default to assuming Blender is active on unknown platforms
+
+    def _is_blender_active_windows(self):
+        """Windows: Check if active window belongs to our Blender process OR is a child of our picker"""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            
+            current_pid = os.getpid()
+            
+            # Get the foreground window
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            if not hwnd:
+                return False
+            
+            # Get process ID of the foreground window
+            process_id = wintypes.DWORD()
+            ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+            
+            # If the active window belongs to our process (Blender), then check what type of window it is
+            if process_id.value == current_pid:
+                # Get window class name
+                class_buffer = ctypes.create_unicode_buffer(256)
+                ctypes.windll.user32.GetClassNameW(hwnd, class_buffer, 256)
+                class_name = class_buffer.value
+                
+                # Check if it's a Blender window OR a Qt widget (our picker and its children)
+                if class_name == "GHOST_WindowClass":  # Blender window
+                    return True
+                elif class_name in ["Qt660QWindowIcon", "Qt660QWindowOwnDCIcon", "Qt5QWindowIcon", "Qt5QWindowOwnDCIcon"]:  # Qt windows (our picker)
+                    # This is likely our picker or a child dialog - let _is_picker_or_child_active handle it
+                    return False
+            
+            return False
+            
+        except Exception as e:
+            print(f"Error checking Windows Blender state: {e}")
+            return False
+
+    def _is_blender_active_macos(self):
+        """macOS: Check if Blender application is frontmost OR picker children are active"""
+        try:
+            import subprocess
+            
+            # First check Qt application windows (our picker and children)
+            from PySide6.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app:
+                active_window = app.activeWindow()
+                if active_window:
+                    # Check if it's our picker or a child
+                    parent = active_window
+                    while parent:
+                        if parent == self:
+                            return False  # Let _is_picker_or_child_active handle this
+                        parent = parent.parent()
+            
+            # Then check if Blender itself is frontmost
+            applescript = '''
+            tell application "System Events"
+                set frontApp to first application process whose frontmost is true
+                set frontAppName to name of frontApp
+                if frontAppName contains "Blender" then
+                    return true
+                else
+                    return false
+                end if
+            end tell
+            '''
+            
+            result = subprocess.run(
+                ['osascript', '-e', applescript],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            
+            if result.returncode == 0:
+                return "true" in result.stdout.strip().lower()
+            
+            return False
+            
+        except Exception as e:
+            print(f"Error checking macOS Blender state: {e}")
+            return False
+
+    def _is_blender_active_linux(self):
+        """Linux: Check if active window belongs to our Blender process OR is our picker child"""
+        try:
+            import subprocess
+            current_pid = os.getpid()
+            
+            # Try xdotool first
+            if UT._command_exists('xdotool'):
+                # Get active window ID
+                result = subprocess.run(
+                    ['xdotool', 'getactivewindow'],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                
+                if result.returncode == 0:
+                    window_id = result.stdout.strip()
+                    
+                    # Get PID of active window
+                    pid_result = subprocess.run(
+                        ['xdotool', 'getwindowpid', window_id],
+                        capture_output=True,
+                        text=True,
+                        timeout=2
+                    )
+                    
+                    if pid_result.returncode == 0:
+                        try:
+                            window_pid = int(pid_result.stdout.strip())
+                            # If active window belongs to our process
+                            if window_pid == current_pid:
+                                # Get window class to determine if it's Blender or Qt
+                                class_result = subprocess.run(
+                                    ['xdotool', 'getwindowclassname', window_id],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=2
+                                )
+                                
+                                if class_result.returncode == 0:
+                                    window_class = class_result.stdout.strip().lower()
+                                    # If it's a Qt window, let _is_picker_or_child_active handle it
+                                    if 'qt' in window_class or window_class in ['python', 'python3']:
+                                        return False
+                                    # Otherwise it's likely Blender
+                                    return True
+                                
+                                # Fallback: assume it's Blender if we can't get class
+                                return True
+                        except ValueError:
+                            pass
+            
+            # Fallback to wmctrl
+            if UT._command_exists('wmctrl'):
+                # Get active window info
+                result = subprocess.run(
+                    ['wmctrl', '-l', '-p'],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                
+                if result.returncode == 0:
+                    # Get active window ID
+                    active_result = subprocess.run(
+                        ['xprop', '-root', '_NET_ACTIVE_WINDOW'],
+                        capture_output=True,
+                        text=True,
+                        timeout=2
+                    )
+                    
+                    if active_result.returncode == 0 and 'window id' in active_result.stdout:
+                        active_id = active_result.stdout.split('#')[1].split()[0] if '#' in active_result.stdout else None
+                        
+                        if active_id:
+                            # Check if this window belongs to our process
+                            for line in result.stdout.strip().split('\n'):
+                                if active_id.lower() in line.lower():
+                                    parts = line.split()
+                                    if len(parts) >= 3:
+                                        try:
+                                            window_pid = int(parts[2])
+                                            if window_pid == current_pid:
+                                                # Check window title to determine if it's Blender or picker
+                                                window_title = ' '.join(parts[4:]) if len(parts) > 4 else ''
+                                                if 'blender' in window_title.lower():
+                                                    return True
+                                                # If it contains Qt-related terms, let picker handler deal with it
+                                                return False
+                                        except (ValueError, IndexError):
+                                            continue
+            
+            return False
+            
+        except Exception as e:
+            print(f"Error checking Linux Blender state: {e}")
+            return False
+    
     #----------------------------------------------------------------------------------------------------------------------------------------
     # [External Data Management]  
     #----------------------------------------------------------------------------------------------------------------------------------------
     def store_picker(self):
+        """Enhanced store picker method with current tab vs all tabs option"""
+        # First, show the dialog to choose save mode
+        from . import picker_io
+        save_mode = picker_io.get_save_mode_dialog()
+        
+        if save_mode == 'cancel':
+            return  # User cancelled
+        
+        # Get the current tab name for potential current tab saving
+        current_tab_name = self.tab_system.current_tab if hasattr(self, 'tab_system') else None
+        
+        # Validate that we have a current tab if user chose current tab mode
+        if save_mode == 'current':
+            if not current_tab_name:
+                QtWidgets.QMessageBox.warning(
+                    self, 
+                    "No Current Tab", 
+                    "No current tab is available to save. Please select a tab first."
+                )
+                return
+        
+        # Set default filename based on save mode
+        if save_mode == 'current':
+            default_filename = f"{current_tab_name}_picker_data.json"
+        else:
+            default_filename = "picker_data.json"
+        
+        # Show file save dialog
         file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "Store Picker Data",
-            "",
+            default_filename,
             "JSON Files (*.json)"
         )
+        
         if file_path:
             try:
-                from . import picker_io
-                picker_io.store_picker_data(file_path)
-                # Show Blender notification instead of Maya's inViewMessage
-                import bpy
-                self.show_blender_message(f"Picker data saved to {file_path}")
+                # Call the enhanced store_picker_data function
+                picker_io.store_picker_data(
+                    file_path, 
+                    current_tab_name=current_tab_name, 
+                    save_mode=save_mode
+                )
+                
+                # Show success message
+                if save_mode == 'current':
+                    message = f"Current tab '{current_tab_name}' saved to {os.path.basename(file_path)}"
+                else:
+                    # Get tab count for the message
+                    data = picker_io.get_picker_data()
+                    tab_count = len(data.get('tabs', {}))
+                    message = f"All {tab_count} tab(s) saved to {os.path.basename(file_path)}"
+                
+                self.show_blender_message(message)
+                
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "Error", str(e))
                 
@@ -1154,19 +1491,43 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             self._resize_update_timer.start(100)  # 100ms delay
 
     def closeEvent(self, event):
-        """Enhanced close event to ensure all data is saved"""
+        """Enhanced close event to ensure all data is saved and timers are cleaned up"""
+        print(f"Closing picker window {id(self)}")
+        
         # Process any pending updates before closing
         if hasattr(self, 'pending_button_updates') and self.pending_button_updates:
             self._process_batch_updates()
         
         if hasattr(self, 'pending_widget_changes') and self.pending_widget_changes:
             self._apply_widget_changes()
-        
+
+        # Stop the stay-on-top timer first
+        if hasattr(self, 'stay_on_top_timer') and self.stay_on_top_timer:
+            self.stay_on_top_timer.stop()
+            self.stay_on_top_timer.deleteLater()
+            self.stay_on_top_timer = None
+
+        # Unregister from visibility manager BEFORE cleanup
+        try:
+            from . import blender_main
+            visibility_manager = blender_main.PickerVisibilityManager.get_instance()
+            visibility_manager.unregister_picker(self)
+        except Exception as e:
+            print(f"Error unregistering from visibility manager: {e}")
+
         # Comprehensive cleanup
         self.cleanup_resources()
         
         # Stop periodic cleanup
         self.end_periodic_cleanup()
+        
+        # Force process events to ensure cleanup
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app:
+            app.processEvents()
+        
+        print(f"Picker window {id(self)} close event complete")
         
         # Call parent close event
         super().closeEvent(event)
@@ -1496,6 +1857,132 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                 self.pending_button_updates.add(button.unique_id)
                 self.batch_update_timer.start(self.batch_update_delay)
 
+    def batch_update_buttons_to_database(self, buttons_to_update, fields_to_update=None):
+        """
+        Batch update button data to database with full batch system handling
+        
+        Args:
+            buttons_to_update (list): List of button objects to update
+            fields_to_update (list): List of field names to update. If None, updates all common fields.
+                                    Possible fields: 'position', 'width', 'height', 'radius', 'shape_type', 
+                                    'svg_path_data', 'svg_file_path', 'label', 'color', 'opacity', 
+                                    'assigned_objects', 'mode', 'script_data', 'pose_data', 'thumbnail_path'
+        """
+        if not buttons_to_update:
+            return
+        
+        # CRITICAL: Disable all update systems during batch
+        was_batch_active = getattr(self, 'batch_update_active', False)
+        self.batch_update_active = True
+        
+        # Stop any running timers to prevent interference
+        timers_to_stop = ['batch_update_timer', 'widget_update_timer']
+        stopped_timers = {}
+        
+        for timer_name in timers_to_stop:
+            if hasattr(self, timer_name):
+                timer = getattr(self, timer_name)
+                if timer.isActive():
+                    timer.stop()
+                    stopped_timers[timer_name] = True
+        
+        # Clear any pending updates
+        if hasattr(self, 'pending_button_updates'):
+            self.pending_button_updates.clear()
+        
+        try:
+            # Disconnect changed signals temporarily to prevent interference
+            for button in buttons_to_update:
+                try:
+                    button.changed.disconnect()
+                except:
+                    pass
+            
+            # ESSENTIAL: Direct database update (same pattern as set_custom_shape)
+            if hasattr(self, 'tab_system') and self.tab_system.current_tab:
+                current_tab = self.tab_system.current_tab
+                tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+                
+                # Default fields to update if none specified
+                if fields_to_update is None:
+                    # Update all fields
+                    fields_to_update = ['position', 'width', 'height', 'radius', 'shape_type','label', 'color', 'opacity', 'assigned_objects', 'mode', 'script_data', 'pose_data', 'thumbnail_path','svg_path_data','svg_file_path','selectable']
+                
+                # Update specified fields for all affected buttons
+                for button in buttons_to_update:
+                    for i, existing_button in enumerate(tab_data['buttons']):
+                        if existing_button['id'] == button.unique_id:
+                            # Update only specified fields
+                            for field in fields_to_update:
+                                if field == 'position':
+                                    tab_data['buttons'][i]['position'] = (button.scene_position.x(), button.scene_position.y())
+                                elif field == 'width':
+                                    tab_data['buttons'][i]['width'] = button.width
+                                elif field == 'height':
+                                    tab_data['buttons'][i]['height'] = button.height
+                                elif field == 'radius':
+                                    tab_data['buttons'][i]['radius'] = button.radius
+                                elif field == 'shape_type':
+                                    tab_data['buttons'][i]['shape_type'] = button.shape_type
+                                elif field == 'svg_path_data':
+                                    tab_data['buttons'][i]['svg_path_data'] = button.svg_path_data
+                                elif field == 'svg_file_path':
+                                    tab_data['buttons'][i]['svg_file_path'] = button.svg_file_path
+                                elif field == 'label':
+                                    tab_data['buttons'][i]['label'] = button.label
+                                elif field == 'color':
+                                    tab_data['buttons'][i]['color'] = button.color
+                                elif field == 'opacity':
+                                    tab_data['buttons'][i]['opacity'] = button.opacity
+                                elif field == 'assigned_objects':
+                                    tab_data['buttons'][i]['assigned_objects'] = getattr(button, 'assigned_objects', [])
+                                elif field == 'mode':
+                                    tab_data['buttons'][i]['mode'] = getattr(button, 'mode', 'select')
+                                elif field == 'script_data':
+                                    tab_data['buttons'][i]['script_data'] = getattr(button, 'script_data', {'code': '', 'type': 'python'})
+                                elif field == 'pose_data':
+                                    tab_data['buttons'][i]['pose_data'] = getattr(button, 'pose_data', {})
+                                elif field == 'thumbnail_path':
+                                    tab_data['buttons'][i]['thumbnail_path'] = getattr(button, 'thumbnail_path', '')
+                                elif field == 'selectable':
+                                    tab_data['buttons'][i]['selectable'] = getattr(button, 'selectable', True)
+                            break
+                
+                # Single database update for all buttons
+                DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                
+                #print(f"Batch updated {len(buttons_to_update)} buttons in database (fields: {fields_to_update})")
+            
+            # Reconnect signals properly
+            for button in buttons_to_update:
+                # Reconnect to the main window's handler
+                if hasattr(self, 'on_button_changed'):
+                    button.changed.connect(self.on_button_changed)
+                else:
+                    # Fallback connection
+                    button.changed.connect(self.update_button_data)
+            
+        except Exception as e:
+            print(f"Error during batch update: {e}")
+            
+            # Emergency signal reconnection
+            for button in buttons_to_update:
+                try:
+                    button.changed.connect(self.update_button_data)
+                except:
+                    pass
+                    
+        finally:
+            # Restore batch mode state
+            self.batch_update_active = was_batch_active
+            
+            # Restart stopped timers if they were originally active
+            for timer_name, was_active in stopped_timers.items():
+                if was_active and hasattr(self, timer_name):
+                    timer = getattr(self, timer_name)
+                    # Give a small delay before restarting
+                    QtCore.QTimer.singleShot(100, timer.start)
+
     def _process_button_deletion(self, button, current_tab):
         """Process button deletion immediately and update data manager"""
         self.initialize_tab_data(current_tab)
@@ -1705,7 +2192,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             self.tab_system.tabs[tab_name]['image_opacity'] = 1.0  
         
         self.initialize_button_original_sizes()
-
+        
     def setup_tab_system(self):
         # Connect add tab button to tab system
         self.add_tab_button.clicked.connect(self.on_add_tab_clicked)
@@ -1739,7 +2226,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             self.initialize_tab_data("Tab 1")
             DM.PickerDataManager.add_tab("Tab 1")
         
-        self.create_buttons()
+        QtCore.QTimer.singleShot(50, self.create_buttons)
 
     def clear_canvas(self):
         # Find and clear the current canvas
@@ -1793,10 +2280,9 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             self.remove_image.setEnabled(has_image)
         
         # Create buttons explicitly for the current tab
-        self.create_buttons_for_tab(tab_name)
-        
+        QtCore.QTimer.singleShot(50, self.create_buttons)
         # Then update buttons for proper positioning
-        self.update_buttons_for_current_tab(force_update=True)
+        #self.update_buttons_for_current_tab(force_update=True)
         
         # Update namespace dropdown for the new tab
         if hasattr(self, 'update_namespace_dropdown'):
@@ -1826,7 +2312,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         
         # Update the UI
         self.update_canvas_for_tab(new_name)
-        self.create_buttons()
+        QtCore.QTimer.singleShot(10, self.create_buttons)
         
         # Refresh the canvas
         current_canvas = self.tab_system.tabs[new_name]['canvas']
@@ -1878,7 +2364,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         
         # Update the UI
         self.update_canvas_for_tab(self.tab_system.current_tab)
-        self.create_buttons()
+        QtCore.QTimer.singleShot(10, self.create_buttons)
 
     def clear_canvas(self):
         # Find and clear the current canvas
@@ -2980,6 +3466,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.pending_button_updates.clear()
         
         #print("Batch update complete")
+    
     #----------------------------------------------------------------------------------------------------------------------------------------
     #CLEANUP
     #----------------------------------------------------------------------------------------------------------------------------------------
@@ -3008,7 +3495,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         """Stop and delete all timers"""
         timers_to_cleanup = [
             'scene_update_timer', 'resize_timer', 'batch_update_timer', 
-            'widget_update_timer', '_resize_update_timer', '_edit_update_timer'
+            'widget_update_timer', '_resize_update_timer', '_edit_update_timer', 'stay_on_top_timer'
         ]
         
         for timer_name in timers_to_cleanup:
@@ -3018,6 +3505,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                     timer.stop()
                 if hasattr(timer, 'deleteLater'):
                     timer.deleteLater()
+                
                 delattr(self, timer_name)
                 print(f"Cleaned up timer: {timer_name}")
 

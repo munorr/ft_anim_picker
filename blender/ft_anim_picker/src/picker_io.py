@@ -6,6 +6,7 @@ from pathlib import Path
 
 from . import custom_dialog as CD
 from . import blender_main as MAIN
+from . import custom_button as CB
 from PySide6 import QtWidgets
 
 # Import the data manager
@@ -98,10 +99,72 @@ def handle_tab_conflict(tab_name, existing_data):
     else:  # skip
         return 'skip', tab_name
 
+def get_save_mode_dialog():
+    """
+    Show dialog to choose between saving current tab or all tabs
+    
+    Returns:
+        str: 'current', 'all', or 'cancel'
+    """
+    # Get the manager instance
+    manager = MAIN.PickerWindowManager.get_instance()
+    # Get the first active picker window if available, or None if no windows exist
+    parent_widget = manager._picker_widgets[0] if manager._picker_widgets else None
+    dialog = CD.CustomDialog(parent_widget, title="Save Picker Data", size=(280, 100))
+    
+    # Add message label
+    message_label = QtWidgets.QLabel("What would you like to save?")
+    #message_label.setAlignment(QtWidgets.QLabel.AlignCenter)
+    message_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #dddddd; margin-bottom: 10px;")
+    dialog.add_widget(message_label)
+    
+    # Add buttons layout
+    buttons_layout = QtWidgets.QHBoxLayout()
+    current_button = CB.CustomButton("Current Tab",color="#5285a6",tooltip="Save only the currently active tab")
+    all_button = CB.CustomButton("All Tabs",color="#00749a",tooltip="Save all tabs in the picker")
+    cancel_button = CB.CustomButton("Cancel",color="#444444",tooltip="Cancel the save operation")
+    
+    buttons_layout.addWidget(current_button)
+    buttons_layout.addWidget(all_button)
+    buttons_layout.addWidget(cancel_button)
+    dialog.add_layout(buttons_layout)
+    
+    # Set up result variable
+    result = [None]
+    
+    # Connect button signals
+    current_button.clicked.connect(lambda: (result.__setitem__(0, 'current'), dialog.accept()))
+    all_button.clicked.connect(lambda: (result.__setitem__(0, 'all'), dialog.accept()))
+    cancel_button.clicked.connect(lambda: (result.__setitem__(0, 'cancel'), dialog.reject()))
+    
+    # Execute dialog
+    dialog.exec_()
+    
+    # Return the result
+    return result[0] if result[0] is not None else 'cancel'
+
 def get_picker_data():
     """Get the current picker data from Blender's scene data using PickerDataManager"""
     # Use the existing data manager to get the data
     return DM.PickerDataManager.get_data()
+
+def get_current_tab_data(current_tab_name):
+    """Get data for only the current tab"""
+    all_data = get_picker_data()
+    
+    if not all_data or not all_data.get('tabs'):
+        raise RuntimeError("No picker data available")
+    
+    if current_tab_name not in all_data['tabs']:
+        raise RuntimeError(f"Current tab '{current_tab_name}' not found in picker data")
+    
+    # Create data structure with only the current tab
+    current_tab_data = {
+        'tabs': OrderedDict()
+    }
+    current_tab_data['tabs'][current_tab_name] = all_data['tabs'][current_tab_name]
+    
+    return current_tab_data
 
 def save_picker_data(data):
     """Save picker data using the existing PickerDataManager"""
@@ -111,18 +174,26 @@ def save_picker_data(data):
     except Exception as e:
         raise RuntimeError(f"Failed to save picker data: {str(e)}")
 
-# Removed get_addon_preferences function since we're using PickerDataManager
-
-def store_picker_data(file_path):
+def store_picker_data(file_path, current_tab_name=None, save_mode='all'):
     """
-    Store the current picker data to a JSON file.
+    Store picker data to a JSON file.
     
     Args:
         file_path (str): Path where the JSON file will be saved
+        current_tab_name (str): Name of the current tab (required if save_mode is 'current')
+        save_mode (str): 'current' to save only current tab, 'all' to save all tabs
     """
-    # Get current picker data
+    # Get picker data based on save mode
     try:
-        data = get_picker_data()
+        if save_mode == 'current':
+            if not current_tab_name:
+                raise RuntimeError("Current tab name is required when saving current tab only")
+            data = get_current_tab_data(current_tab_name)
+            print(f"Saving current tab: {current_tab_name}")
+        else:  # save_mode == 'all'
+            data = get_picker_data()
+            print("Saving all tabs")
+            
     except Exception as e:
         raise RuntimeError(f"Failed to get picker data: {str(e)}")
     
@@ -137,7 +208,14 @@ def store_picker_data(file_path):
     try:
         with open(file_path, 'w') as f:
             json.dump(data, f, indent=4)
-            print(f"Picker data saved to {file_path}")
+            
+        # Create a summary message
+        tab_count = len(data['tabs'])
+        if save_mode == 'current':
+            print(f"Current tab '{current_tab_name}' saved to {file_path}")
+        else:
+            print(f"All {tab_count} tab(s) saved to {file_path}")
+            
     except Exception as e:
         raise RuntimeError(f"Failed to save picker data to file: {str(e)}")
 

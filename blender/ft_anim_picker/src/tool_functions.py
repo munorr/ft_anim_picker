@@ -6,13 +6,14 @@ import bpy
 from functools import wraps
 import re
 import json
+from typing import List, Dict, Optional, Tuple, Any
 
 from PySide6 import QtWidgets, QtCore, QtGui
 from PySide6.QtGui import QColor
 from PySide6.QtCore import QTimer, QPropertyAnimation, QEasingCurve
 from shiboken6 import wrapInstance
 
-from . utils import undoable, shortcuts
+from . utils import undoable, shortcuts, get_icon
 from . import custom_button as CB
 from . import custom_slider as CS
 from . import custom_dialog as CD
@@ -154,18 +155,44 @@ class animation_tool_layout:
         reset_transform_button.addToMenu("Move", reset_move, icon='delete.png', position=(0,0))
         reset_transform_button.addToMenu("Rotate", reset_rotate, icon='delete.png', position=(1,0))
         reset_transform_button.addToMenu("Scale", reset_scale, icon='delete.png', position=(2,0))
+        
+        timeLine_key_button = CB.CustomButton(text='Key', color='#d62e22', tooltip="Sets key frame.",text_size=ts, height=bh)
+        timeLine_delete_key_button = CB.CustomButton(text='Key', icon=get_icon('delete_white.png',opacity=0.8,size=12), color='#222222', size=14, tooltip="Deletes keys from the given start frame to the current frame.",text_size=ts, height=bh)
+        timeLine_copy_key_button = CB.CustomButton(text='Copy', color='#293F64', tooltip="Copy selected key(s).",text_size=ts, height=bh)
+        timeLine_paste_key_button = CB.CustomButton(text='Paste', color='#1699CA', tooltip="Paste copied key(s).",text_size=ts, height=bh)
+        timeLine_pasteInverse_key_button = CB.CustomButton(text='Paste Inverse', color='#9416CA', tooltip="Paste Inverted copied keys(s).",text_size=ts, height=bh)
+        
+        mirror_pose_button = CB.CustomButton(text='Mirror Pose', color='#8A2BE2', tooltip="Mirror Pose: Apply the pose of selected objects to their mirrored counterparts.",
+                                           text_size=ts, height=bh, ContextMenu=True)
+        mirror_pose_button.addToMenu("Select Mirror", select_mirror_pose, icon=get_icon('select.png',size=16), position=(0,0))
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
         reset_transform_button.singleClicked.connect(reset_all)
+
+        timeLine_key_button.singleClicked.connect(set_key)
+        timeLine_delete_key_button.singleClicked.connect(delete_keys)
+        timeLine_copy_key_button.singleClicked.connect(copy_pose)
+        timeLine_paste_key_button.singleClicked.connect(paste_pose)
+        timeLine_pasteInverse_key_button.singleClicked.connect(paste_inverse_pose)
+        
+        mirror_pose_button.singleClicked.connect(mirror_selected_pose)
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
         self.col1.addWidget(reset_transform_button)
 
+        self.col1.addSpacing(4)
+
+        self.col1.addWidget(timeLine_key_button)
+        self.col1.addWidget(timeLine_delete_key_button)
+        self.col1.addWidget(timeLine_copy_key_button)
+        self.col1.addWidget(timeLine_paste_key_button)
+        self.col1.addWidget(timeLine_pasteInverse_key_button)
+        self.col1.addWidget(mirror_pose_button)
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
         self.tools_scroll_frame_layout.addLayout(self.col1)
         self.tools_scroll_frame_layout.addSpacing(2)
         self.tools_scroll_frame_layout.addLayout(self.col2)
         self.layout.addWidget(self.tools_scroll_area)
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
+#---------------------------------------------------------------------------------------------------------------
 def reset_move():
     with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
         if bpy.context.mode == 'POSE':
@@ -222,7 +249,7 @@ def reset_all():
                 finally:
                     pass
                 bpy.data.objects[obj].scale = (1, 1, 1)
-
+#---------------------------------------------------------------------------------------------------------------
 def selected_objects():
     object_list = []
     selected_objects = []
@@ -270,8 +297,717 @@ def selected_bones():
 def active_object():
     return bpy.context.view_layer.objects.active
 #---------------------------------------------------------------------------------------------------------------
+def context_override(function, *args, **kwargs):
+    """
+    Universal context override that handles different operator requirements
+    """
+    with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+        # Get the base window
+        if not bpy.context.window_manager.windows:
+            return
+        
+        window = bpy.context.window_manager.windows[0]
+        
+        # Find required areas
+        view3d_area = None
+        action_area = None
+        
+        for area in window.screen.areas:
+            if area.type == 'VIEW_3D':
+                view3d_area = area
+            elif area.type in ['DOPESHEET_EDITOR', 'GRAPH_EDITOR']:
+                action_area = area
+        
+        # Determine which context is needed based on the operator
+        operator_name = getattr(function, '__name__', str(function))
+        
+        # Check if it's an action operator
+        if hasattr(function, '__self__') and hasattr(function.__self__, '__module__'):
+            module_path = str(function.__self__.__module__) if hasattr(function.__self__, '__module__') else ""
+            if 'action' in module_path.lower() or 'action' in operator_name.lower():
+                use_action_context = True
+            else:
+                use_action_context = False
+        else:
+            # Fallback: check operator string representation
+            op_str = str(function).lower()
+            use_action_context = 'action' in op_str
+        
+        # Set up the appropriate context
+        if use_action_context and action_area:
+            # Use action editor context for action operators
+            target_area = action_area
+            region = None
+            for r in target_area.regions:
+                if r.type == 'WINDOW':
+                    region = r
+                    break
+            if not region:
+                region = target_area.regions[-1]
+            
+            context_dict = {
+                'window': window,
+                'area': target_area,
+                'region': region,
+                'screen': window.screen
+            }
+            
+            # Add animation-specific context if available
+            if bpy.context.active_object:
+                context_dict['active_object'] = bpy.context.active_object
+                if bpy.context.active_object.animation_data:
+                    context_dict['active_action'] = bpy.context.active_object.animation_data.action
+            
+            if bpy.context.selected_objects:
+                context_dict['selected_objects'] = bpy.context.selected_objects
+                
+        else:
+            # Use 3D viewport context for other operators
+            if not view3d_area:
+                return
+                
+            target_area = view3d_area
+            region = None
+            for r in target_area.regions:
+                if r.type == 'WINDOW':
+                    region = r
+                    break
+            if not region:
+                region = target_area.regions[-1]
+            
+            context_dict = {
+                'window': window,
+                'area': target_area,
+                'region': region,
+                'screen': window.screen
+            }
+            
+            # Add object context
+            
+            if bpy.context.active_object:
+                context_dict['active_object'] = bpy.context.active_object
+            if bpy.context.selected_objects:
+                context_dict['selected_objects'] = bpy.context.selected_objects
+        
+        # Execute with context override
+        try:
+            with bpy.context.temp_override(**context_dict):
+                if args or kwargs:
+                    return function(*args, **kwargs)
+                else:
+                    return function()
+        except Exception as e:
+            print(f"Context override failed: {e}")
+            # Fallback: try without context override
+            try:
+                if args or kwargs:
+                    return function(*args, **kwargs)
+                else:
+                    return function()
+            except Exception as e2:
+                print(f"Fallback execution also failed: {e2}")
+
+def set_key():
+    context_override(bpy.ops.anim.keyframe_insert)
+
+def delete_keys():
+    context_override(bpy.ops.action.delete)
+
+def copy_pose():
+    context_override(bpy.ops.action.copy)
+
+def paste_pose():
+    context_override(bpy.ops.action.paste)
+
+def paste_inverse_pose():
+    context_override(bpy.ops.action.paste, flipped=True)
+
+def select_mirror_pose():
+    context_override(bpy.ops.pose.select_mirror)
+   
+#---------------------------------------------------------------------------------------------------------------
+def mirror_selected_pose(mirror_mode: str = 'auto',
+                        axis: str = 'x',
+                        select_mirrored: bool = True,
+                        force_in_place: bool = False) -> Dict[str, Any]:
+    """
+    Mirror the pose of selected objects/bones to their counterparts.
+    
+    Args:
+        mirror_mode: 'auto', 'objects', or 'bones' - determines what to mirror
+        axis: 'x', 'y', or 'z' - axis to mirror across (default: 'x')
+        select_mirrored: Whether to select the mirrored objects/bones after mirroring
+        force_in_place: If True, always mirror in-place instead of to counterparts
+        
+    Returns:
+        Dictionary containing results and statistics
+    """
+    with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+        
+        # Initialize results
+        results = {
+            'mirrored_objects': [],
+            'mirrored_bones': [],
+            'failed_objects': [],
+            'failed_bones': [],
+            'total_processed': 0,
+            'success_count': 0,
+            'error_count': 0,
+            'messages': []
+        }
+        
+        try:
+            # Get current namespace from picker window
+            namespace = _get_current_namespace()
+            
+            # Build object and mirror caches
+            object_cache = _build_object_cache(namespace)
+            mirror_cache = _build_mirror_cache(object_cache, namespace)
+            
+            # Get active object and context
+            active_obj = bpy.context.view_layer.objects.active
+            current_mode = getattr(bpy.context, 'mode', 'OBJECT')
+            
+            # Determine what to mirror based on mode and selection
+            if mirror_mode == 'auto':
+                if active_obj and active_obj.type == 'ARMATURE' and 'POSE' in current_mode:
+                    mirror_mode = 'bones'
+                else:
+                    mirror_mode = 'objects'
+            
+            if mirror_mode == 'bones':
+                # Mirror selected bones
+                _mirror_selected_bones(active_obj, mirror_cache, axis, results, force_in_place)
+            else:
+                # Mirror selected objects
+                _mirror_selected_objects(mirror_cache, axis, results, force_in_place)
+            
+            # Select mirrored items if requested
+            if select_mirrored:
+                _select_mirrored_items(results, mirror_mode)
+                
+            # Update results summary
+            results['total_processed'] = len(results['mirrored_objects']) + len(results['mirrored_bones']) + len(results['failed_objects']) + len(results['failed_bones'])
+            results['success_count'] = len(results['mirrored_objects']) + len(results['mirrored_bones'])
+            results['error_count'] = len(results['failed_objects']) + len(results['failed_bones'])
+            
+            # Add summary message
+            if results['success_count'] > 0:
+                results['messages'].append(f"Successfully mirrored {results['success_count']} items")
+            if results['error_count'] > 0:
+                results['messages'].append(f"Failed to mirror {results['error_count']} items")
+                
+        except Exception as e:
+            results['messages'].append(f"Error during mirror operation: {str(e)}")
+            results['error_count'] += 1
+        
+        return results
 
 
+def _get_current_namespace():
+    """
+    Get current namespace from the BlenderAnimPickerWindow.
+    """
+    try:
+        from PySide6 import QtWidgets
+        from . import blender_ui
+        
+        # Find the BlenderAnimPickerWindow instance
+        for widget in QtWidgets.QApplication.allWidgets():
+            if isinstance(widget, blender_ui.BlenderAnimPickerWindow):
+                if hasattr(widget, 'namespace_dropdown'):
+                    namespace = widget.namespace_dropdown.currentText()
+                    return namespace if namespace != 'None' else None
+                break
+        
+        # Fallback: try to find any widget with namespace_dropdown
+        for widget in QtWidgets.QApplication.allWidgets():
+            if hasattr(widget, 'namespace_dropdown'):
+                namespace = widget.namespace_dropdown.currentText()
+                return namespace if namespace != 'None' else None
+                
+    except Exception as e:
+        print(f"Warning: Could not get namespace from picker window: {e}")
+    
+    # Default to None if no namespace found
+    return None
+
+
+def _build_object_cache(namespace: Optional[str]) -> Dict[str, Any]:
+    """Build optimized object lookup cache with namespace support."""
+    cache = {
+        'exact': {},
+        'namespace_prefix': {},
+        'namespace_suffix': {},
+        'partial': {},
+        'by_type': {'ARMATURE': [], 'MESH': [], 'OTHER': []}
+    }
+    
+    separators = ['_', '.']
+    
+    for obj in bpy.data.objects:
+        name = obj.name
+        
+        # Store exact name
+        cache['exact'][name] = obj
+        
+        # Store by type
+        obj_type = 'ARMATURE' if obj.type == 'ARMATURE' else ('MESH' if obj.type == 'MESH' else 'OTHER')
+        cache['by_type'][obj_type].append(obj)
+        
+        # Build namespace-aware cache
+        if namespace:
+            for sep in separators:
+                prefix_pattern = f"{namespace}{sep}"
+                if name.startswith(prefix_pattern):
+                    base_name = name[len(prefix_pattern):]
+                    cache['namespace_prefix'][base_name] = obj
+                
+                suffix_pattern = f"{sep}{namespace}"
+                if name.endswith(suffix_pattern):
+                    base_name = name[:-len(suffix_pattern)]
+                    cache['namespace_suffix'][base_name] = obj
+            
+            if name == namespace:
+                cache['namespace_prefix'][namespace] = obj
+                cache['namespace_suffix'][namespace] = obj
+        
+        # Build partial match cache
+        name_parts = name.lower().split('_') + name.lower().split('.')
+        for part in name_parts:
+            if part and len(part) > 2:
+                if part not in cache['partial']:
+                    cache['partial'][part] = []
+                cache['partial'][part].append(obj)
+    
+    return cache
+
+
+def _build_mirror_cache(object_cache: Dict[str, Any], namespace: Optional[str]) -> Dict[str, Any]:
+    """Build mirror object lookup cache with namespace awareness."""
+    mirror_cache = {}
+    
+    # Enhanced mirror patterns
+    mirror_patterns = [
+        # Suffix patterns
+        ('_L', '_R'), ('_l', '_r'), ('.L', '.R'), ('.l', '.r'),
+        ('Left', 'Right'), ('left', 'right'),
+        ('_Left', '_Right'), ('_left', '_right'),
+        ('.Left', '.Right'), ('.left', '.right'),
+        # Prefix patterns
+        ('L_', 'R_'), ('l_', 'r_'), ('L.', 'R.'), ('l.', 'r.'),
+        ('Left_', 'Right_'), ('left_', 'right_'),
+        ('Left.', 'Right.'), ('left.', 'right.')
+    ]
+    
+    # Check exact matches first
+    for obj_name, obj in object_cache['exact'].items():
+        for left_pat, right_pat in mirror_patterns:
+            mirror_name = None
+            
+            # Check suffix patterns
+            if obj_name.endswith(left_pat):
+                mirror_name = obj_name[:-len(left_pat)] + right_pat
+            elif obj_name.endswith(right_pat):
+                mirror_name = obj_name[:-len(right_pat)] + left_pat
+            # Check prefix patterns
+            elif obj_name.startswith(left_pat):
+                mirror_name = right_pat + obj_name[len(left_pat):]
+            elif obj_name.startswith(right_pat):
+                mirror_name = left_pat + obj_name[len(right_pat):]
+            # Check anywhere in name
+            elif left_pat in obj_name:
+                mirror_name = obj_name.replace(left_pat, right_pat)
+            elif right_pat in obj_name:
+                mirror_name = obj_name.replace(right_pat, left_pat)
+            
+            if mirror_name and mirror_name in object_cache['exact']:
+                mirror_cache[obj_name] = object_cache['exact'][mirror_name]
+                break
+    
+    # Check namespace-aware matches
+    if namespace:
+        for base_name, obj in object_cache['namespace_prefix'].items():
+            for left_pat, right_pat in mirror_patterns:
+                if left_pat in base_name:
+                    mirror_base = base_name.replace(left_pat, right_pat)
+                    if mirror_base in object_cache['namespace_prefix']:
+                        mirror_cache[base_name] = object_cache['namespace_prefix'][mirror_base]
+                        break
+                elif right_pat in base_name:
+                    mirror_base = base_name.replace(right_pat, left_pat)
+                    if mirror_base in object_cache['namespace_prefix']:
+                        mirror_cache[base_name] = object_cache['namespace_prefix'][mirror_base]
+                        break
+    
+    return mirror_cache
+
+
+def _mirror_selected_objects(mirror_cache: Dict[str, Any], 
+                           axis: str, 
+                           results: Dict[str, Any],
+                           force_in_place: bool = False) -> None:
+    """Mirror selected objects to their counterparts or in-place."""
+    # Get namespace from picker window
+    namespace = _get_current_namespace()
+    selected_objects = bpy.context.view_layer.objects.selected
+    
+    for obj in selected_objects:
+        try:
+            mirror_obj = None
+            
+            # Only look for counterpart if not forcing in-place
+            if not force_in_place:
+                mirror_obj = _find_mirrored_object(obj.name, mirror_cache)
+            
+            if mirror_obj:
+                # Capture current transform
+                transform_data = _capture_object_transform(obj)
+                
+                # Mirror the transform
+                mirrored_transform = _mirror_transform_data(transform_data, axis)
+                
+                # Apply mirrored transform
+                _apply_object_transform(mirror_obj, mirrored_transform)
+                
+                results['mirrored_objects'].append({
+                    'original': obj.name,
+                    'mirrored': mirror_obj.name
+                })
+            else:
+                # No counterpart found or forcing in-place, mirror the object in place
+                transform_data = _capture_object_transform(obj)
+                mirrored_transform = _mirror_transform_data(transform_data, axis)
+                _apply_object_transform(obj, mirrored_transform)
+                
+                results['mirrored_objects'].append({
+                    'original': obj.name,
+                    'mirrored': obj.name + ' (in-place)'
+                })
+                
+        except Exception as e:
+            results['failed_objects'].append({
+                'name': obj.name,
+                'reason': str(e)
+            })
+
+
+def _mirror_selected_bones(armature_obj: bpy.types.Object,
+                          mirror_cache: Dict[str, Any],
+                          axis: str,
+                          results: Dict[str, Any],
+                          force_in_place: bool = False) -> None:
+    """Mirror selected bones to their counterparts or in-place."""
+    if not armature_obj or armature_obj.type != 'ARMATURE':
+        return
+    
+    # Get namespace from picker window
+    namespace = _get_current_namespace()
+    
+    try:
+        # Get selected pose bones
+        selected_pose_bones = []
+        context_bones = getattr(bpy.context, 'selected_pose_bones', None)
+        if context_bones:
+            selected_pose_bones = list(context_bones)
+        
+        # Fallback: check bone selection manually
+        if not selected_pose_bones and armature_obj.pose:
+            for pose_bone in armature_obj.pose.bones:
+                if pose_bone.bone.select:
+                    selected_pose_bones.append(pose_bone)
+        
+        # Build bone mirror cache for this armature (only if not forcing in-place)
+        bone_mirror_cache = {}
+        if not force_in_place:
+            for bone in armature_obj.pose.bones:
+                mirrored_name = _get_mirrored_bone_name(bone.name)
+                if mirrored_name and mirrored_name in armature_obj.pose.bones:
+                    bone_mirror_cache[bone.name] = armature_obj.pose.bones[mirrored_name]
+        
+        # Mirror each selected bone
+        for bone in selected_pose_bones:
+            try:
+                mirror_bone = None
+                
+                # Only look for counterpart if not forcing in-place
+                if not force_in_place:
+                    mirror_bone = bone_mirror_cache.get(bone.name)
+                
+                if mirror_bone:
+                    # Capture current transform
+                    transform_data = _capture_bone_transform(bone)
+                    
+                    # Mirror the transform
+                    mirrored_transform = _mirror_transform_data(transform_data, axis)
+                    
+                    # Apply mirrored transform
+                    _apply_bone_transform(mirror_bone, mirrored_transform)
+                    
+                    results['mirrored_bones'].append({
+                        'original': bone.name,
+                        'mirrored': mirror_bone.name,
+                        'armature': armature_obj.name
+                    })
+                else:
+                    # No counterpart found or forcing in-place, mirror the bone in place
+                    transform_data = _capture_bone_transform(bone)
+                    mirrored_transform = _mirror_transform_data(transform_data, axis)
+                    _apply_bone_transform(bone, mirrored_transform)
+                    
+                    results['mirrored_bones'].append({
+                        'original': bone.name,
+                        'mirrored': bone.name + ' (in-place)',
+                        'armature': armature_obj.name
+                    })
+                    
+            except Exception as e:
+                results['failed_bones'].append({
+                    'name': bone.name,
+                    'armature': armature_obj.name,
+                    'reason': str(e)
+                })
+                
+    except Exception as e:
+        results['failed_bones'].append({
+            'name': 'Unknown',
+            'armature': armature_obj.name if armature_obj else 'Unknown',
+            'reason': f"Error processing armature: {str(e)}"
+        })
+
+
+def _find_mirrored_object(obj_name: str, mirror_cache: Dict[str, Any]) -> Optional[bpy.types.Object]:
+    """Find mirrored object using cache."""
+    # Get namespace from picker window
+    namespace = _get_current_namespace()
+    
+    if obj_name in mirror_cache:
+        return mirror_cache[obj_name]
+    
+    # Try namespace-aware matching
+    if namespace:
+        for cached_name, mirror_obj in mirror_cache.items():
+            if (obj_name in cached_name or cached_name in obj_name or
+                cached_name == f"{namespace}_{obj_name}" or
+                cached_name == f"{obj_name}_{namespace}" or
+                cached_name == f"{namespace}.{obj_name}" or
+                cached_name == f"{obj_name}.{namespace}"):
+                return mirror_obj
+    
+    return None
+
+
+def _get_mirrored_bone_name(bone_name: str) -> Optional[str]:
+    """Get mirrored bone name using enhanced patterns."""
+    patterns = [
+        # Suffix patterns
+        ('_L', '_R'), ('_l', '_r'), ('.L', '.R'), ('.l', '.r'),
+        ('Left', 'Right'), ('left', 'right'),
+        ('_Left', '_Right'), ('_left', '_right'),
+        ('.Left', '.Right'), ('.left', '.right'),
+        # Prefix patterns
+        ('L_', 'R_'), ('l_', 'r_'), ('L.', 'R.'), ('l.', 'r.'),
+        ('Left_', 'Right_'), ('left_', 'right_'),
+        ('Left.', 'Right.'), ('left.', 'right.')
+    ]
+    
+    # Try exact suffix/prefix matches first
+    for left_pat, right_pat in patterns:
+        if bone_name.endswith(left_pat):
+            return bone_name[:-len(left_pat)] + right_pat
+        elif bone_name.endswith(right_pat):
+            return bone_name[:-len(right_pat)] + left_pat
+        elif bone_name.startswith(left_pat):
+            return right_pat + bone_name[len(left_pat):]
+        elif bone_name.startswith(right_pat):
+            return left_pat + bone_name[len(right_pat):]
+    
+    # Fallback to anywhere in name
+    for left_pat, right_pat in patterns:
+        if left_pat in bone_name:
+            return bone_name.replace(left_pat, right_pat)
+        elif right_pat in bone_name:
+            return bone_name.replace(right_pat, left_pat)
+    
+    return None
+
+
+def _capture_object_transform(obj: bpy.types.Object) -> Dict[str, Any]:
+    """Capture transform data from object."""
+    transform_data = {
+        'location': list(obj.location),
+        'scale': list(obj.scale)
+    }
+    
+    # Add rotation based on mode
+    if obj.rotation_mode == 'QUATERNION':
+        transform_data['rotation_quaternion'] = list(obj.rotation_quaternion)
+    elif obj.rotation_mode == 'AXIS_ANGLE':
+        transform_data['rotation_axis_angle'] = list(obj.rotation_axis_angle)
+    else:
+        transform_data['rotation_euler'] = list(obj.rotation_euler)
+    
+    return transform_data
+
+
+def _capture_bone_transform(bone: bpy.types.PoseBone) -> Dict[str, Any]:
+    """Capture transform data from pose bone."""
+    transform_data = {
+        'location': list(bone.location),
+        'scale': list(bone.scale)
+    }
+    
+    # Add rotation based on mode
+    if bone.rotation_mode == 'QUATERNION':
+        transform_data['rotation_quaternion'] = list(bone.rotation_quaternion)
+    elif bone.rotation_mode == 'AXIS_ANGLE':
+        transform_data['rotation_axis_angle'] = list(bone.rotation_axis_angle)
+    else:
+        transform_data['rotation_euler'] = list(bone.rotation_euler)
+    
+    return transform_data
+
+
+def _mirror_transform_data(transform_data: Dict[str, Any], axis: str = 'x') -> Dict[str, Any]:
+    """Mirror transform data across specified axis."""
+    mirrored_data = transform_data.copy()
+    
+    # Default to X-axis mirroring (most common)
+    if axis.lower() == 'x':
+        # Mirror location
+        if 'location' in transform_data and len(transform_data['location']) >= 3:
+            mirrored_data['location'] = [-transform_data['location'][0],
+                                       transform_data['location'][1],
+                                       transform_data['location'][2]]
+        
+        # Mirror euler rotation
+        if 'rotation_euler' in transform_data and len(transform_data['rotation_euler']) >= 3:
+            mirrored_data['rotation_euler'] = [transform_data['rotation_euler'][0],
+                                             -transform_data['rotation_euler'][1],
+                                             -transform_data['rotation_euler'][2]]
+        
+        # Mirror quaternion rotation
+        if 'rotation_quaternion' in transform_data and len(transform_data['rotation_quaternion']) >= 4:
+            mirrored_data['rotation_quaternion'] = [transform_data['rotation_quaternion'][0],
+                                                   transform_data['rotation_quaternion'][1],
+                                                   -transform_data['rotation_quaternion'][2],
+                                                   -transform_data['rotation_quaternion'][3]]
+        
+        # Mirror axis-angle rotation
+        if 'rotation_axis_angle' in transform_data and len(transform_data['rotation_axis_angle']) >= 4:
+            mirrored_data['rotation_axis_angle'] = [-transform_data['rotation_axis_angle'][0],
+                                                   transform_data['rotation_axis_angle'][1],
+                                                   -transform_data['rotation_axis_angle'][2],
+                                                   -transform_data['rotation_axis_angle'][3]]
+    
+    # Y and Z axis mirroring can be added here if needed
+    elif axis.lower() == 'y':
+        # Mirror Y-axis (flip up/down)
+        if 'location' in transform_data and len(transform_data['location']) >= 3:
+            mirrored_data['location'] = [transform_data['location'][0],
+                                       -transform_data['location'][1],
+                                       transform_data['location'][2]]
+        # Add Y-axis rotation mirroring logic here
+        
+    elif axis.lower() == 'z':
+        # Mirror Z-axis (flip front/back)
+        if 'location' in transform_data and len(transform_data['location']) >= 3:
+            mirrored_data['location'] = [transform_data['location'][0],
+                                       transform_data['location'][1],
+                                       -transform_data['location'][2]]
+        # Add Z-axis rotation mirroring logic here
+    
+    return mirrored_data
+
+
+def _apply_object_transform(obj: bpy.types.Object, transform_data: Dict[str, Any]) -> None:
+    """Apply transform data to object."""
+    if 'location' in transform_data and len(transform_data['location']) == 3:
+        obj.location[:] = transform_data['location']
+    
+    if 'scale' in transform_data and len(transform_data['scale']) == 3:
+        obj.scale[:] = transform_data['scale']
+    
+    # Apply rotation based on object's rotation mode
+    if obj.rotation_mode == 'QUATERNION' and 'rotation_quaternion' in transform_data:
+        obj.rotation_quaternion[:] = transform_data['rotation_quaternion'][:4]
+    elif obj.rotation_mode == 'AXIS_ANGLE' and 'rotation_axis_angle' in transform_data:
+        obj.rotation_axis_angle[:] = transform_data['rotation_axis_angle'][:4]
+    elif 'rotation_euler' in transform_data:
+        obj.rotation_euler[:] = transform_data['rotation_euler'][:3]
+
+
+def _apply_bone_transform(bone: bpy.types.PoseBone, transform_data: Dict[str, Any]) -> None:
+    """Apply transform data to pose bone."""
+    if 'location' in transform_data and len(transform_data['location']) == 3:
+        bone.location[:] = transform_data['location']
+    
+    if 'scale' in transform_data and len(transform_data['scale']) == 3:
+        bone.scale[:] = transform_data['scale']
+    
+    # Apply rotation based on bone's rotation mode
+    if bone.rotation_mode == 'QUATERNION' and 'rotation_quaternion' in transform_data:
+        bone.rotation_quaternion[:] = transform_data['rotation_quaternion'][:4]
+    elif bone.rotation_mode == 'AXIS_ANGLE' and 'rotation_axis_angle' in transform_data:
+        bone.rotation_axis_angle[:] = transform_data['rotation_axis_angle'][:4]
+    elif 'rotation_euler' in transform_data:
+        bone.rotation_euler[:] = transform_data['rotation_euler'][:3]
+
+
+def _select_mirrored_items(results: Dict[str, Any], mirror_mode: str) -> None:
+    """Select the mirrored objects/bones after mirroring."""
+    with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+        try:
+            if mirror_mode == 'bones' and results['mirrored_bones']:
+                # Handle bone selection
+                armature_name = results['mirrored_bones'][0]['armature']
+                if armature_name in bpy.data.objects:
+                    armature_obj = bpy.data.objects[armature_name]
+                    bpy.context.view_layer.objects.active = armature_obj
+                    
+                    # Switch to pose mode if needed
+                    if bpy.context.mode != 'POSE':
+                        bpy.ops.object.mode_set(mode='POSE')
+                    
+                    # Clear selection and select only the result bones
+                    bpy.ops.pose.select_all(action='DESELECT')
+                    
+                    for bone_info in results['mirrored_bones']:
+                        mirrored_name = bone_info['mirrored']
+                        
+                        # If it's an in-place mirror, select the original bone
+                        if mirrored_name.endswith(' (in-place)'):
+                            original_name = bone_info['original']
+                            if original_name in armature_obj.pose.bones:
+                                armature_obj.pose.bones[original_name].bone.select = True
+                        else:
+                            # If it has a counterpart, select the counterpart
+                            if mirrored_name in armature_obj.pose.bones:
+                                armature_obj.pose.bones[mirrored_name].bone.select = True
+                    bpy.context.object.data.bones.active = bpy.context.object.data.bones[mirrored_name]
+                            
+            elif mirror_mode == 'objects' and results['mirrored_objects']:
+                # Handle object selection
+                bpy.ops.object.select_all(action='DESELECT')
+                
+                for obj_info in results['mirrored_objects']:
+                    mirrored_name = obj_info['mirrored']
+                    
+                    # If it's an in-place mirror, select the original object
+                    if mirrored_name.endswith(' (in-place)'):
+                        original_name = obj_info['original']
+                        if original_name in bpy.data.objects:
+                            bpy.data.objects[original_name].select_set(True)
+                            bpy.context.view_layer.objects.active = bpy.data.objects[original_name]
+                    else:
+                        # If it has a counterpart, select the counterpart
+                        if mirrored_name in bpy.data.objects:
+                            bpy.data.objects[mirrored_name].select_set(True)
+                            bpy.context.view_layer.objects.active = bpy.data.objects[mirrored_name]
+                        
+        except Exception as e:
+            results['messages'].append(f"Error selecting mirrored items: {str(e)}")
+#---------------------------------------------------------------------------------------------------------------
 @shortcuts(t='text', c='color', o='opacity', s='selectable', sb='source_button', tb='target_buttons')
 def button_appearance(text="", color="", opacity="", selectable="", source_button=None, target_buttons=None):
     """
@@ -311,106 +1047,133 @@ def button_appearance(text="", color="", opacity="", selectable="", source_butto
         @TF.button_appearance(text="IK")
         @TF.button_appearance(text="FK", color="#FF0000")
     """
+    # Discover the execution context (source button, picker widget, all buttons)
+    context = _discover_execution_context(source_button)
+    if not context:
+        print("No picker widgets found.")
+        return
+    
+    # Resolve which buttons to modify
+    buttons_to_modify = _resolve_target_buttons(target_buttons, context)
+    if not buttons_to_modify:
+        print("No buttons to modify in the target picker widget. Please select at least one button or call this function from a button's script.")
+        return
+    
+    # Process and validate appearance parameters
+    validated_params = _process_appearance_parameters(text, color, opacity, selectable)
+    if not any(validated_params.values()):
+        print("No changes were made. Please provide at least one parameter (text, color, opacity, or selectable).")
+        return
+    
+    # Apply appearance changes to buttons
+    modified_buttons = _apply_appearance_changes(buttons_to_modify, validated_params)
+    
+    # Persist changes to database and update UI
+    if modified_buttons:
+        _persist_appearance_changes(modified_buttons, context, validated_params)
+
+def _discover_execution_context(source_button):
+    """
+    Discover the execution context including source button, picker widget, and all available buttons.
+    
+    Returns:
+        dict: Context containing 'source_button', 'picker_widget', 'all_buttons', and 'canvas'
+        None: If no valid context could be established
+    """
     # Import needed modules
     from . import blender_main as MAIN
     import inspect
     
-    # Determine if this function is being called from a button's script
-    is_from_script = False
-    script_source_button = None
-    
+    # Detect source button from call stack if not provided
     if source_button is None:
-        # Walk up the call stack to find the executing button
         for frame_info in inspect.stack():
             if frame_info.function == 'execute_script_command':
-                # Found the execute_script_command frame
                 if hasattr(frame_info, 'frame') and 'self' in frame_info.frame.f_locals:
                     potential_button = frame_info.frame.f_locals['self']
                     if hasattr(potential_button, 'mode') and hasattr(potential_button, 'script_data'):
-                        # This is the button that's executing the script
-                        script_source_button = potential_button
-                        is_from_script = True
+                        source_button = potential_button
                         break
-    else:
-        script_source_button = source_button
-        is_from_script = True
     
-    # Get the correct picker window instance
-    target_picker_widget = None
-    
-    if script_source_button:
-        # Find the picker widget that contains this button by walking up the widget hierarchy
-        current_widget = script_source_button
+    # Find the target picker widget
+    picker_widget = None
+    if source_button:
+        # Walk up the widget hierarchy to find the picker window
+        current_widget = source_button
         while current_widget:
-            # Check if this widget is a BlenderAnimPickerWindow
             if current_widget.__class__.__name__ == 'BlenderAnimPickerWindow':
-                target_picker_widget = current_widget
+                picker_widget = current_widget
                 break
             current_widget = current_widget.parent()
     
-    # If we couldn't find the specific window, fall back to manager approach
-    if not target_picker_widget:
+    # Fallback to manager approach if no picker widget found
+    if not picker_widget:
         manager = MAIN.PickerWindowManager.get_instance()
-        if not manager or not manager._picker_widgets:
-            print("No picker widgets found.")
-            return
-        # Use the first available picker widget as fallback
-        target_picker_widget = manager._picker_widgets[0]
+        if manager and manager._picker_widgets:
+            picker_widget = manager._picker_widgets[0]
     
-    # Get all buttons from the correct picker widget instance only
-    all_buttons = []
+    if not picker_widget:
+        return None
     
-    # Try different ways to access the canvas from the target picker widget
+    # Get canvas from picker widget
     canvas = None
+    if hasattr(picker_widget, 'canvas'):
+        canvas = picker_widget.canvas
+    elif hasattr(picker_widget, 'tab_system') and picker_widget.tab_system.current_tab:
+        current_tab = picker_widget.tab_system.current_tab
+        if current_tab in picker_widget.tab_system.tabs:
+            canvas = picker_widget.tab_system.tabs[current_tab]['canvas']
     
-    # Method 1: Direct canvas attribute
-    if hasattr(target_picker_widget, 'canvas'):
-        canvas = target_picker_widget.canvas
-    
-    # Method 2: Look for canvas in tab system
-    elif hasattr(target_picker_widget, 'tab_system'):
-        if target_picker_widget.tab_system.current_tab:
-            current_tab = target_picker_widget.tab_system.current_tab
-            if current_tab in target_picker_widget.tab_system.tabs:
-                canvas = target_picker_widget.tab_system.tabs[current_tab]['canvas']
-    
-    # Method 3: Search for canvas in children of the target widget only
     if not canvas:
-        for child in target_picker_widget.findChildren(QtWidgets.QWidget):
+        for child in picker_widget.findChildren(QtWidgets.QWidget):
             if hasattr(child, 'buttons') and isinstance(child.buttons, list):
                 canvas = child
                 break
     
-    # If we found a canvas, get its buttons
+    # Get all buttons from the picker widget
+    all_buttons = []
     if canvas and hasattr(canvas, 'buttons'):
         all_buttons.extend(canvas.buttons)
     
-    # If we still don't have any buttons from the target widget, search more thoroughly
+    # Fallback: search for buttons in all child widgets
     if not all_buttons:
-        for child in target_picker_widget.findChildren(QtWidgets.QWidget):
+        for child in picker_widget.findChildren(QtWidgets.QWidget):
             if hasattr(child, 'mode') and hasattr(child, 'label') and hasattr(child, 'unique_id'):
                 all_buttons.append(child)
     
-    # If we still don't have any buttons, give up
-    if not all_buttons:
-        print("No buttons found in the target picker widget.")
-        return
+    return {
+        'source_button': source_button,
+        'picker_widget': picker_widget,
+        'all_buttons': all_buttons,
+        'canvas': canvas
+    }
+
+def _resolve_target_buttons(target_buttons, context):
+    """
+    Resolve which buttons should be modified based on the target_buttons parameter and context.
     
-    # Get buttons to modify
-    buttons_to_modify = []
+    Args:
+        target_buttons: User-specified target buttons (None, string, or list)
+        context (dict): Execution context from _discover_execution_context
+    
+    Returns:
+        list: List of button objects to modify
+    """
+    all_buttons = context['all_buttons']
+    source_button = context['source_button']
     
     # Case 1: Specific target buttons provided
     if target_buttons is not None:
+        buttons_to_modify = []
+        
         # Convert single string to list
         if isinstance(target_buttons, str):
             target_buttons = [target_buttons]
-            
+        
         # Process each target
         for target in target_buttons:
             if isinstance(target, str):
-                # Find buttons by unique ID only in the target widget
+                # Find buttons by unique ID
                 for btn in all_buttons:
-                    # Match by unique ID
                     if hasattr(btn, 'unique_id') and btn.unique_id == target:
                         buttons_to_modify.append(btn)
                         break
@@ -418,61 +1181,98 @@ def button_appearance(text="", color="", opacity="", selectable="", source_butto
                 # Assume it's a button object - verify it belongs to the target widget
                 if target in all_buttons:
                     buttons_to_modify.append(target)
+        
+        return buttons_to_modify
     
     # Case 2: Source button provided or detected from script execution
-    elif script_source_button is not None:
-        # Use the source button, but verify it belongs to the target widget
-        if script_source_button in all_buttons:
-            buttons_to_modify = [script_source_button]
+    if source_button is not None:
+        if source_button in all_buttons:
+            return [source_button]
         else:
             print("Source button not found in the target picker widget.")
-            return
+            return []
     
-    # Case 3: Default to selected buttons in the target widget only
+    # Case 3: Default to selected buttons in the target widget
+    return [btn for btn in all_buttons if hasattr(btn, 'is_selected') and btn.is_selected]
+
+def _process_appearance_parameters(text, color, opacity, selectable):
+    """
+    Process and validate all appearance parameters.
+    
+    Args:
+        text (str): Button text/label
+        color (str): Button color in hex format
+        opacity (str): Button opacity (0-1)
+        selectable (str): Whether button is selectable ("True"/"False" or "1"/"0")
+    
+    Returns:
+        dict: Validated parameters with None values for invalid/empty parameters
+    """
+    validated = {}
+    
+    # Process text
+    validated['text'] = text if text else None
+    
+    # Process and validate color
+    if color and color.startswith('#') and (len(color) == 7 or len(color) == 9):
+        validated['color'] = color
+    elif color:
+        print(f"Invalid color format: {color}. Color should be in hex format (e.g., #FF0000).")
+        validated['color'] = None
     else:
-        # Get selected buttons from the target widget only
-        buttons_to_modify = [btn for btn in all_buttons if hasattr(btn, 'is_selected') and btn.is_selected]
+        validated['color'] = None
     
-    # Check if we have any buttons to modify
-    if not buttons_to_modify:
-        print("No buttons to modify in the target picker widget. Please select at least one button or call this function from a button's script.")
-        return
-    
-    # Process and validate the opacity value
-    opacity_value = None
+    # Process and validate opacity
     if opacity == 0:
-        opacity = 0.001
-    if opacity:
+        validated['opacity'] = 0.001
+    elif opacity:
         try:
             opacity_value = float(opacity)
-            if opacity_value < 0 or opacity_value > 1:
+            if 0 <= opacity_value <= 1:
+                validated['opacity'] = opacity_value
+            else:
                 print("Opacity must be between 0 and 1. Using current opacity.")
-                opacity_value = None
+                validated['opacity'] = None
         except ValueError:
             print(f"Invalid opacity value: {opacity}. Using current opacity.")
+            validated['opacity'] = None
+    else:
+        validated['opacity'] = None
     
-    # Process and validate the selectable value
-    selectable_value = None
-    selectable = str(selectable)
-    if selectable:
-        if selectable.lower() in ["true", "1"]:
-            selectable_value = True
-        elif selectable.lower() in ["false", "0"]:
-            selectable_value = False
+    # Process and validate selectable
+    selectable_str = str(selectable)  # Convert to string first
+    if selectable_str:  # Check if the string is not empty
+        if selectable_str.lower() in ["true", "1"]:
+            validated['selectable'] = True
+        elif selectable_str.lower() in ["false", "0"]:
+            validated['selectable'] = False
         else:
             print(f"Invalid selectable value: {selectable}. Use 'True'/'False' or '1'/'0'. Using current setting.")
+            validated['selectable'] = None
+    else:
+        validated['selectable'] = None
     
-    # Track if any changes were made
-    changes_made = False
-    modified_buttons = []  # Track which buttons were actually modified
+    return validated
+
+def _apply_appearance_changes(buttons_to_modify, validated_params):
+    """
+    Apply appearance changes to the specified buttons.
     
-    # Apply changes to all buttons
+    Args:
+        buttons_to_modify (list): List of button objects to modify
+        validated_params (dict): Validated parameters from _process_appearance_parameters
+    
+    Returns:
+        list: List of buttons that were actually modified
+    """
+    modified_buttons = []
+    
     for button in buttons_to_modify:
         button_changed = False
         
         # Update text if provided
-        if text:
-            button.label = text
+        if validated_params['text']:
+            button.label = validated_params['text']
             # Reset text pixmap cache to force redraw
             button.text_pixmap = None
             button.pose_pixmap = None
@@ -480,142 +1280,127 @@ def button_appearance(text="", color="", opacity="", selectable="", source_butto
             button_changed = True
         
         # Update color if provided
-        if color:
-            # Validate color format
-            if color.startswith('#') and (len(color) == 7 or len(color) == 9):
-                button.color = color
-                button_changed = True
-            else:
-                print(f"Invalid color format: {color}. Color should be in hex format (e.g., #FF0000).")
-        
-        # Update opacity if provided and valid
-        if opacity_value is not None:
-            button.opacity = opacity_value
+        if validated_params['color']:
+            button.color = validated_params['color']
             button_changed = True
-            
-        # Update selectable state if provided and valid
-        if selectable_value is not None:
+        
+        # Update opacity if provided
+        if validated_params['opacity'] is not None:
+            button.opacity = validated_params['opacity']
+            button_changed = True
+        
+        # Update selectable state if provided
+        if validated_params['selectable'] is not None:
             # Add selectable attribute if it doesn't exist
             if not hasattr(button, 'selectable'):
                 button.selectable = True  # Default to True for backward compatibility
-            button.selectable = selectable_value
+            button.selectable = validated_params['selectable']
             button_changed = True
         
-        # If any changes were made to this button, track it for updates
+        # If any changes were made, update UI elements and track the button
         if button_changed:
-            changes_made = True
-            modified_buttons.append(button)
-            
-            # Update tooltip and force redraw
             button.update_tooltip()
             button.update()
+            modified_buttons.append(button)
     
-    # Process database updates for ALL modified buttons at once
-    if modified_buttons and canvas:
-        # Get the current tab from the target picker widget
-        current_tab = None
-        if hasattr(target_picker_widget, 'tab_system') and target_picker_widget.tab_system.current_tab:
-            current_tab = target_picker_widget.tab_system.current_tab
+    return modified_buttons
+
+def _persist_appearance_changes(modified_buttons, context, validated_params):
+    """
+    Persist appearance changes to database and update UI.
+    
+    Args:
+        modified_buttons (list): List of buttons that were modified
+        context (dict): Execution context from _discover_execution_context
+        validated_params (dict): Validated parameters that were applied
+    """
+    picker_widget = context['picker_widget']
+    canvas = context['canvas']
+    
+    # Get current tab for database operations
+    current_tab = None
+    if hasattr(picker_widget, 'tab_system') and picker_widget.tab_system.current_tab:
+        current_tab = picker_widget.tab_system.current_tab
+    
+    # Update database if we have a current tab
+    if current_tab and canvas:
+        from . import data_management as DM
         
-        if current_tab:
-            # Import data management module
-            from . import data_management as DM
+        # Initialize tab data if needed
+        if hasattr(picker_widget, 'initialize_tab_data'):
+            picker_widget.initialize_tab_data(current_tab)
+        
+        # Temporarily disable batch updates to prevent conflicts
+        original_batch_active = getattr(picker_widget, 'batch_update_active', False)
+        picker_widget.batch_update_active = True
+        
+        try:
+            # Get current tab data and create button lookup map
+            tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+            button_map = {btn['id']: i for i, btn in enumerate(tab_data['buttons'])}
             
-            # Initialize tab data if needed
-            if hasattr(target_picker_widget, 'initialize_tab_data'):
-                target_picker_widget.initialize_tab_data(current_tab)
+            # Update database with modified button data
+            for button in modified_buttons:
+                button_data = {
+                    "id": button.unique_id,
+                    "label": button.label,
+                    "color": button.color,
+                    "opacity": button.opacity,
+                    "position": (button.scene_position.x(), button.scene_position.y()),
+                    "width": getattr(button, 'width', 80),
+                    "height": getattr(button, 'height', 30),
+                    "radius": getattr(button, 'radius', [3, 3, 3, 3]),
+                    "assigned_objects": getattr(button, 'assigned_objects', []),
+                    "mode": getattr(button, 'mode', 'select'),
+                    "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
+                    "pose_data": getattr(button, 'pose_data', {}),
+                    "thumbnail_path": getattr(button, 'thumbnail_path', ''),
+                }
+                
+                # Update existing button data or add new one
+                if button.unique_id in button_map:
+                    index = button_map[button.unique_id]
+                    tab_data['buttons'][index] = button_data
+                else:
+                    tab_data['buttons'].append(button_data)
             
-            # CRITICAL: Temporarily disable the main window's batch update system to prevent conflicts
-            original_batch_active = getattr(target_picker_widget, 'batch_update_active', False)
-            target_picker_widget.batch_update_active = True
+            # Save updated tab data
+            DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+            DM.PickerDataManager.save_data(DM.PickerDataManager.get_data(), force_immediate=True)
             
-            try:
-                # Get current tab data
-                tab_data = DM.PickerDataManager.get_tab_data(current_tab)
-                
-                # Create a map of existing buttons for faster lookups
-                button_map = {btn['id']: i for i, btn in enumerate(tab_data['buttons'])}
-                
-                # Process all modified buttons
-                buttons_updated = 0
-                for button in modified_buttons:
-                    # Create complete button data
-                    button_data = {
-                        "id": button.unique_id,
-                        "label": button.label,
-                        "color": button.color,
-                        "opacity": button.opacity,
-                        "position": (button.scene_position.x(), button.scene_position.y()),
-                        "width": getattr(button, 'width', 80),
-                        "height": getattr(button, 'height', 30),
-                        "radius": getattr(button, 'radius', [3, 3, 3, 3]),
-                        "assigned_objects": getattr(button, 'assigned_objects', []),
-                        "mode": getattr(button, 'mode', 'select'),
-                        "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
-                        "pose_data": getattr(button, 'pose_data', {}),
-                        "thumbnail_path": getattr(button, 'thumbnail_path', '')
-                    }
-                    
-                    # Update existing button data or add new one
-                    if button.unique_id in button_map:
-                        # Update existing button
-                        index = button_map[button.unique_id]
-                        tab_data['buttons'][index] = button_data
-                        buttons_updated += 1
-                    else:
-                        # Add new button
-                        tab_data['buttons'].append(button_data)
-                        buttons_updated += 1
-                
-                # Save the updated tab data once for all buttons with force immediate save
-                DM.PickerDataManager.update_tab_data(current_tab, tab_data)
-                
-                # Force immediate save to ensure data persistence
-                DM.PickerDataManager.save_data(DM.PickerDataManager.get_data(), force_immediate=True)
-                
-                #print(f"Database updated for {buttons_updated} button(s) in tab '{current_tab}'")
-                
-                # Now emit changed signals for UI consistency (after database is saved)
-                for button in modified_buttons:
-                    if hasattr(button, 'changed'):
-                        try:
-                            # Block the signal temporarily to prevent recursive updates
-                            button.changed.blockSignals(True)
-                            button.changed.emit(button)
-                            button.changed.blockSignals(False)
-                        except:
-                            # If blocking fails, just emit normally
-                            button.changed.emit(button)
-                            
-            finally:
-                # Restore original batch update state
-                target_picker_widget.batch_update_active = original_batch_active
+            # Emit changed signals for UI consistency
+            for button in modified_buttons:
+                if hasattr(button, 'changed'):
+                    try:
+                        button.changed.blockSignals(True)
+                        button.changed.emit(button)
+                        button.changed.blockSignals(False)
+                    except:
+                        button.changed.emit(button)
+        
+        finally:
+            # Restore original batch update state
+            picker_widget.batch_update_active = original_batch_active
     
-    # Update the canvas if we have access to it and changes were made
-    if changes_made and canvas:
+    # Update UI elements
+    if canvas:
         canvas.update()
-        
-        # Also trigger a button positions update to ensure everything is synchronized
         if hasattr(canvas, 'update_button_positions'):
             canvas.update_button_positions()
-        
-        # Update the main window if possible
-        if hasattr(target_picker_widget, 'update_buttons_for_current_tab'):
-            target_picker_widget.update_buttons_for_current_tab()
     
-    # Report changes
-    if changes_made:
-        changes = []
-        if text: changes.append(f"text to '{text}'")
-        if color: changes.append(f"color to '{color}'")
-        if opacity_value is not None: changes.append(f"opacity to {opacity_value}")
-        if selectable_value is not None: changes.append(f"selectable to {selectable_value}")
-        
-        widget_name = getattr(target_picker_widget, 'objectName', lambda: 'Unknown')()
-        #print(f"Updated {len(modified_buttons)} button(s) in widget '{widget_name}': {', '.join(changes)}")
-        #print("Changes have been saved to the database.")
-    else:
-        print("No changes were made. Please provide at least one parameter (text, color, opacity, or selectable).")
+    if hasattr(picker_widget, 'update_buttons_for_current_tab'):
+        picker_widget.update_buttons_for_current_tab()
+    
+    # Report changes (optional - uncomment if needed)
+    # changes = []
+    # if validated_params['text']: changes.append(f"text to '{validated_params['text']}'")
+    # if validated_params['color']: changes.append(f"color to '{validated_params['color']}'")
+    # if validated_params['opacity'] is not None: changes.append(f"opacity to {validated_params['opacity']}")
+    # if validated_params['selectable'] is not None: changes.append(f"selectable to {validated_params['selectable']}")
+    # 
+    # widget_name = getattr(picker_widget, 'objectName', lambda: 'Unknown')()
+    # print(f"Updated {len(modified_buttons)} button(s) in widget '{widget_name}': {', '.join(changes)}")
+    # print("Changes have been saved to the database.")
 #---------------------------------------------------------------------------------------------------------------
 def tool_tip(tooltip_text=""):
     """
@@ -643,8 +1428,7 @@ def tool_tip(tooltip_text=""):
     # This function is meant to be used as a decorator in button scripts
     # The actual implementation is handled in the PickerButton.execute_script_command method
     pass
-
-
+#---------------------------------------------------------------------------------------------------------------
 def pb(button_ids):
     """
     Access picker button parameters by button ID(s).

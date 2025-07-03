@@ -298,13 +298,13 @@ class CoordinatePlaneConfig:
                 return {'plane': cls._current_plane, 'separate_splines': True}
             else:
                 return cls._current_plane
-
+#--------------------------------------------------------------------------------------------------------------
 # Initialize with default plane
 CoordinatePlaneConfig.set_plane('XY')
-
+#--------------------------------------------------------------------------------------------------------------
 def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_dialog=False):
     """
-    Create picker buttons from selected curve objects in Blender scene.
+    Create picker buttons from selected curve objects and mesh objects (vertices only) in Blender scene.
     
     Args:
         canvas: The picker canvas to add buttons to
@@ -333,28 +333,46 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
             # Fallback for backward compatibility
             separate_splines = True
     
-    # Get selected curve objects
+    # Get selected curve and mesh objects
     selected_curves = []
+    selected_meshes = []
     
-    # Check selected objects for curves
+    # Check selected objects for curves and meshes
     with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
         for obj in bpy.context.selected_objects:
             if obj.type == 'CURVE':
                 selected_curves.append(obj)
+            elif obj.type == 'MESH':
+                # Check if mesh has faces - we only want vertex-only meshes
+                mesh_data = obj.data
+                if not mesh_data.polygons:  # No faces
+                    selected_meshes.append(obj)
         
-        # Also check if we have any curve objects in the scene if nothing selected
-        if not selected_curves:
-            # Check if current active object is a curve
-            if bpy.context.active_object and bpy.context.active_object.type == 'CURVE':
-                selected_curves.append(bpy.context.active_object)
+        # Also check if current active object is a curve or valid mesh
+        if bpy.context.active_object:
+            if bpy.context.active_object.type == 'CURVE':
+                if bpy.context.active_object not in selected_curves:
+                    selected_curves.append(bpy.context.active_object)
+            elif bpy.context.active_object.type == 'MESH':
+                mesh_data = bpy.context.active_object.data
+                if not mesh_data.polygons and bpy.context.active_object not in selected_meshes:
+                    selected_meshes.append(bpy.context.active_object)
     
-    if not selected_curves:
+    # Check for selected bones with custom shapes
+    selected_bone_shapes = _get_selected_bones_with_shapes()
+    
+    if not selected_curves and not selected_meshes and not selected_bone_shapes:
         # Show error dialog
         if QtWidgets:
             from . import custom_dialog as CD
-            dialog = CD.CustomDialog(canvas, title="No Curves Selected", size=(300, 220), info_box=True)
+            dialog = CD.CustomDialog(canvas, title="No Valid Objects Selected", size=(300, 250), info_box=True)
             
-            message_label = QtWidgets.QLabel("Please select curve objects in Blender to create buttons from.")
+            message_label = QtWidgets.QLabel(
+                "Please select one of the following in Blender:\n"
+                "• Curve objects\n"
+                "• Mesh objects without faces (vertices only)\n"
+                "• Bones with custom shapes (in Pose mode)"
+            )
             message_label.setWordWrap(True)
             dialog.add_widget(message_label)
             
@@ -386,7 +404,7 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
             dialog.add_button_box()
             dialog.exec_()
         else:
-            print("No curves selected. Please select curve objects in Blender.")
+            print("No valid objects selected. Please select curve objects, mesh objects without faces, or bones with custom shapes.")
             current_plane = CoordinatePlaneConfig.get_current_plane()
             print(f"Current coordinate plane: {current_plane['name']}")
             mode_text = "separate splines" if separate_splines else "combine splines"
@@ -417,22 +435,36 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
         if current_tab in main_window.available_ids:
             existing_ids.update(main_window.available_ids[current_tab])
         
-        # Calculate layout bounds for positioning
+        # Calculate layout bounds for positioning (combine curves and meshes)
+        all_object_bounds = []
+        
+        # Process curves
         if separate_splines:
-            # Calculate bounds for all individual splines
-            all_spline_bounds = []
             for curve_obj in selected_curves:
                 spline_bounds_list = _calculate_all_splines_bounding_boxes(curve_obj)
-                all_spline_bounds.extend(spline_bounds_list)
+                all_object_bounds.extend(spline_bounds_list)
         else:
-            # Calculate bounds for whole curve objects
-            all_spline_bounds = []
             for curve_obj in selected_curves:
                 curve_bounds = _calculate_curve_bounding_box(curve_obj)
-                all_spline_bounds.append(curve_bounds)
+                all_object_bounds.append(curve_bounds)
         
-        if all_spline_bounds:
-            layout_bounds = _calculate_combined_bounds(all_spline_bounds)
+        # Process meshes
+        if separate_splines:
+            for mesh_obj in selected_meshes:
+                mesh_component_bounds_list = _calculate_mesh_component_bounding_boxes(mesh_obj)
+                all_object_bounds.extend(mesh_component_bounds_list)
+        else:
+            for mesh_obj in selected_meshes:
+                mesh_bounds = _calculate_mesh_bounding_box(mesh_obj)
+                all_object_bounds.append(mesh_bounds)
+        
+        # Process bones with custom shapes
+        for bone, shape_obj, armature_obj in selected_bone_shapes:
+            bone_bounds = _calculate_bone_shape_bounding_box(bone, shape_obj, armature_obj)
+            all_object_bounds.append(bone_bounds)
+        
+        if all_object_bounds:
+            layout_bounds = _calculate_combined_bounds(all_object_bounds)
             layout_center = QtCore.QPointF(
                 (layout_bounds['min_x'] + layout_bounds['max_x']) / 2,
                 (layout_bounds['min_y'] + layout_bounds['max_y']) / 2
@@ -449,7 +481,7 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
         new_buttons_data = []
         button_index = 0
         
-        # Process each curve object
+        # Process each curve object (existing curve processing logic)
         for curve_obj in selected_curves:
             try:
                 curve_data = curve_obj.data
@@ -493,22 +525,166 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
                             # Calculate individual spline bounds for positioning
                             spline_bounds = _calculate_spline_bounding_box(spline)
                             
-                            # Position button relative to drop position
+                            # Position and size button
                             spline_center_x = (spline_bounds['min_x'] + spline_bounds['max_x']) / 2
                             spline_center_y = (spline_bounds['min_y'] + spline_bounds['max_y']) / 2
                             
-                            # Calculate offset from layout center
                             offset_x = (spline_center_x - layout_center.x()) * scale_factor
                             offset_y = (spline_center_y - layout_center.y()) * scale_factor
+                            
+                            button_x = drop_position.x() + offset_x
+                            button_y = drop_position.y() + offset_y
+                            new_button.scene_position = QtCore.QPointF(button_x, button_y)
+                            
+                            scaled_width = max(30, spline_bounds['width'] * scale_factor)
+                            scaled_height = max(30, spline_bounds['height'] * scale_factor)
+                            new_button.width = min(150, scaled_width)
+                            new_button.height = min(150, scaled_height)
+                            
+                            # Add to canvas and prepare for database
+                            canvas.add_button(new_button)
+                            created_buttons.append(new_button)
+                            
+                            button_data_for_db = {
+                                "id": unique_id,
+                                "selectable": new_button.selectable,
+                                "label": new_button.label,
+                                "color": new_button.color,
+                                "opacity": new_button.opacity,
+                                "position": (new_button.scene_position.x(), new_button.scene_position.y()),
+                                "width": new_button.width,
+                                "height": new_button.height,
+                                "radius": new_button.radius,
+                                "assigned_objects": new_button.assigned_objects,
+                                "mode": new_button.mode,
+                                "script_data": new_button.script_data,
+                                "shape_type": new_button.shape_type,
+                                "svg_path_data": new_button.svg_path_data,
+                                "svg_file_path": new_button.svg_file_path
+                            }
+                            new_buttons_data.append(button_data_for_db)
+                            button_index += 1
+                            
+                        except Exception as e:
+                            print(f"Error processing spline {spline_idx} in curve {curve_obj.name}: {e}")
+                            continue
+                
+                else:
+                    # Combine all splines into a single button per curve object
+                    try:
+                        svg_path_string = _convert_curve_to_svg_path(curve_obj)
+                        
+                        if not svg_path_string:
+                            print(f"Warning: Could not generate path data for curve {curve_obj.name}")
+                            continue
+                        
+                        unique_id = _generate_curve_unique_id(current_tab, existing_ids, curve_obj.name, button_index)
+                        existing_ids.add(unique_id)
+                        
+                        new_button = PB.PickerButton('', canvas, unique_id=unique_id, color="#3096bb")
+                        
+                        new_button.shape_type = 'custom_path'
+                        new_button.svg_path_data = svg_path_string
+                        new_button.svg_file_path = f"blender_curve:{curve_obj.name}:combined"
+                        
+                        curve_bounds = _calculate_curve_bounding_box(curve_obj)
+                        
+                        curve_center_x = (curve_bounds['min_x'] + curve_bounds['max_x']) / 2
+                        curve_center_y = (curve_bounds['min_y'] + curve_bounds['max_y']) / 2
+                        
+                        offset_x = (curve_center_x - layout_center.x()) * scale_factor
+                        offset_y = (curve_center_y - layout_center.y()) * scale_factor
+                        
+                        button_x = drop_position.x() + offset_x
+                        button_y = drop_position.y() + offset_y
+                        new_button.scene_position = QtCore.QPointF(button_x, button_y)
+                        
+                        scaled_width = max(30, curve_bounds['width'] * scale_factor)
+                        scaled_height = max(30, curve_bounds['height'] * scale_factor)
+                        new_button.width = min(150, scaled_width)
+                        new_button.height = min(150, scaled_height)
+                        
+                        canvas.add_button(new_button)
+                        created_buttons.append(new_button)
+                        
+                        button_data_for_db = {
+                            "id": unique_id,
+                            "selectable": new_button.selectable,
+                            "label": new_button.label,
+                            "color": new_button.color,
+                            "opacity": new_button.opacity,
+                            "position": (new_button.scene_position.x(), new_button.scene_position.y()),
+                            "width": new_button.width,
+                            "height": new_button.height,
+                            "radius": new_button.radius,
+                            "assigned_objects": new_button.assigned_objects,
+                            "mode": new_button.mode,
+                            "script_data": new_button.script_data,
+                            "shape_type": new_button.shape_type,
+                            "svg_path_data": new_button.svg_path_data,
+                            "svg_file_path": new_button.svg_file_path
+                        }
+                        new_buttons_data.append(button_data_for_db)
+                        button_index += 1
+                        
+                    except Exception as e:
+                        print(f"Error processing combined curve {curve_obj.name}: {e}")
+                        continue
+                        
+            except Exception as e:
+                print(f"Error processing curve {curve_obj.name}: {e}")
+                continue
+        
+        # Process each mesh object (UPDATED MESH PROCESSING)
+        for mesh_obj in selected_meshes:
+            try:
+                mesh_data = mesh_obj.data
+                
+                if not mesh_data.vertices:
+                    print(f"No vertices found in mesh {mesh_obj.name}")
+                    continue
+                
+                if separate_splines and mesh_data.edges:
+                    # Create separate button for each connected component
+                    svg_path_strings = _convert_mesh_to_svg_path(mesh_obj, separate_components=True)
+                    
+                    if not svg_path_strings:
+                        print(f"Warning: Could not generate path data for mesh {mesh_obj.name}")
+                        continue
+                    
+                    # Get component bounds for positioning
+                    component_bounds_list = _calculate_mesh_component_bounding_boxes(mesh_obj)
+                    
+                    for component_idx, (svg_path_string, component_bounds) in enumerate(zip(svg_path_strings, component_bounds_list)):
+                        try:
+                            # Generate unique ID for this component
+                            unique_id = _generate_mesh_component_unique_id(current_tab, existing_ids, mesh_obj.name, component_idx, button_index)
+                            existing_ids.add(unique_id)
+                            
+                            # Create the button
+                            new_button = PB.PickerButton('', canvas, unique_id=unique_id, color="#bb3096")
+                            
+                            # Set up the button with component path data
+                            new_button.shape_type = 'custom_path'
+                            new_button.svg_path_data = svg_path_string
+                            new_button.svg_file_path = f"blender_mesh:{mesh_obj.name}:component_{component_idx}"
+                            
+                            # Position button relative to drop position
+                            component_center_x = (component_bounds['min_x'] + component_bounds['max_x']) / 2
+                            component_center_y = (component_bounds['min_y'] + component_bounds['max_y']) / 2
+                            
+                            # Calculate offset from layout center
+                            offset_x = (component_center_x - layout_center.x()) * scale_factor
+                            offset_y = (component_center_y - layout_center.y()) * scale_factor
                             
                             # Position the button
                             button_x = drop_position.x() + offset_x
                             button_y = drop_position.y() + offset_y
                             new_button.scene_position = QtCore.QPointF(button_x, button_y)
                             
-                            # Set button size based on spline bounds
-                            scaled_width = max(30, spline_bounds['width'] * scale_factor)
-                            scaled_height = max(30, spline_bounds['height'] * scale_factor)
+                            # Set button size based on component bounds
+                            scaled_width = max(30, component_bounds['width'] * scale_factor)
+                            scaled_height = max(30, component_bounds['height'] * scale_factor)
                             new_button.width = min(150, scaled_width)
                             new_button.height = min(150, scaled_height)
                             
@@ -538,87 +714,151 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
                             button_index += 1
                             
                         except Exception as e:
-                            print(f"Error processing spline {spline_idx} in curve {curve_obj.name}: {e}")
+                            print(f"Error processing mesh component {component_idx} in {mesh_obj.name}: {e}")
                             continue
                 
                 else:
-                    # Combine all splines into a single button per curve object
-                    try:
-                        # Generate SVG path data for the entire curve (all splines combined)
-                        svg_path_string = _convert_curve_to_svg_path(curve_obj)
-                        
-                        if not svg_path_string:
-                            print(f"Warning: Could not generate path data for curve {curve_obj.name}")
-                            continue
-                        
-                        # Generate unique ID for the combined curve
-                        unique_id = _generate_curve_unique_id(current_tab, existing_ids, curve_obj.name, button_index)
-                        existing_ids.add(unique_id)
-                        
-                        # Create button label
-                        button_label = curve_obj.name
-                        
-                        # Create the button
-                        new_button = PB.PickerButton('', canvas, unique_id=unique_id, color="#3096bb")
-                        
-                        # Set up the button with combined curve path data
-                        new_button.shape_type = 'custom_path'
-                        new_button.svg_path_data = svg_path_string
-                        new_button.svg_file_path = f"blender_curve:{curve_obj.name}:combined"
-                        
-                        # Calculate curve bounds for positioning
-                        curve_bounds = _calculate_curve_bounding_box(curve_obj)
-                        
-                        # Position button relative to drop position
-                        curve_center_x = (curve_bounds['min_x'] + curve_bounds['max_x']) / 2
-                        curve_center_y = (curve_bounds['min_y'] + curve_bounds['max_y']) / 2
-                        
-                        # Calculate offset from layout center
-                        offset_x = (curve_center_x - layout_center.x()) * scale_factor
-                        offset_y = (curve_center_y - layout_center.y()) * scale_factor
-                        
-                        # Position the button
-                        button_x = drop_position.x() + offset_x
-                        button_y = drop_position.y() + offset_y
-                        new_button.scene_position = QtCore.QPointF(button_x, button_y)
-                        
-                        # Set button size based on curve bounds
-                        scaled_width = max(30, curve_bounds['width'] * scale_factor)
-                        scaled_height = max(30, curve_bounds['height'] * scale_factor)
-                        new_button.width = min(150, scaled_width)
-                        new_button.height = min(150, scaled_height)
-                        
-                        # Add to canvas
-                        canvas.add_button(new_button)
-                        created_buttons.append(new_button)
-                        
-                        # Prepare database entry
-                        button_data_for_db = {
-                            "id": unique_id,
-                            "selectable": new_button.selectable,
-                            "label": new_button.label,
-                            "color": new_button.color,
-                            "opacity": new_button.opacity,
-                            "position": (new_button.scene_position.x(), new_button.scene_position.y()),
-                            "width": new_button.width,
-                            "height": new_button.height,
-                            "radius": new_button.radius,
-                            "assigned_objects": new_button.assigned_objects,
-                            "mode": new_button.mode,
-                            "script_data": new_button.script_data,
-                            "shape_type": new_button.shape_type,
-                            "svg_path_data": new_button.svg_path_data,
-                            "svg_file_path": new_button.svg_file_path
-                        }
-                        new_buttons_data.append(button_data_for_db)
-                        button_index += 1
-                        
-                    except Exception as e:
-                        print(f"Error processing combined curve {curve_obj.name}: {e}")
+                    # Create single combined button for entire mesh (original behavior)
+                    svg_path_string = _convert_mesh_to_svg_path(mesh_obj, separate_components=False)
+                    
+                    if not svg_path_string:
+                        print(f"Warning: Could not generate path data for mesh {mesh_obj.name}")
                         continue
-                        
+                    
+                    # Generate unique ID for mesh
+                    unique_id = _generate_mesh_unique_id(current_tab, existing_ids, mesh_obj.name, button_index)
+                    existing_ids.add(unique_id)
+                    
+                    # Create the button
+                    new_button = PB.PickerButton('', canvas, unique_id=unique_id, color="#bb3096")
+                    
+                    # Set up the button with mesh path data
+                    new_button.shape_type = 'custom_path'
+                    new_button.svg_path_data = svg_path_string
+                    new_button.svg_file_path = f"blender_mesh:{mesh_obj.name}:vertices"
+                    
+                    # Calculate mesh bounds for positioning
+                    mesh_bounds = _calculate_mesh_bounding_box(mesh_obj)
+                    
+                    # Position button relative to drop position
+                    mesh_center_x = (mesh_bounds['min_x'] + mesh_bounds['max_x']) / 2
+                    mesh_center_y = (mesh_bounds['min_y'] + mesh_bounds['max_y']) / 2
+                    
+                    # Calculate offset from layout center
+                    offset_x = (mesh_center_x - layout_center.x()) * scale_factor
+                    offset_y = (mesh_center_y - layout_center.y()) * scale_factor
+                    
+                    # Position the button
+                    button_x = drop_position.x() + offset_x
+                    button_y = drop_position.y() + offset_y
+                    new_button.scene_position = QtCore.QPointF(button_x, button_y)
+                    
+                    # Set button size based on mesh bounds
+                    scaled_width = max(30, mesh_bounds['width'] * scale_factor)
+                    scaled_height = max(30, mesh_bounds['height'] * scale_factor)
+                    new_button.width = min(150, scaled_width)
+                    new_button.height = min(150, scaled_height)
+                    
+                    # Add to canvas
+                    canvas.add_button(new_button)
+                    created_buttons.append(new_button)
+                    
+                    # Prepare database entry
+                    button_data_for_db = {
+                        "id": unique_id,
+                        "selectable": new_button.selectable,
+                        "label": new_button.label,
+                        "color": new_button.color,
+                        "opacity": new_button.opacity,
+                        "position": (new_button.scene_position.x(), new_button.scene_position.y()),
+                        "width": new_button.width,
+                        "height": new_button.height,
+                        "radius": new_button.radius,
+                        "assigned_objects": new_button.assigned_objects,
+                        "mode": new_button.mode,
+                        "script_data": new_button.script_data,
+                        "shape_type": new_button.shape_type,
+                        "svg_path_data": new_button.svg_path_data,
+                        "svg_file_path": new_button.svg_file_path
+                    }
+                    new_buttons_data.append(button_data_for_db)
+                    button_index += 1
+                
             except Exception as e:
-                print(f"Error processing curve {curve_obj.name}: {e}")
+                print(f"Error processing mesh {mesh_obj.name}: {e}")
+                continue
+        
+        # Process each bone shape (NEW BONE SHAPE PROCESSING)
+        for bone, custom_shape_obj, armature_obj in selected_bone_shapes:
+            try:
+                # Generate SVG path data for bone shape
+                svg_path_string = _convert_bone_shape_to_svg_path(bone, custom_shape_obj, armature_obj)
+                
+                if not svg_path_string:
+                    print(f"Warning: Could not generate path data for bone shape {bone.name} -> {custom_shape_obj.name}")
+                    continue
+                
+                # Generate unique ID for bone shape
+                unique_id = _generate_bone_shape_unique_id(current_tab, existing_ids, bone.name, custom_shape_obj.name, button_index)
+                existing_ids.add(unique_id)
+                
+                # Create the button
+                new_button = PB.PickerButton('', canvas, unique_id=unique_id, color="#bb9630")  # Different color for bone shapes
+                
+                # Set up the button with bone shape path data
+                new_button.shape_type = 'custom_path'
+                new_button.svg_path_data = svg_path_string
+                new_button.svg_file_path = f"blender_bone_shape:{armature_obj.name}:{bone.name}:{custom_shape_obj.name}"
+                
+                # Calculate bone shape bounds for positioning
+                bone_shape_bounds = _calculate_bone_shape_bounding_box(bone, custom_shape_obj, armature_obj)
+                
+                # Position button relative to drop position
+                shape_center_x = (bone_shape_bounds['min_x'] + bone_shape_bounds['max_x']) / 2
+                shape_center_y = (bone_shape_bounds['min_y'] + bone_shape_bounds['max_y']) / 2
+                
+                # Calculate offset from layout center
+                offset_x = (shape_center_x - layout_center.x()) * scale_factor
+                offset_y = (shape_center_y - layout_center.y()) * scale_factor
+                
+                # Position the button
+                button_x = drop_position.x() + offset_x
+                button_y = drop_position.y() + offset_y
+                new_button.scene_position = QtCore.QPointF(button_x, button_y)
+                
+                # Set button size based on bone shape bounds
+                scaled_width = max(30, bone_shape_bounds['width'] * scale_factor)
+                scaled_height = max(30, bone_shape_bounds['height'] * scale_factor)
+                new_button.width = min(150, scaled_width)
+                new_button.height = min(150, scaled_height)
+                
+                # Add to canvas
+                canvas.add_button(new_button)
+                created_buttons.append(new_button)
+                
+                # Prepare database entry
+                button_data_for_db = {
+                    "id": unique_id,
+                    "selectable": new_button.selectable,
+                    "label": new_button.label,
+                    "color": new_button.color,
+                    "opacity": new_button.opacity,
+                    "position": (new_button.scene_position.x(), new_button.scene_position.y()),
+                    "width": new_button.width,
+                    "height": new_button.height,
+                    "radius": new_button.radius,
+                    "assigned_objects": new_button.assigned_objects,
+                    "mode": new_button.mode,
+                    "script_data": new_button.script_data,
+                    "shape_type": new_button.shape_type,
+                    "svg_path_data": new_button.svg_path_data,
+                    "svg_file_path": new_button.svg_file_path
+                }
+                new_buttons_data.append(button_data_for_db)
+                button_index += 1
+                
+            except Exception as e:
+                print(f"Error processing bone shape {bone.name} -> {custom_shape_obj.name}: {e}")
                 continue
         
         # Batch database update
@@ -641,8 +881,11 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
             
             plane_name = CoordinatePlaneConfig.get_current_plane()['name']
             mode_text = "separate splines" if separate_splines else "combined splines"
-            print(f"Created {len(created_buttons)} buttons from {len(selected_curves)} curve object(s) using {plane_name} plane ({mode_text})")
-    
+            curve_count = len(selected_curves)
+            mesh_count = len(selected_meshes)
+            bone_shape_count = len(selected_bone_shapes)
+            print(f"Created {len(created_buttons)} buttons from {curve_count} curve(s), {mesh_count} mesh(es), and {bone_shape_count} bone shape(s) using {plane_name} plane ({mode_text})")
+
     return created_buttons
 
 def _convert_curve_to_svg_path(curve_obj):
@@ -1101,7 +1344,513 @@ def _generate_spline_unique_id(tab_name, existing_ids, curve_name, spline_index,
     import time
     timestamp_id = f"{tab_name}_spline_{int(time.time() * 1000)}_{button_index}"
     return timestamp_id
+#--------------------------------------------------------------------------------------------------------------
+def _convert_mesh_to_svg_path(mesh_obj, separate_components=False):
+    """
+    Convert a Blender mesh object (vertices only) to SVG path data.
+    
+    Args:
+        mesh_obj: Blender mesh object
+        separate_components: If True, return separate paths for each connected component
+        
+    Returns:
+        str or list: SVG path data string (combined) or list of strings (separated)
+    """
+    try:
+        # Get mesh data
+        mesh_data = mesh_obj.data
+        
+        if not mesh_data.vertices:
+            print(f"No vertices found in mesh {mesh_obj.name}")
+            return None if not separate_components else []
+        
+        # Convert vertices to 2D points using coordinate plane configuration
+        vertices_2d = []
+        for vertex in mesh_data.vertices:
+            # Use LOCAL coordinates directly
+            co_local = vertex.co
+            co_2d = CoordinatePlaneConfig.transform_point(co_local)
+            vertices_2d.append(co_2d)
+        
+        if separate_components and mesh_data.edges:
+            # Create separate paths for each connected component
+            return _create_separated_mesh_paths(vertices_2d, mesh_data.edges)
+        else:
+            # Create single combined path (original behavior)
+            if mesh_data.edges:
+                path_commands = _create_mesh_edge_path(vertices_2d, mesh_data.edges)
+            else:
+                path_commands = _create_mesh_vertex_path(vertices_2d)
+            
+            if not path_commands:
+                return None if not separate_components else []
+            
+            return " ".join(path_commands) if not separate_components else [" ".join(path_commands)]
+        
+    except Exception as e:
+        print(f"Error converting mesh {mesh_obj.name}: {e}")
+        return None if not separate_components else []
 
+def _create_separated_mesh_paths(vertices_2d, edges):
+    """
+    Create separate SVG paths for each connected component in the mesh.
+    
+    Args:
+        vertices_2d: List of 2D vertex coordinates
+        edges: Mesh edges data
+        
+    Returns:
+        list: List of SVG path strings, one for each connected component
+    """
+    if not vertices_2d or not edges:
+        return []
+    
+    # Group connected edges into separate components
+    edge_connections = {}
+    for edge in edges:
+        v1, v2 = edge.vertices
+        if v1 not in edge_connections:
+            edge_connections[v1] = []
+        if v2 not in edge_connections:
+            edge_connections[v2] = []
+        edge_connections[v1].append(v2)
+        edge_connections[v2].append(v1)
+    
+    # Find all connected components
+    visited_vertices = set()
+    separate_paths = []
+    
+    for start_vertex in range(len(vertices_2d)):
+        if start_vertex in visited_vertices or start_vertex not in edge_connections:
+            continue
+        
+        # Find all vertices in this connected component
+        component_vertices = _find_connected_component(start_vertex, edge_connections, visited_vertices)
+        
+        if component_vertices:
+            # Create path for this component
+            component_path_commands = []
+            
+            # Start with first vertex in component
+            first_vertex = component_vertices[0]
+            component_path_commands.append(f"M {vertices_2d[first_vertex][0]:.3f},{vertices_2d[first_vertex][1]:.3f}")
+            
+            # Connect all vertices in the component following edges
+            component_visited = {first_vertex}
+            current_vertex = first_vertex
+            
+            while len(component_visited) < len(component_vertices):
+                # Find next unvisited connected vertex in this component
+                next_vertex = None
+                for connected_vertex in edge_connections.get(current_vertex, []):
+                    if connected_vertex in component_vertices and connected_vertex not in component_visited:
+                        next_vertex = connected_vertex
+                        break
+                
+                if next_vertex is not None:
+                    component_path_commands.append(f"L {vertices_2d[next_vertex][0]:.3f},{vertices_2d[next_vertex][1]:.3f}")
+                    component_visited.add(next_vertex)
+                    current_vertex = next_vertex
+                else:
+                    # No more connected vertices, find any unvisited vertex in component to continue
+                    remaining_vertices = set(component_vertices) - component_visited
+                    if remaining_vertices:
+                        next_vertex = next(iter(remaining_vertices))
+                        component_path_commands.append(f"M {vertices_2d[next_vertex][0]:.3f},{vertices_2d[next_vertex][1]:.3f}")
+                        component_visited.add(next_vertex)
+                        current_vertex = next_vertex
+                    else:
+                        break
+            
+            if component_path_commands:
+                separate_paths.append(" ".join(component_path_commands))
+    
+    return separate_paths
+
+def _find_connected_component(start_vertex, edge_connections, visited_vertices):
+    """
+    Find all vertices in the connected component containing start_vertex.
+    
+    Args:
+        start_vertex: Starting vertex index
+        edge_connections: Dictionary mapping vertex indices to connected vertices
+        visited_vertices: Set of globally visited vertices (will be updated)
+        
+    Returns:
+        list: List of vertex indices in this connected component
+    """
+    if start_vertex in visited_vertices:
+        return []
+    
+    component = []
+    queue = [start_vertex]
+    component_visited = set()
+    
+    while queue:
+        current_vertex = queue.pop(0)
+        if current_vertex in component_visited:
+            continue
+            
+        component_visited.add(current_vertex)
+        visited_vertices.add(current_vertex)
+        component.append(current_vertex)
+        
+        # Add all connected vertices to queue
+        for connected_vertex in edge_connections.get(current_vertex, []):
+            if connected_vertex not in component_visited:
+                queue.append(connected_vertex)
+    
+    return component
+
+def _calculate_mesh_component_bounding_boxes(mesh_obj):
+    """
+    Calculate bounding boxes for each connected component in a mesh object.
+    
+    Args:
+        mesh_obj: Blender mesh object
+        
+    Returns:
+        list: List of bounding box dictionaries for each component
+    """
+    component_bounds = []
+    
+    try:
+        mesh_data = mesh_obj.data
+        
+        if not mesh_data.vertices:
+            return component_bounds
+        
+        # Convert vertices to 2D points
+        vertices_2d = []
+        for vertex in mesh_data.vertices:
+            co_local = vertex.co
+            co_2d = CoordinatePlaneConfig.transform_point(co_local)
+            vertices_2d.append(co_2d)
+        
+        if mesh_data.edges:
+            # Group edges into connected components
+            edge_connections = {}
+            for edge in mesh_data.edges:
+                v1, v2 = edge.vertices
+                if v1 not in edge_connections:
+                    edge_connections[v1] = []
+                if v2 not in edge_connections:
+                    edge_connections[v2] = []
+                edge_connections[v1].append(v2)
+                edge_connections[v2].append(v1)
+            
+            # Find connected components and calculate bounds for each
+            visited_vertices = set()
+            
+            for start_vertex in range(len(vertices_2d)):
+                if start_vertex in visited_vertices or start_vertex not in edge_connections:
+                    continue
+                
+                component_vertices = _find_connected_component(start_vertex, edge_connections, visited_vertices)
+                
+                if component_vertices:
+                    # Calculate bounds for this component
+                    component_points = [vertices_2d[v] for v in component_vertices]
+                    if component_points:
+                        min_x = min(point[0] for point in component_points)
+                        max_x = max(point[0] for point in component_points)
+                        min_y = min(point[1] for point in component_points)
+                        max_y = max(point[1] for point in component_points)
+                        
+                        component_bounds.append({
+                            'min_x': min_x,
+                            'max_x': max_x,
+                            'min_y': min_y,
+                            'max_y': max_y,
+                            'width': max_x - min_x,
+                            'height': max_y - min_y
+                        })
+        else:
+            # No edges, treat whole mesh as one component
+            component_bounds.append(_calculate_mesh_bounding_box(mesh_obj))
+            
+    except Exception as e:
+        print(f"Error calculating mesh component bounds for {mesh_obj.name}: {e}")
+    
+    return component_bounds
+
+def _create_mesh_edge_path(vertices_2d, edges):
+    """
+    Create SVG path from mesh vertices connected by edges.
+    
+    Args:
+        vertices_2d: List of 2D vertex coordinates
+        edges: Mesh edges data
+        
+    Returns:
+        list: List of SVG path command strings
+    """
+    if not vertices_2d or not edges:
+        return []
+    
+    path_commands = []
+    processed_edges = set()
+    
+    # Group connected edges into paths
+    edge_connections = {}
+    for edge in edges:
+        v1, v2 = edge.vertices
+        if v1 not in edge_connections:
+            edge_connections[v1] = []
+        if v2 not in edge_connections:
+            edge_connections[v2] = []
+        edge_connections[v1].append(v2)
+        edge_connections[v2].append(v1)
+    
+    # Find connected components
+    visited_vertices = set()
+    
+    for start_vertex in range(len(vertices_2d)):
+        if start_vertex in visited_vertices or start_vertex not in edge_connections:
+            continue
+        
+        # Trace connected path from this vertex
+        current_path = _trace_connected_path(start_vertex, edge_connections, visited_vertices, vertices_2d)
+        
+        if current_path:
+            # Add this path to commands
+            if path_commands:  # Not the first path, so we need to move to start a new subpath
+                path_commands.append(f"M {current_path[0][0]:.3f},{current_path[0][1]:.3f}")
+            else:
+                path_commands.append(f"M {current_path[0][0]:.3f},{current_path[0][1]:.3f}")
+            
+            for point in current_path[1:]:
+                path_commands.append(f"L {point[0]:.3f},{point[1]:.3f}")
+    
+    return path_commands
+
+def _trace_connected_path(start_vertex, edge_connections, visited_vertices, vertices_2d):
+    """
+    Trace a connected path of vertices starting from start_vertex.
+    
+    Args:
+        start_vertex: Starting vertex index
+        edge_connections: Dictionary mapping vertex indices to connected vertices
+        visited_vertices: Set of already visited vertices
+        vertices_2d: List of 2D vertex coordinates
+        
+    Returns:
+        list: List of 2D points forming the path
+    """
+    if start_vertex in visited_vertices:
+        return []
+    
+    path = []
+    current_vertex = start_vertex
+    visited_vertices.add(current_vertex)
+    path.append(vertices_2d[current_vertex])
+    
+    # Follow the connected edges
+    while current_vertex in edge_connections:
+        # Find next unvisited connected vertex
+        next_vertex = None
+        for connected_vertex in edge_connections[current_vertex]:
+            if connected_vertex not in visited_vertices:
+                next_vertex = connected_vertex
+                break
+        
+        if next_vertex is None:
+            break  # No more unvisited connections
+        
+        visited_vertices.add(next_vertex)
+        path.append(vertices_2d[next_vertex])
+        current_vertex = next_vertex
+    
+    return path
+
+def _create_mesh_vertex_path(vertices_2d):
+    """
+    Create SVG path from mesh vertices (no edge information).
+    Connects vertices in order or creates individual points.
+    
+    Args:
+        vertices_2d: List of 2D vertex coordinates
+        
+    Returns:
+        list: List of SVG path command strings
+    """
+    if not vertices_2d:
+        return []
+    
+    path_commands = []
+    
+    if len(vertices_2d) == 1:
+        # Single point - create a small circle
+        x, y = vertices_2d[0]
+        path_commands.append(f"M {x:.3f},{y:.3f}")
+        path_commands.append(f"m -2,0")
+        path_commands.append(f"a 2,2 0 1,0 4,0")
+        path_commands.append(f"a 2,2 0 1,0 -4,0")
+    elif len(vertices_2d) == 2:
+        # Two points - create line
+        path_commands.append(f"M {vertices_2d[0][0]:.3f},{vertices_2d[0][1]:.3f}")
+        path_commands.append(f"L {vertices_2d[1][0]:.3f},{vertices_2d[1][1]:.3f}")
+    else:
+        # Multiple points - connect in order
+        path_commands.append(f"M {vertices_2d[0][0]:.3f},{vertices_2d[0][1]:.3f}")
+        for point in vertices_2d[1:]:
+            path_commands.append(f"L {point[0]:.3f},{point[1]:.3f}")
+    
+    return path_commands
+
+def _calculate_mesh_bounding_box(mesh_obj):
+    """
+    Calculate the 2D bounding box of a mesh object using coordinate plane configuration.
+    
+    Args:
+        mesh_obj: Blender mesh object
+        
+    Returns:
+        dict: Dictionary with min_x, max_x, min_y, max_y, width, height
+    """
+    try:
+        bounds_3d = _get_object_bounds_3d(mesh_obj)
+        return CoordinatePlaneConfig.get_bounds_for_plane(bounds_3d)
+    except Exception as e:
+        print(f"Error calculating bounding box for mesh {mesh_obj.name}: {e}")
+        return {'min_x': 0, 'max_x': 100, 'min_y': 0, 'max_y': 100, 'width': 100, 'height': 100}
+
+def _generate_mesh_component_unique_id(tab_name, existing_ids, mesh_name, component_idx, button_index):
+    """Generate a unique ID for mesh component buttons"""
+    clean_mesh_name = "".join(c for c in mesh_name if c.isalnum() or c in "_-").lower()
+    
+    base_patterns = [
+        f"{tab_name}_{clean_mesh_name}_comp_{component_idx:03d}",
+        f"{tab_name}_{clean_mesh_name}_{component_idx:03d}",
+        f"{tab_name}_mesh_comp_{button_index:03d}",
+        f"{tab_name}_button_{len(existing_ids)+button_index+1:03d}"
+    ]
+    
+    for base_pattern in base_patterns:
+        if base_pattern not in existing_ids:
+            return base_pattern
+        
+        counter = 1
+        while counter < 1000:
+            candidate_id = f"{base_pattern}_{counter:03d}"
+            if candidate_id not in existing_ids:
+                return candidate_id
+            counter += 1
+    
+    import time
+    return f"{tab_name}_mesh_comp_{int(time.time() * 1000)}_{button_index}"
+    
+def _generate_mesh_unique_id(tab_name, existing_ids, mesh_name, button_index):
+    """Generate a unique ID for mesh-created buttons"""
+    # Clean mesh name for use in ID
+    clean_mesh_name = "".join(c for c in mesh_name if c.isalnum() or c in "_-").lower()
+    
+    base_patterns = [
+        f"{tab_name}_{clean_mesh_name}",
+        f"{tab_name}_{clean_mesh_name}_mesh",
+        f"{tab_name}_mesh_{button_index:03d}",
+        f"{tab_name}_button_{len(existing_ids)+button_index+1:03d}"
+    ]
+    
+    for base_pattern in base_patterns:
+        if base_pattern not in existing_ids:
+            return base_pattern
+        
+        # If base pattern exists, try with incremental suffix
+        counter = 1
+        while counter < 1000:  # Safety limit
+            candidate_id = f"{base_pattern}_{counter:03d}"
+            if candidate_id not in existing_ids:
+                return candidate_id
+            counter += 1
+    
+    # Fallback: use timestamp-based ID
+    import time
+    timestamp_id = f"{tab_name}_mesh_{int(time.time() * 1000)}_{button_index}"
+    return timestamp_id
+#--------------------------------------------------------------------------------------------------------------
+def _get_selected_bones_with_shapes():
+    """Get selected bones that have custom bone shapes assigned."""
+    bones_with_shapes = []
+    with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+        # Check if we're in pose mode with an armature selected
+        if bpy.context.mode == 'POSE':
+            armature_obj = bpy.context.active_object
+            if armature_obj and armature_obj.type == 'ARMATURE':
+                for bone in bpy.context.selected_pose_bones:
+                    if bone.custom_shape:
+                        bones_with_shapes.append((bone, bone.custom_shape, armature_obj))
+        
+        # Also check if we have armature objects selected and look at their bones
+        elif bpy.context.mode == 'OBJECT':
+            for obj in bpy.context.selected_objects:
+                if obj.type == 'ARMATURE':
+                    # In object mode, we'll check all bones with custom shapes
+                    for bone in obj.pose.bones:
+                        if bone.custom_shape:
+                            bones_with_shapes.append((bone, bone.custom_shape, obj))
+    
+    return bones_with_shapes
+
+def _convert_bone_shape_to_svg_path(bone, custom_shape_obj, armature_obj):
+    """Convert a bone's custom shape object to SVG path data."""
+    try:
+        # Determine if the custom shape is a curve or mesh
+        if custom_shape_obj.type == 'CURVE':
+            return _convert_curve_to_svg_path(custom_shape_obj)
+        elif custom_shape_obj.type == 'MESH':
+            # Check if it's a vertex-only mesh
+            if not custom_shape_obj.data.polygons:
+                return _convert_mesh_to_svg_path(custom_shape_obj)
+            else:
+                print(f"Bone shape {custom_shape_obj.name} is a mesh with faces, skipping")
+                return None
+        else:
+            print(f"Unsupported bone shape type: {custom_shape_obj.type}")
+            return None
+    except Exception as e:
+        print(f"Error converting bone shape {custom_shape_obj.name}: {e}")
+        return None
+
+def _calculate_bone_shape_bounding_box(bone, custom_shape_obj, armature_obj):
+    """Calculate the 2D bounding box of a bone's custom shape."""
+    try:
+        if custom_shape_obj.type == 'CURVE':
+            return _calculate_curve_bounding_box(custom_shape_obj)
+        elif custom_shape_obj.type == 'MESH':
+            return _calculate_mesh_bounding_box(custom_shape_obj)
+        else:
+            return {'min_x': 0, 'max_x': 50, 'min_y': 0, 'max_y': 50, 'width': 50, 'height': 50}
+    except Exception as e:
+        print(f"Error calculating bone shape bounding box for {custom_shape_obj.name}: {e}")
+        return {'min_x': 0, 'max_x': 50, 'min_y': 0, 'max_y': 50, 'width': 50, 'height': 50}
+
+def _generate_bone_shape_unique_id(tab_name, existing_ids, bone_name, shape_name, button_index):
+    """Generate a unique ID for bone shape buttons"""
+    clean_bone_name = "".join(c for c in bone_name if c.isalnum() or c in "_-").lower()
+    clean_shape_name = "".join(c for c in shape_name if c.isalnum() or c in "_-").lower()
+    
+    base_patterns = [
+        f"{tab_name}_{clean_bone_name}_{clean_shape_name}",
+        f"{tab_name}_bone_{clean_bone_name}",
+        f"{tab_name}_bone_shape_{button_index:03d}",
+        f"{tab_name}_button_{len(existing_ids)+button_index+1:03d}"
+    ]
+    
+    for base_pattern in base_patterns:
+        if base_pattern not in existing_ids:
+            return base_pattern
+        
+        counter = 1
+        while counter < 1000:
+            candidate_id = f"{base_pattern}_{counter:03d}"
+            if candidate_id not in existing_ids:
+                return candidate_id
+            counter += 1
+    
+    import time
+    return f"{tab_name}_bone_shape_{int(time.time() * 1000)}_{button_index}"
+#--------------------------------------------------------------------------------------------------------------
 # Context menu integration
 def create_buttons_from_blender_curves_context_menu(self):
     """Context menu action to create buttons from selected Blender curves"""
@@ -1112,7 +1861,7 @@ def create_buttons_from_blender_curves_with_plane_selector(self):
     """Context menu action to create buttons with plane selector dialog"""
     scene_pos = self.get_center_position()
     create_buttons_from_blender_curves(self, scene_pos, show_plane_selector=True)
-
+#--------------------------------------------------------------------------------------------------------------
 # Utility functions for external access
 def set_coordinate_plane(plane_name):
     """
@@ -1130,13 +1879,13 @@ def get_available_planes():
 def get_current_plane_info():
     """Get current coordinate plane information."""
     return CoordinatePlaneConfig.get_current_plane()
-
+#--------------------------------------------------------------------------------------------------------------
 # Blender operator for easy integration
 class CURVE_OT_to_picker_buttons(bpy.types.Operator):
-    """Convert selected curves to picker buttons"""
+    """Convert selected curves and meshes to picker buttons"""
     bl_idname = "curve.to_picker_buttons"
-    bl_label = "Curves to Picker Buttons"
-    bl_description = "Convert selected curve objects to picker buttons"
+    bl_label = "Curves/Meshes to Picker Buttons"
+    bl_description = "Convert selected curve objects and mesh objects (vertices only) to picker buttons"
     bl_options = {'REGISTER', 'UNDO'}
     
     show_plane_selector: bpy.props.BoolProperty(
@@ -1147,10 +1896,24 @@ class CURVE_OT_to_picker_buttons(bpy.types.Operator):
     
     @classmethod
     def poll(cls, context):
-        return context.selected_objects and any(obj.type == 'CURVE' for obj in context.selected_objects)
+        valid_objects = []
+        
+        # Check for curve and mesh objects
+        for obj in context.selected_objects:
+            if obj.type == 'CURVE':
+                valid_objects.append(obj)
+            elif obj.type == 'MESH' and not obj.data.polygons:  # Mesh without faces
+                valid_objects.append(obj)
+        
+        # Check for bones with custom shapes
+        bones_with_shapes = _get_selected_bones_with_shapes()
+        if bones_with_shapes:
+            valid_objects.extend(bones_with_shapes)
+        
+        return len(valid_objects) > 0
     
     def execute(self, context):
-        print("Converting curves to picker buttons...")
+        print("Converting curves and meshes to picker buttons...")
         
         # You would call your main function here with the picker canvas:
         # create_buttons_from_blender_curves(your_canvas, show_plane_selector=self.show_plane_selector)
@@ -1196,7 +1959,7 @@ class CURVE_OT_set_coordinate_plane(bpy.types.Operator):
         current_plane = CoordinatePlaneConfig.get_current_plane()
         self.report({'INFO'}, f"Coordinate plane set to: {current_plane['name']}")
         return {'FINISHED'}
-
+#--------------------------------------------------------------------------------------------------------------
 # Registration for Blender
 def register():
     bpy.utils.register_class(CURVE_OT_to_picker_buttons)

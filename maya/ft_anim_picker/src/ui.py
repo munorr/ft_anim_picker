@@ -111,6 +111,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.fade_manager.set_minimal_affected_widgets(minimal_affected_widgets)
 
         # Add batch update system
+        self.batch_update_active = False
         self.batch_update_timer = QTimer()
         self.batch_update_timer.setSingleShot(True)
         self.batch_update_timer.timeout.connect(self._process_batch_updates)
@@ -178,7 +179,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         
         edit_util.addToMenu("Edit Mode", self.toggle_edit_mode, icon='setEdEditMode.png', position=(0,0))
         edit_util.addToMenu("Mirror Preferences", self.open_mirror_preferences, icon='syncOn.png', position=(1,0))
-        edit_util.addToMenu("Minimal Mode", self.fade_manager.toggle_minimal_mode, icon='eye.png', position=(2,0))
+        edit_util.addToMenu("Toggle Minimal Mode", self.fade_manager.toggle_minimal_mode, icon='eye.png', position=(2,0))
         edit_util.addToMenu("Toggle Fade Away", self.fade_manager.toggle_fade_away, icon='eye.png', position=(3,0))
 
         info_util = CB.CustomButton(text='Info', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
@@ -295,19 +296,24 @@ class AnimPickerWindow(QtWidgets.QWidget):
             }
             QScrollBar:vertical {
                 border: none;
-                background: transparent;
+                background: rgba(30, 30, 30, 0.3);
                 width: 8px;
-                margin: 0px 0px 0px 0px;
-                
+                margin: 0px;
             }
             QScrollBar::handle:vertical {
-                background: rgba(30, 30, 30, 0.7);
+                background: rgba(100, 100, 100, 0.5);
                 min-height: 20px;
-                width: 6px;
-                border-radius: 0px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(120, 120, 120, 0.7);
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                 height: 0px;
+                background: transparent;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
             }
                                             
         """)
@@ -607,17 +613,63 @@ class AnimPickerWindow(QtWidgets.QWidget):
     # [External Data Management]  
     #----------------------------------------------------------------------------------------------------------------------------------------
     def store_picker(self):
+        """Enhanced store picker method with current tab vs all tabs option"""
+        import maya.cmds as cmds
+        
+        # First, show the dialog to choose save mode
+        from . import picker_io
+        save_mode = picker_io.get_save_mode_dialog()
+        
+        if save_mode == 'cancel':
+            return  # User cancelled
+        
+        # Get the current tab name for potential current tab saving
+        current_tab_name = self.tab_system.current_tab if hasattr(self, 'tab_system') else None
+        
+        # Validate that we have a current tab if user chose current tab mode
+        if save_mode == 'current':
+            if not current_tab_name:
+                QtWidgets.QMessageBox.warning(
+                    self, 
+                    "No Current Tab", 
+                    "No current tab is available to save. Please select a tab first."
+                )
+                return
+        
+        # Set default filename based on save mode
+        if save_mode == 'current':
+            default_filename = f"{current_tab_name}_picker_data.json"
+        else:
+            default_filename = "picker_data.json"
+        
+        # Show file save dialog
         file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "Store Picker Data",
-            "",
+            default_filename,
             "JSON Files (*.json)"
         )
+        
         if file_path:
             try:
-                from . import picker_io
-                picker_io.store_picker_data(file_path)
-                cmds.inViewMessage(amg=f"Picker data successfully saved to {file_path}", pos='midCenter', fade=True)
+                # Call the enhanced store_picker_data function
+                picker_io.store_picker_data(
+                    file_path, 
+                    current_tab_name=current_tab_name, 
+                    save_mode=save_mode
+                )
+                
+                # Show success message
+                if save_mode == 'current':
+                    message = f"Current tab '{current_tab_name}' saved to {os.path.basename(file_path)}"
+                else:
+                    # Get tab count for the message
+                    data = picker_io.get_picker_data()
+                    tab_count = len(data.get('tabs', {}))
+                    message = f"All {tab_count} tab(s) saved to {os.path.basename(file_path)}"
+                
+                cmds.inViewMessage(amg=message, pos='midCenter', fade=True)
+                
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "Error", str(e))
                 
@@ -1434,8 +1486,12 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.update_button_data(button)
 
     def update_button_data(self, button, deleted=False):
-        """Handles both regular updates and deletions"""
+        """Enhanced update_button_data that respects batch operations"""
         if not self.tab_system.current_tab:
+            return
+        
+        # Skip individual updates during batch operations
+        if self.batch_update_active and not deleted:
             return
             
         current_tab = self.tab_system.current_tab
@@ -1473,8 +1529,202 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 self.pending_button_updates.add(button.unique_id)
                 self.batch_update_timer.start(self.batch_update_delay)
 
+    def batch_update_buttons_to_database(self, buttons_to_update, fields_to_update=None):
+        """
+        Batch update button data to database with full batch system handling
+        
+        Args:
+            buttons_to_update (list): List of button objects to update
+            fields_to_update (list): List of field names to update. If None, updates all common fields.
+                                    Possible fields: 'position', 'width', 'height', 'radius', 'shape_type', 
+                                    'svg_path_data', 'svg_file_path', 'label', 'color', 'opacity', 
+                                    'assigned_objects', 'mode', 'script_data', 'pose_data', 'thumbnail_path'
+        """
+        if not buttons_to_update:
+            return
+        
+        # CRITICAL: Disable all update systems during batch
+        was_batch_active = getattr(self, 'batch_update_active', False)
+        self.batch_update_active = True
+        
+        # Stop any running timers to prevent interference
+        timers_to_stop = ['batch_update_timer', 'widget_update_timer']
+        stopped_timers = {}
+        
+        for timer_name in timers_to_stop:
+            if hasattr(self, timer_name):
+                timer = getattr(self, timer_name)
+                if timer.isActive():
+                    timer.stop()
+                    stopped_timers[timer_name] = True
+        
+        # Clear any pending updates
+        if hasattr(self, 'pending_button_updates'):
+            self.pending_button_updates.clear()
+        
+        try:
+            # Disconnect changed signals temporarily to prevent interference
+            for button in buttons_to_update:
+                try:
+                    button.changed.disconnect()
+                except:
+                    pass
+            
+            # ESSENTIAL: Direct database update (same pattern as Maya version)
+            if hasattr(self, 'tab_system') and self.tab_system.current_tab:
+                current_tab = self.tab_system.current_tab
+                self.initialize_tab_data(current_tab)
+                tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+                
+                # Default fields to update if none specified
+                if fields_to_update is None:
+                    # Update all fields
+                    fields_to_update = [
+                        'position', 'width', 'height', 'radius', 'shape_type', 'label', 
+                        'color', 'opacity', 'assigned_objects', 'mode', 'script_data', 
+                        'pose_data', 'thumbnail_path', 'svg_path_data', 'svg_file_path', 'selectable'
+                    ]
+                
+                # Create a mapping of existing button IDs for faster lookup
+                button_map = {btn['id']: i for i, btn in enumerate(tab_data['buttons'])}
+                
+                # Update specified fields for all affected buttons
+                buttons_updated = 0
+                for button in buttons_to_update:
+                    if button.unique_id in button_map:
+                        button_index = button_map[button.unique_id]
+                        
+                        # Update only specified fields
+                        for field in fields_to_update:
+                            if field == 'position':
+                                tab_data['buttons'][button_index]['position'] = (
+                                    button.scene_position.x(), button.scene_position.y()
+                                )
+                            elif field == 'width':
+                                tab_data['buttons'][button_index]['width'] = button.width
+                            elif field == 'height':
+                                tab_data['buttons'][button_index]['height'] = button.height
+                            elif field == 'radius':
+                                tab_data['buttons'][button_index]['radius'] = button.radius
+                            elif field == 'shape_type':
+                                tab_data['buttons'][button_index]['shape_type'] = button.shape_type
+                            elif field == 'svg_path_data':
+                                tab_data['buttons'][button_index]['svg_path_data'] = button.svg_path_data
+                            elif field == 'svg_file_path':
+                                tab_data['buttons'][button_index]['svg_file_path'] = button.svg_file_path
+                            elif field == 'label':
+                                tab_data['buttons'][button_index]['label'] = button.label
+                            elif field == 'color':
+                                tab_data['buttons'][button_index]['color'] = button.color
+                            elif field == 'opacity':
+                                tab_data['buttons'][button_index]['opacity'] = button.opacity
+                            elif field == 'assigned_objects':
+                                tab_data['buttons'][button_index]['assigned_objects'] = getattr(
+                                    button, 'assigned_objects', []
+                                )
+                            elif field == 'mode':
+                                tab_data['buttons'][button_index]['mode'] = getattr(
+                                    button, 'mode', 'select'
+                                )
+                            elif field == 'script_data':
+                                tab_data['buttons'][button_index]['script_data'] = getattr(
+                                    button, 'script_data', {'code': '', 'type': 'python'}
+                                )
+                            elif field == 'pose_data':
+                                tab_data['buttons'][button_index]['pose_data'] = getattr(
+                                    button, 'pose_data', {}
+                                )
+                            elif field == 'thumbnail_path':
+                                tab_data['buttons'][button_index]['thumbnail_path'] = getattr(
+                                    button, 'thumbnail_path', ''
+                                )
+                            elif field == 'selectable':
+                                tab_data['buttons'][button_index]['selectable'] = getattr(
+                                    button, 'selectable', True
+                                )
+                        
+                        buttons_updated += 1
+                    else:
+                        # If button not found in database, add it with all current properties
+                        button_data = {
+                            "id": button.unique_id,
+                            "selectable": getattr(button, 'selectable', True),
+                            "label": button.label,
+                            "color": button.color,
+                            "opacity": button.opacity,
+                            "position": (button.scene_position.x(), button.scene_position.y()),
+                            "width": button.width,
+                            "height": button.height,
+                            "radius": button.radius,
+                            "assigned_objects": getattr(button, 'assigned_objects', []),
+                            "mode": getattr(button, 'mode', 'select'),
+                            "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
+                            "pose_data": getattr(button, 'pose_data', {}),
+                            "thumbnail_path": getattr(button, 'thumbnail_path', ''),
+                            "shape_type": button.shape_type,
+                            "svg_path_data": button.svg_path_data,
+                            "svg_file_path": button.svg_file_path
+                        }
+                        tab_data['buttons'].append(button_data)
+                        buttons_updated += 1
+                
+                # Single database update for all buttons
+                DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                
+                # Force immediate save to ensure data persistence
+                DM.PickerDataManager.save_data(
+                    DM.PickerDataManager.get_data(), 
+                    force_immediate=True
+                )
+                
+                print(f"Batch updated {buttons_updated} buttons in database (fields: {fields_to_update})")
+            
+            # Reconnect signals properly
+            for button in buttons_to_update:
+                # Reconnect to the main window's handler
+                if hasattr(self, 'on_button_changed'):
+                    button.changed.connect(self.on_button_changed)
+                else:
+                    # Fallback connection
+                    button.changed.connect(self.update_button_data)
+            
+            # Update canvas if available
+            if hasattr(self, 'tab_system') and self.tab_system.current_tab:
+                canvas = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
+                canvas.update()
+                if hasattr(canvas, 'update_button_positions'):
+                    canvas.update_button_positions()
+        
+        except Exception as e:
+            print(f"Error during batch update: {e}")
+            
+            # Emergency signal reconnection
+            for button in buttons_to_update:
+                try:
+                    if hasattr(self, 'on_button_changed'):
+                        button.changed.connect(self.on_button_changed)
+                    else:
+                        button.changed.connect(self.update_button_data)
+                except:
+                    pass
+                    
+        finally:
+            # Restore batch mode state
+            self.batch_update_active = was_batch_active
+            
+            # Restart stopped timers if they were originally active
+            for timer_name, was_active in stopped_timers.items():
+                if was_active and hasattr(self, timer_name):
+                    timer = getattr(self, timer_name)
+                    # Give a small delay before restarting
+                    QtCore.QTimer.singleShot(100, timer.start)
+
     def _process_batch_updates(self):
-        """ADD this new method to handle batch database updates"""
+        """Enhanced batch updates that skips during active batch operations"""
+        # Skip if we're in the middle of a batch operation
+        if self.batch_update_active:
+            return
+            
         if not self.pending_button_updates or not self.tab_system.current_tab:
             return
             
@@ -1593,6 +1843,10 @@ class AnimPickerWindow(QtWidgets.QWidget):
             self.tab_system.tabs[tab_name]['buttons'] = []
         elif 'background_value' not in self.tab_system.tabs[tab_name]:
             self.tab_system.tabs[tab_name]['background_value'] = 20  # Add if missing
+        elif 'image_scale' not in self.tab_system.tabs[tab_name]:
+            self.tab_system.tabs[tab_name]['image_scale'] = 1.0  
+        elif 'image_opacity' not in self.tab_system.tabs[tab_name]:
+            self.tab_system.tabs[tab_name]['image_opacity'] = 1.0 
 
     def setup_tab_system(self):
         self.tab_system = TS.TabSystem(self.canvas_tab_frame_col, self.addTabButton)
@@ -1608,7 +1862,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
             self.initialize_tab_data("Tab 1")
             DM.PickerDataManager.add_tab("Tab 1")
         
-        self.create_buttons()
+        QtCore.QTimer.singleShot(50, self.create_buttons)
 
     def on_tab_reordered(self):
         # Update the UI if needed after tab reordering
@@ -1643,7 +1897,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         # Update namespace dropdown for the new tab
         self.update_namespace_dropdown()
         
-        self.create_buttons()
+        QtCore.QTimer.singleShot(10, self.create_buttons)
         current_canvas.update()
         UT.maya_main_window().activateWindow()
 
@@ -1658,7 +1912,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         
         # Update the UI
         self.update_canvas_for_tab(new_name)
-        self.create_buttons()
+        QtCore.QTimer.singleShot(10, self.create_buttons)
         
         # Refresh the canvas
         current_canvas = self.tab_system.tabs[new_name]['canvas']
@@ -1683,7 +1937,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         
         # Update the UI
         self.update_canvas_for_tab(self.tab_system.current_tab)
-        self.create_buttons()
+        QtCore.QTimer.singleShot(10, self.create_buttons)
 
     def clear_canvas(self):
         # Clear the canvas when no tabs are left

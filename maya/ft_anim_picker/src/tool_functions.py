@@ -1417,106 +1417,131 @@ def button_appearance(text="", color="", opacity="", selectable="", source_butto
         @TF.button_appearance(text="IK")
         @TF.button_appearance(text="FK", color="#FF0000")
     """
-    # Import needed modules
-    from . import main as MAIN
-    import inspect
+    # Discover the execution context (source button, picker widget, all buttons)
+    context = _discover_execution_context(source_button)
+    if not context:
+        print("No picker widgets found.")
+        return
     
-    # Determine if this function is being called from a button's script
-    is_from_script = False
-    script_source_button = None
+    # Resolve which buttons to modify
+    buttons_to_modify = _resolve_target_buttons(target_buttons, context)
+    if not buttons_to_modify:
+        print("No buttons to modify in the target picker widget. Please select at least one button or call this function from a button's script.")
+        return
     
+    # Process and validate appearance parameters
+    validated_params = _process_appearance_parameters(text, color, opacity, selectable)
+    if not any(validated_params.values()):
+        print("No changes were made. Please provide at least one parameter (text, color, opacity, or selectable).")
+        return
+    
+    # Apply appearance changes to buttons
+    modified_buttons = _apply_appearance_changes(buttons_to_modify, validated_params)
+    
+    # Persist changes to database and update UI
+    if modified_buttons:
+        _persist_appearance_changes(modified_buttons, context, validated_params)
+
+def _discover_execution_context(source_button):
+    """
+    Discover the execution context including source button, picker widget, and all available buttons.
+    
+    Returns:
+        dict: Context containing 'source_button', 'picker_widget', 'all_buttons', and 'canvas'
+        None: If no valid context could be established
+    """
+    # Detect source button from call stack if not provided
     if source_button is None:
-        # Walk up the call stack to find the executing button
+        import inspect
         for frame_info in inspect.stack():
             if frame_info.function == 'execute_script_command':
-                # Found the execute_script_command frame
                 if hasattr(frame_info, 'frame') and 'self' in frame_info.frame.f_locals:
                     potential_button = frame_info.frame.f_locals['self']
                     if hasattr(potential_button, 'mode') and hasattr(potential_button, 'script_data'):
-                        # This is the button that's executing the script
-                        script_source_button = potential_button
-                        is_from_script = True
+                        source_button = potential_button
                         break
-    else:
-        script_source_button = source_button
-        is_from_script = True
     
-    # Get the correct picker window instance
-    target_picker_widget = None
-    
-    if script_source_button:
-        # Find the picker widget that contains this button by walking up the widget hierarchy
-        current_widget = script_source_button
+    # Find the target picker widget
+    picker_widget = None
+    if source_button:
+        # Walk up the widget hierarchy to find the picker window
+        current_widget = source_button
         while current_widget:
-            # Check if this widget is an AnimPickerWindow
             if current_widget.__class__.__name__ == 'AnimPickerWindow':
-                target_picker_widget = current_widget
+                picker_widget = current_widget
                 break
             current_widget = current_widget.parent()
     
-    # If we couldn't find the specific window, fall back to manager approach
-    if not target_picker_widget:
+    # Fallback to manager approach if no picker widget found
+    if not picker_widget:
+        from . import main as MAIN
         manager = MAIN.PickerWindowManager.get_instance()
-        if not manager or not manager._picker_widgets:
-            print("No picker widgets found.")
-            return
-        # Use the first available picker widget as fallback
-        target_picker_widget = manager._picker_widgets[0]
+        if manager and manager._picker_widgets:
+            picker_widget = manager._picker_widgets[0]
     
-    # Get all buttons from the correct picker widget instance only
-    all_buttons = []
+    if not picker_widget:
+        return None
     
-    # Try different ways to access the canvas from the target picker widget
+    # Get canvas from picker widget
     canvas = None
+    if hasattr(picker_widget, 'canvas'):
+        canvas = picker_widget.canvas
+    elif hasattr(picker_widget, 'tab_system') and picker_widget.tab_system.current_tab:
+        current_tab = picker_widget.tab_system.current_tab
+        if current_tab in picker_widget.tab_system.tabs:
+            canvas = picker_widget.tab_system.tabs[current_tab]['canvas']
     
-    # Method 1: Direct canvas attribute
-    if hasattr(target_picker_widget, 'canvas'):
-        canvas = target_picker_widget.canvas
-    
-    # Method 2: Look for canvas in tab system
-    elif hasattr(target_picker_widget, 'tab_system'):
-        if target_picker_widget.tab_system.current_tab:
-            current_tab = target_picker_widget.tab_system.current_tab
-            if current_tab in target_picker_widget.tab_system.tabs:
-                canvas = target_picker_widget.tab_system.tabs[current_tab]['canvas']
-    
-    # Method 3: Search for canvas in children of the target widget only
     if not canvas:
-        for child in target_picker_widget.findChildren(QtWidgets.QWidget):
+        for child in picker_widget.findChildren(QtWidgets.QWidget):
             if hasattr(child, 'buttons') and isinstance(child.buttons, list):
                 canvas = child
                 break
     
-    # If we found a canvas, get its buttons
+    # Get all buttons from the picker widget
+    all_buttons = []
     if canvas and hasattr(canvas, 'buttons'):
         all_buttons.extend(canvas.buttons)
     
-    # If we still don't have any buttons from the target widget, search more thoroughly
+    # Fallback: search for buttons in all child widgets
     if not all_buttons:
-        for child in target_picker_widget.findChildren(QtWidgets.QWidget):
+        for child in picker_widget.findChildren(QtWidgets.QWidget):
             if hasattr(child, 'mode') and hasattr(child, 'label') and hasattr(child, 'unique_id'):
                 all_buttons.append(child)
     
-    # If we still don't have any buttons, give up
-    if not all_buttons:
-        print("No buttons found in the target picker widget.")
-        return
+    return {
+        'source_button': source_button,
+        'picker_widget': picker_widget,
+        'all_buttons': all_buttons,
+        'canvas': canvas
+    }
+
+def _resolve_target_buttons(target_buttons, context):
+    """
+    Resolve which buttons should be modified based on the target_buttons parameter and context.
     
-    # Get buttons to modify
-    buttons_to_modify = []
+    Args:
+        target_buttons: User-specified target buttons (None, string, or list)
+        context (dict): Execution context from _discover_execution_context
+    
+    Returns:
+        list: List of button objects to modify
+    """
+    all_buttons = context['all_buttons']
+    source_button = context['source_button']
     
     # Case 1: Specific target buttons provided
     if target_buttons is not None:
+        buttons_to_modify = []
+        
         # Convert single string to list
         if isinstance(target_buttons, str):
             target_buttons = [target_buttons]
-            
+        
         # Process each target
         for target in target_buttons:
             if isinstance(target, str):
-                # Find buttons by unique ID only in the target widget
+                # Find buttons by unique ID
                 for btn in all_buttons:
-                    # Match by unique ID
                     if hasattr(btn, 'unique_id') and btn.unique_id == target:
                         buttons_to_modify.append(btn)
                         break
@@ -1524,61 +1549,98 @@ def button_appearance(text="", color="", opacity="", selectable="", source_butto
                 # Assume it's a button object - verify it belongs to the target widget
                 if target in all_buttons:
                     buttons_to_modify.append(target)
+        
+        return buttons_to_modify
     
     # Case 2: Source button provided or detected from script execution
-    elif script_source_button is not None:
-        # Use the source button, but verify it belongs to the target widget
-        if script_source_button in all_buttons:
-            buttons_to_modify = [script_source_button]
+    if source_button is not None:
+        if source_button in all_buttons:
+            return [source_button]
         else:
             print("Source button not found in the target picker widget.")
-            return
+            return []
     
-    # Case 3: Default to selected buttons in the target widget only
+    # Case 3: Default to selected buttons in the target widget
+    return [btn for btn in all_buttons if hasattr(btn, 'is_selected') and btn.is_selected]
+
+def _process_appearance_parameters(text, color, opacity, selectable):
+    """
+    Process and validate all appearance parameters.
+    
+    Args:
+        text (str): Button text/label
+        color (str): Button color in hex format
+        opacity (str): Button opacity (0-1)
+        selectable (str): Whether button is selectable ("True"/"False" or "1"/"0")
+    
+    Returns:
+        dict: Validated parameters with None values for invalid/empty parameters
+    """
+    validated = {}
+    
+    # Process text
+    validated['text'] = text if text else None
+    
+    # Process and validate color
+    if color and color.startswith('#') and (len(color) == 7 or len(color) == 9):
+        validated['color'] = color
+    elif color:
+        print(f"Invalid color format: {color}. Color should be in hex format (e.g., #FF0000).")
+        validated['color'] = None
     else:
-        # Get selected buttons from the target widget only
-        buttons_to_modify = [btn for btn in all_buttons if hasattr(btn, 'is_selected') and btn.is_selected]
+        validated['color'] = None
     
-    # Check if we have any buttons to modify
-    if not buttons_to_modify:
-        print("No buttons to modify in the target picker widget. Please select at least one button or call this function from a button's script.")
-        return
-    
-    # Process and validate the opacity value
-    opacity_value = None
+    # Process and validate opacity
     if opacity == 0:
-        opacity = 0.001
-    if opacity:
+        validated['opacity'] = 0.001
+    elif opacity:
         try:
             opacity_value = float(opacity)
-            if opacity_value < 0 or opacity_value > 1:
+            if 0 <= opacity_value <= 1:
+                validated['opacity'] = opacity_value
+            else:
                 print("Opacity must be between 0 and 1. Using current opacity.")
-                opacity_value = None
+                validated['opacity'] = None
         except ValueError:
             print(f"Invalid opacity value: {opacity}. Using current opacity.")
+            validated['opacity'] = None
+    else:
+        validated['opacity'] = None
     
-    # Process and validate the selectable value
-    selectable_value = None
-    selectable = str(selectable)
-    if selectable:
-        if selectable.lower() in ["true", "1"]:
-            selectable_value = True
-        elif selectable.lower() in ["false", "0"]:
-            selectable_value = False
+    # Process and validate selectable
+    selectable_str = str(selectable)  # Convert to string first
+    if selectable_str:  # Check if the string is not empty
+        if selectable_str.lower() in ["true", "1"]:
+            validated['selectable'] = True
+        elif selectable_str.lower() in ["false", "0"]:
+            validated['selectable'] = False
         else:
             print(f"Invalid selectable value: {selectable}. Use 'True'/'False' or '1'/'0'. Using current setting.")
+            validated['selectable'] = None
+    else:
+        validated['selectable'] = None
     
-    # Track if any changes were made
-    changes_made = False
-    modified_buttons = []  # Track which buttons were actually modified
+    return validated
+
+def _apply_appearance_changes(buttons_to_modify, validated_params):
+    """
+    Apply appearance changes to the specified buttons.
     
-    # Apply changes to all buttons
+    Args:
+        buttons_to_modify (list): List of button objects to modify
+        validated_params (dict): Validated parameters from _process_appearance_parameters
+    
+    Returns:
+        list: List of buttons that were actually modified
+    """
+    modified_buttons = []
+    
     for button in buttons_to_modify:
         button_changed = False
         
         # Update text if provided
-        if text:
-            button.label = text
+        if validated_params['text']:
+            button.label = validated_params['text']
             # Reset text pixmap cache to force redraw
             button.text_pixmap = None
             button.pose_pixmap = None
@@ -1586,142 +1648,127 @@ def button_appearance(text="", color="", opacity="", selectable="", source_butto
             button_changed = True
         
         # Update color if provided
-        if color:
-            # Validate color format
-            if color.startswith('#') and (len(color) == 7 or len(color) == 9):
-                button.color = color
-                button_changed = True
-            else:
-                print(f"Invalid color format: {color}. Color should be in hex format (e.g., #FF0000).")
-        
-        # Update opacity if provided and valid
-        if opacity_value is not None:
-            button.opacity = opacity_value
+        if validated_params['color']:
+            button.color = validated_params['color']
             button_changed = True
-            
-        # Update selectable state if provided and valid
-        if selectable_value is not None:
+        
+        # Update opacity if provided
+        if validated_params['opacity'] is not None:
+            button.opacity = validated_params['opacity']
+            button_changed = True
+        
+        # Update selectable state if provided
+        if validated_params['selectable'] is not None:
             # Add selectable attribute if it doesn't exist
             if not hasattr(button, 'selectable'):
                 button.selectable = True  # Default to True for backward compatibility
-            button.selectable = selectable_value
+            button.selectable = validated_params['selectable']
             button_changed = True
         
-        # If any changes were made to this button, track it for updates
+        # If any changes were made, update UI elements and track the button
         if button_changed:
-            changes_made = True
-            modified_buttons.append(button)
-            
-            # Update tooltip and force redraw
             button.update_tooltip()
             button.update()
+            modified_buttons.append(button)
     
-    # Process database updates for ALL modified buttons at once
-    if modified_buttons and canvas:
-        # Get the current tab from the target picker widget
-        current_tab = None
-        if hasattr(target_picker_widget, 'tab_system') and target_picker_widget.tab_system.current_tab:
-            current_tab = target_picker_widget.tab_system.current_tab
+    return modified_buttons
+
+def _persist_appearance_changes(modified_buttons, context, validated_params):
+    """
+    Persist appearance changes to database and update UI.
+    
+    Args:
+        modified_buttons (list): List of buttons that were modified
+        context (dict): Execution context from _discover_execution_context
+        validated_params (dict): Validated parameters that were applied
+    """
+    picker_widget = context['picker_widget']
+    canvas = context['canvas']
+    
+    # Get current tab for database operations
+    current_tab = None
+    if hasattr(picker_widget, 'tab_system') and picker_widget.tab_system.current_tab:
+        current_tab = picker_widget.tab_system.current_tab
+    
+    # Update database if we have a current tab
+    if current_tab:
+        from . import data_management as DM
         
-        if current_tab:
-            # Import data management module
-            from . import data_management as DM
+        # Initialize tab data if needed
+        if hasattr(picker_widget, 'initialize_tab_data'):
+            picker_widget.initialize_tab_data(current_tab)
+        
+        # Temporarily disable batch updates to prevent conflicts
+        original_batch_active = getattr(picker_widget, 'batch_update_active', False)
+        picker_widget.batch_update_active = True
+        
+        try:
+            # Get current tab data and create button lookup map
+            tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+            button_map = {btn['id']: i for i, btn in enumerate(tab_data['buttons'])}
             
-            # Initialize tab data if needed
-            if hasattr(target_picker_widget, 'initialize_tab_data'):
-                target_picker_widget.initialize_tab_data(current_tab)
+            # Update database with modified button data
+            for button in modified_buttons:
+                button_data = {
+                    "id": button.unique_id,
+                    "label": button.label,
+                    "color": button.color,
+                    "opacity": button.opacity,
+                    "position": (button.scene_position.x(), button.scene_position.y()),
+                    "width": getattr(button, 'width', 80),
+                    "height": getattr(button, 'height', 30),
+                    "radius": getattr(button, 'radius', [3, 3, 3, 3]),
+                    "assigned_objects": getattr(button, 'assigned_objects', []),
+                    "mode": getattr(button, 'mode', 'select'),
+                    "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
+                    "pose_data": getattr(button, 'pose_data', {}),
+                    "thumbnail_path": getattr(button, 'thumbnail_path', '')
+                }
+                
+                # Update existing button data or add new one
+                if button.unique_id in button_map:
+                    index = button_map[button.unique_id]
+                    tab_data['buttons'][index] = button_data
+                else:
+                    tab_data['buttons'].append(button_data)
             
-            # CRITICAL: Temporarily disable the main window's batch update system to prevent conflicts
-            original_batch_active = getattr(target_picker_widget, 'batch_update_active', False)
-            target_picker_widget.batch_update_active = True
+            # Save updated tab data
+            DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+            DM.PickerDataManager.save_data(DM.PickerDataManager.get_data(), force_immediate=True)
             
-            try:
-                # Get current tab data
-                tab_data = DM.PickerDataManager.get_tab_data(current_tab)
-                
-                # Create a map of existing buttons for faster lookups
-                button_map = {btn['id']: i for i, btn in enumerate(tab_data['buttons'])}
-                
-                # Process all modified buttons
-                buttons_updated = 0
-                for button in modified_buttons:
-                    # Create complete button data
-                    button_data = {
-                        "id": button.unique_id,
-                        "label": button.label,
-                        "color": button.color,
-                        "opacity": button.opacity,
-                        "position": (button.scene_position.x(), button.scene_position.y()),
-                        "width": getattr(button, 'width', 80),
-                        "height": getattr(button, 'height', 30),
-                        "radius": getattr(button, 'radius', [3, 3, 3, 3]),
-                        "assigned_objects": getattr(button, 'assigned_objects', []),
-                        "mode": getattr(button, 'mode', 'select'),
-                        "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
-                        "pose_data": getattr(button, 'pose_data', {}),
-                        "thumbnail_path": getattr(button, 'thumbnail_path', '')
-                    }
-                    
-                    # Update existing button data or add new one
-                    if button.unique_id in button_map:
-                        # Update existing button
-                        index = button_map[button.unique_id]
-                        tab_data['buttons'][index] = button_data
-                        buttons_updated += 1
-                    else:
-                        # Add new button
-                        tab_data['buttons'].append(button_data)
-                        buttons_updated += 1
-                
-                # Save the updated tab data once for all buttons with force immediate save
-                DM.PickerDataManager.update_tab_data(current_tab, tab_data)
-                
-                # Force immediate save to ensure data persistence
-                DM.PickerDataManager.save_data(DM.PickerDataManager.get_data(), force_immediate=True)
-                
-                #print(f"Database updated for {buttons_updated} button(s) in tab '{current_tab}'")
-                
-                # Now emit changed signals for UI consistency (after database is saved)
-                for button in modified_buttons:
-                    if hasattr(button, 'changed'):
-                        try:
-                            # Block the signal temporarily to prevent recursive updates
-                            button.changed.blockSignals(True)
-                            button.changed.emit(button)
-                            button.changed.blockSignals(False)
-                        except:
-                            # If blocking fails, just emit normally
-                            button.changed.emit(button)
-                            
-            finally:
-                # Restore original batch update state
-                target_picker_widget.batch_update_active = original_batch_active
+            # Emit changed signals for UI consistency
+            for button in modified_buttons:
+                if hasattr(button, 'changed'):
+                    try:
+                        button.changed.blockSignals(True)
+                        button.changed.emit(button)
+                        button.changed.blockSignals(False)
+                    except:
+                        button.changed.emit(button)
+        
+        finally:
+            # Restore original batch update state
+            picker_widget.batch_update_active = original_batch_active
     
-    # Update the canvas if we have access to it and changes were made
-    if changes_made and canvas:
+    # Update UI elements
+    if canvas:
         canvas.update()
-        
-        # Also trigger a button positions update to ensure everything is synchronized
         if hasattr(canvas, 'update_button_positions'):
             canvas.update_button_positions()
-        
-        # Update the main window if possible
-        if hasattr(target_picker_widget, 'update_buttons_for_current_tab'):
-            target_picker_widget.update_buttons_for_current_tab()
     
-    # Report changes
-    if changes_made:
-        changes = []
-        if text: changes.append(f"text to '{text}'")
-        if color: changes.append(f"color to '{color}'")
-        if opacity_value is not None: changes.append(f"opacity to {opacity_value}")
-        if selectable_value is not None: changes.append(f"selectable to {selectable_value}")
-        
-        widget_name = getattr(target_picker_widget, 'objectName', lambda: 'Unknown')()
-        #print(f"Updated {len(modified_buttons)} button(s) in widget '{widget_name}': {', '.join(changes)}")
-        #print("Changes have been saved to the database.")
-    else:
-        print("No changes were made. Please provide at least one parameter (text, color, opacity, or selectable).")
+    if hasattr(picker_widget, 'update_buttons_for_current_tab'):
+        picker_widget.update_buttons_for_current_tab()
+    
+    # Report changes (optional - uncomment if needed)
+    # changes = []
+    # if validated_params['text']: changes.append(f"text to '{validated_params['text']}'")
+    # if validated_params['color']: changes.append(f"color to '{validated_params['color']}'")
+    # if validated_params['opacity'] is not None: changes.append(f"opacity to {validated_params['opacity']}")
+    # if validated_params['selectable'] is not None: changes.append(f"selectable to {validated_params['selectable']}")
+    # 
+    # widget_name = getattr(picker_widget, 'objectName', lambda: 'Unknown')()
+    # print(f"Updated {len(modified_buttons)} button(s) in widget '{widget_name}': {', '.join(changes)}")
+    # print("Changes have been saved to the database.")
 #---------------------------------------------------------------------------------------------------------------
 def tool_tip(tooltip_text=""):
     """
@@ -2216,3 +2263,4 @@ def print_buttons():
     print("-" * 60)
     for button in buttons:
         print(f"ID: {button['id']:<20} | Label: {button['label']:<15} | Color: {button['color']:<8} | Opacity: {button['opacity']:<4} | Mode: {button['mode']}")
+

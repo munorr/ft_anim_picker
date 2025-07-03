@@ -123,6 +123,13 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
             r'(@tt\s*\(([^)]+)\))',
             r'(@tool_tip\s*\(([^)]+)\))',
             r'(@tool_tip\s*\(([^)]+)\))',
+            
+        ]
+        tool_function_patterns_02 = [
+            r'(@reset_all\b)',
+            r'(@reset_move\b)',
+            r'(@reset_scale\b)',
+            r'(@reset_rotate\b)',
         ]
         #--------------------------------------------------------------------------------------------------------
         for pattern in tool_function_patterns:
@@ -131,6 +138,11 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
                 self.setFormat(match.start(1), len(match.group(1)), self.special_format)
                 # Apply sky blue to the function name
                 self.setFormat(match.start(2), len(match.group(2)), self.tf_function_format)
+        #--------------------------------------------------------------------------------------------------------
+        for pattern in tool_function_patterns_02:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                # Apply bright green to the function name
+                self.setFormat(match.start(1), len(match.group(1)), self.special_format)
         #--------------------------------------------------------------------------------------------------------
         # Apply highlighting for @ns.qualifier pattern (handles both direct and quoted contexts)
         # This comes AFTER quoted text highlighting so it can override the quote formatting
@@ -281,7 +293,7 @@ class CodeEditor(QtWidgets.QPlainTextEdit):
 
         color_sample_action = QtWidgets.QWidgetAction(context_menu)
         color_sample_widget = QtWidgets.QWidget()
-        color_sample = CCP.ColorPicker(sample_hex=True)
+        color_sample = CCP.ColorPicker(mode='hex')
         color_sample_widget.setLayout(QtWidgets.QHBoxLayout())
         color_sample_widget.layout().setContentsMargins(0, 0, 0, 0)
         color_sample_widget.layout().addWidget(color_sample)
@@ -596,7 +608,7 @@ class ScriptManagerWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         if parent is None:
             # Lazy import MAIN to avoid circular dependency
-            from . import main as MAIN
+            from . import blender_main as MAIN
             manager = MAIN.PickerWindowManager.get_instance()
             parent = manager._picker_widgets[0] if manager._picker_widgets else None
         super(ScriptManagerWidget, self).__init__(parent)
@@ -678,7 +690,7 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.python_label = QtWidgets.QLabel("Python")
         self.python_label.setStyleSheet(f"color: #eeeeee; padding: 4px; font-size: 12px; border-radius: {self.br}px; background-color: #222222;")
 
-        self.color_sample = CCP.ColorPicker(sample_hex=True)
+        self.color_sample = CCP.ColorPicker(mode='hex')
 
         self.function_preset_button = CB.CustomButton(
             text='', 
@@ -710,13 +722,55 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         #--------------------------------------------------------------------------------------------------------------------------
         editor_style = f"""
             QPlainTextEdit {{
-                background-color: #1e1e1e;
+                background-color: #1b1b1b;
                 color: #dddddd;
+                border: None;
                 border-radius: {self.br}px;
                 padding: 5px 5px 5px 15px;
                 font-family: Consolas, Monaco, monospace;
                 selection-background-color: #264f78;
             }}
+            QScrollBar:vertical {{
+                border: none;
+                background: transparent;
+                width: 8px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: rgba(100, 100, 100, 0.5);
+                min-height: 20px;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: rgba(120, 120, 120, 0.7);
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: transparent;
+            }}
+            QScrollBar:horizontal {{
+                border: none;
+                background: transparent;
+                height: 8px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: rgba(100, 100, 100, 0.5);
+                min-width: 20px;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:horizontal:hover {{
+                background: rgba(120, 120, 120, 0.7);
+            }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+                width: 0px;
+            }}
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+                background: transparent;
+            }}
+
         """
         #--------------------------------------------------------------------------------------------------------------------------
         # Create single editor for Python code

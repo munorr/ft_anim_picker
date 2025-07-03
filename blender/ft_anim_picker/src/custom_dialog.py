@@ -31,7 +31,7 @@ class CustomDialog(QtWidgets.QDialog):
                 background-color: #4d4d4d;
                 color: white;
                 border: none;
-                padding: 5px;
+                padding: 1px;
                 border-radius: 3px;
             }
             QPushButton {

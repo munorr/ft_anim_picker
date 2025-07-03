@@ -57,6 +57,7 @@ class TransformGuides(QtWidgets.QWidget):
         self.visual_layer.setVisible(False)
         self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
         
+        
         # Connect to canvas selection changes
         if hasattr(canvas, 'button_selection_changed'):
             canvas.button_selection_changed.connect(self.update_selection)
@@ -355,7 +356,6 @@ class TransformGuides(QtWidgets.QWidget):
                 else:
                     new_width = original['width'] * scale_x
                     new_height = original['height'] * scale_y
-
             
             # Clamp to reasonable sizes
             button.width = round(max(5, min(new_width, 2000)), 1)
@@ -378,43 +378,6 @@ class TransformGuides(QtWidgets.QWidget):
         # Update canvas
         self.canvas.update_button_positions()
     #---------------------------------------------------------------------------
-    def apply_scale_to_buttons(self, scale_x, scale_y):
-        """Apply scaling to all selected buttons based on original states"""
-        for button in self.selected_buttons:
-            if button not in self.original_states:
-                continue
-            
-            original = self.original_states[button]
-            
-            # Scale button dimensions from original size
-            new_width = original['width'] * scale_x
-            new_height = original['height'] * scale_y
-            
-            # Clamp to reasonable button sizes
-            button.width = max(5, min(new_width, 500))
-            button.height = max(5, min(new_height, 500))
-            
-            # Calculate new position relative to transform origin
-            original_pos = original['position']
-            
-            # Vector from transform origin to original position
-            offset_from_origin = original_pos - self.transform_origin
-            
-            # Scale the offset
-            scaled_offset = QtCore.QPointF(
-                offset_from_origin.x() * scale_x,
-                offset_from_origin.y() * scale_y
-            )
-            
-            # New position = origin + scaled offset
-            button.scene_position = self.transform_origin + scaled_offset
-            
-            # Update button visual
-            button.update()
-        
-        # Update button positions on canvas
-        self.canvas.update_button_positions()
-
     def get_transform_origin(self, handle_name):
         """Get the transform origin point for a given handle in scene coordinates"""
         # For proper 1:1 scaling, use the opposite edge/corner as the anchor point
@@ -434,9 +397,10 @@ class TransformGuides(QtWidgets.QWidget):
     def update_button_data(self):
         """Update button data in the main window after transform"""
         main_window = self.canvas.window()
-        if hasattr(main_window, 'update_button_data'):
-            for button in self.selected_buttons:
-                main_window.update_button_data(button)
+        if hasattr(main_window, 'batch_update_buttons_to_database'):
+            main_window.batch_update_buttons_to_database(self.selected_buttons)
+            #for button in self.selected_buttons:
+            #    main_window.update_button_data(button)
     
     def update_edit_widgets(self):
         """FIXED: Trigger edit widget updates after transform completion"""
@@ -501,6 +465,7 @@ class TransformGuides(QtWidgets.QWidget):
             event.accept()
         else:
             event.ignore()
+        
         UT.blender_main_window()
 
     def mouseMoveEvent(self, event):
@@ -637,5 +602,4 @@ class TransformGuidesVisual(QtWidgets.QWidget):
         painter.setPen(pen)
         painter.setBrush(QtCore.Qt.NoBrush)
         painter.drawRect(widget_rect)
-
-
+ 

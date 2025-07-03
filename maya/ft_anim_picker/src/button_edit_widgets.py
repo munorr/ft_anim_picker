@@ -39,7 +39,7 @@ def create_button_edit_widgets(parent):
     #---------------------------------------------------------------------------------------------------------------------------------------
     # Rename widget - simplified
     rename_widget = QtWidgets.QWidget()
-    rename_widget.setStyleSheet(f"border: 1px solid #5c7918; background-color: {widget_color};")
+    rename_widget.setStyleSheet(f"border: 1px solid #435813; background-color: {widget_color};")
     rename_widget.setFixedHeight(30)
     rename_layout = QtWidgets.QHBoxLayout(rename_widget)
     set_margin_space(rename_layout,0,0)
@@ -281,7 +281,7 @@ def create_button_edit_widgets(parent):
     widgets['color_widget'] = color_widget
     widgets['color_buttons'] = color_buttons
     #---------------------------------------------------------------------------------------------------------------------------------------
-    color_picker = CCP.ColorPicker()
+    color_picker = CCP.ColorPicker(mode='square')
     def handle_color_picker_change(qcolor):
         """Handle QColor from color picker and convert to hex string"""
         if isinstance(qcolor, QtGui.QColor):
@@ -319,6 +319,11 @@ def create_button_edit_widgets(parent):
         }
         QPushButton:pressed {
             background-color: #555555;
+        }
+        QToolTip {
+            background-color: #333333;
+            color: #FFFFFF;
+            border: 1px solid #222222;
         }
         """
     def zorder_button(btn, tooltip, callback):
@@ -408,7 +413,7 @@ def queue_color_change(main_window, color):
                 color_str = str(color)
             
             main_window.pending_widget_changes['color'] = color_str
-            main_window.widget_update_timer.start(50)
+            main_window.widget_update_timer.start(10)
             
 def rename_selected_buttons(main_window, new_label):
     if isinstance(main_window, UI.AnimPickerWindow):

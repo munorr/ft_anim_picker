@@ -265,14 +265,14 @@ class PickerCanvas(QtWidgets.QWidget):
     # TRANSFORM GUIDES
     #------------------------------------------------------------------------------
     def on_transform_finished(self):
-        """Handle transform guide operations completion"""
-        # Force update of button positions and data
+        """Handle transform guide operations completion with optimized updates"""
+        selected_buttons = self.get_selected_buttons()
+        main_window = self.window()
+        
+        if hasattr(main_window, 'batch_update_buttons_to_database'):
+            main_window.batch_update_buttons_to_database(selected_buttons)
         self.update_button_positions()
         self.update()
-        
-        # Update button data for all selected buttons
-        for button in self.get_selected_buttons():
-            self.update_button_data(button)
 
     def update_transform_guides(self):
         """Update transform guides when selection or edit mode changes"""
@@ -338,7 +338,7 @@ class PickerCanvas(QtWidgets.QWidget):
             self.update_hud_counts()
 
     def update_visual_selection(self, rect, add_to_selection=False, remove_from_selection=False):
-        """Update button selection visually during rubber band drag"""
+        """Update button selection visually during rubber band drag with shape awareness"""
         # Get buttons in current rectangle
         current_buttons = set()
         
@@ -356,8 +356,8 @@ class PickerCanvas(QtWidgets.QWidget):
             # Skip non-selectable buttons in select mode
             if not self.edit_mode and hasattr(button, 'selectable') and not button.selectable:
                 continue
-                
-            # Get button rect in scene coordinates
+            
+            # First check if button's bounding rect intersects with selection
             button_pos = button.scene_position
             button_rect = QtCore.QRectF(
                 button_pos.x() - button.width/2,
@@ -367,7 +367,9 @@ class PickerCanvas(QtWidgets.QWidget):
             )
             
             if scene_rect.intersects(button_rect):
-                current_buttons.add(button)
+                # Now check if the button's actual shape intersects with selection
+                if self._button_shape_intersects_rect(button, scene_rect):
+                    current_buttons.add(button)
         
         # Track selection changes for signal emission
         selection_changed = False
@@ -411,94 +413,85 @@ class PickerCanvas(QtWidgets.QWidget):
         if selection_changed:
             self.update_hud_counts()
             self.button_selection_changed.emit()
+
+    def _button_shape_intersects_rect(self, button, scene_rect):
+        """
+        Check if a button's actual shape intersects with a selection rectangle.
+        This provides more precise selection for custom shapes.
+        """
+        try:
+            # Get current zoom factor
+            zoom_factor = self.zoom_factor
+            
+            # Create the button's path in scene coordinates
+            button_rect = QtCore.QRectF(
+                -button.width/2, -button.height/2,
+                button.width, button.height
+            )
+            
+            # Create the button path
+            button_path = button._create_button_path(button_rect, button.radius, zoom_factor)
+            
+            # Transform the path to scene coordinates
+            transform = QtGui.QTransform()
+            transform.translate(button.scene_position.x(), button.scene_position.y())
+            scene_button_path = transform.map(button_path)
+            
+            # Create a path from the selection rectangle
+            selection_path = QtGui.QPainterPath()
+            selection_path.addRect(scene_rect)
+            
+            # Check if the paths intersect
+            return scene_button_path.intersects(selection_path)
+            
+        except Exception as e:
+            print(f"Error checking button shape intersection: {e}")
+            # Fallback to simple rectangle intersection
+            button_pos = button.scene_position
+            button_rect = QtCore.QRectF(
+                button_pos.x() - button.width/2,
+                button_pos.y() - button.height/2,
+                button.width,
+                button.height
+            )
+            return scene_rect.intersects(button_rect)
     #------------------------------------------------------------------------------
     # SELECTION LOGIC
     #------------------------------------------------------------------------------
-    
     def apply_final_selection(self, add_to_selection=False, ctrl_held=False):
         """Apply final selection with Blender object lookup and counterpart selection"""
         if self.edit_mode:
             return
         
-        # Check if we're in deselection mode (ctrl+shift was held during drag)
-        # We can detect this by checking if buttons in the drag area are now deselected
-        # compared to their initial state
-        deselection_mode = False
-        if add_to_selection:  # shift was held
-            for button in self.buttons_in_current_drag:
-                initial_state = self.initial_selection_state.get(button, False)
-                if initial_state and not button.is_selected:
-                    deselection_mode = True
-                    break
-        
-        if deselection_mode:
-            # Handle deselection in Blender
-            objects_to_deselect = []
-            bones_to_deselect = []
-            
-            for button in self.buttons_in_current_drag:
-                if not button.is_selected and button.assigned_objects:
-                    # This button was deselected, so deselect its objects/bones in Blender
-                    for obj_data in button.assigned_objects:
-                        if obj_data.get('is_bone', False):
-                            bone_info = self._resolve_bone(obj_data)
-                            if bone_info:
-                                bones_to_deselect.append(bone_info)
-                        else:
-                            obj_info = self._resolve_object(obj_data, self._get_current_namespace())
-                            if obj_info:
-                                objects_to_deselect.append(obj_info)
-            
-            # Apply Blender deselection
-            try:
-                import bpy
-                with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
-                    # Deselect bones
-                    for bone_info in bones_to_deselect:
-                        armature_name = bone_info['armature']
-                        bone_name = bone_info['bone']
-                        if (armature_name in bpy.data.objects and 
-                            bpy.data.objects[armature_name].type == 'ARMATURE' and
-                            bone_name in bpy.data.objects[armature_name].pose.bones):
-                            try:
-                                bpy.data.objects[armature_name].pose.bones[bone_name].bone.select = False
-                            except:
-                                pass
-                    
-                    # Deselect objects
-                    for obj_info in objects_to_deselect:
-                        obj_name = obj_info['name']
-                        if obj_name in bpy.data.objects:
-                            try:
-                                bpy.data.objects[obj_name].select_set(False)
-                            except:
-                                pass
-            except Exception as e:
-                print(f"Error during Blender deselection: {e}")
-            
-            return  # Exit early for deselection mode
-        
-        # Original selection logic for normal cases
-        # Get buttons that should be selected in proper order
-        if self.buttons_in_current_drag:
+        # Get buttons that should be selected
+        if hasattr(self, 'buttons_in_current_drag') and self.buttons_in_current_drag:
             # Use ordered selection for rubber band
             final_selections = self._get_ordered_selections(add_to_selection)
         else:
             # Use current selection (for single clicks) - maintain last selected button
             final_selections = [button for button in self.buttons if button.is_selected]
             
-            # For single clicks with add_to_selection=True, ensure proper ordering
-            if add_to_selection and hasattr(self, 'last_clicked_button') and self.last_clicked_button:
-                # Move the last clicked button to the end if it's in the selection
+            # For single clicks, ensure proper ordering with last clicked button
+            if hasattr(self, 'last_clicked_button') and self.last_clicked_button and self.last_clicked_button.is_selected:
                 if self.last_clicked_button in final_selections:
                     final_selections.remove(self.last_clicked_button)
                     final_selections.append(self.last_clicked_button)
         
         if not final_selections:
+            # If no buttons selected, clear Blender selection
+            try:
+                import bpy
+                with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+                    if bpy.context.mode == 'POSE':
+                        bpy.ops.pose.select_all(action='DESELECT')
+                    elif bpy.context.mode == 'OBJECT':
+                        bpy.ops.object.select_all(action='DESELECT')
+            except:
+                pass
             return
         
-        # Check if we should select counterparts instead of regular objects
-        if ctrl_held and final_selections:
+        # Check if we should select counterparts
+        if ctrl_held:
             # Select counterparts for all selected buttons
             resolved_items, missing_objects = self._resolve_counterpart_items(final_selections)
         else:
@@ -1167,11 +1160,23 @@ class PickerCanvas(QtWidgets.QWidget):
         self._selection_update_timer.start(10)  # 10ms debounce
     
     def _get_button_at_position(self, pos):
-        """Get the topmost visible button at the given position"""
+        """Get the topmost visible button at the given position, respecting button shapes"""
         # Check buttons in reverse order (topmost first due to z-order)
         for button in reversed(self.buttons):
-            if button.isVisible() and button.geometry().contains(pos):
+            if not button.isVisible():
+                continue
+                
+            # First check if position is within the button's bounding rectangle
+            if not button.geometry().contains(pos):
+                continue
+            
+            # Convert canvas position to button-local coordinates
+            local_pos = button.mapFromParent(pos)
+            
+            # Check if the position is within the button's actual shape
+            if button.contains_point(local_pos):
                 return button
+        
         return None
 
     def _emit_selection_changed(self):
@@ -1246,17 +1251,19 @@ class PickerCanvas(QtWidgets.QWidget):
         
         for button in self.buttons:
             button_pos = button.scene_position
+            button_width = button.width
+            button_height = button.height
             button_rect = QtCore.QRectF(
-                button_pos.x() - button.width/2,
-                button_pos.y() - button.height/2,
-                button.width,
-                button.height
+                button_pos.x() - button_width/2,
+                button_pos.y() - button_height/2,
+                button_width,
+                button_height
             )
             
             if visible_scene_rect.intersects(button_rect):
                 canvas_pos = self.scene_to_canvas_coords(button_pos)
-                scaled_width = button.width * self.zoom_factor
-                scaled_height = button.height * self.zoom_factor
+                scaled_width = button_width * self.zoom_factor
+                scaled_height = button_height * self.zoom_factor
                 x = canvas_pos.x() - scaled_width / 2
                 y = canvas_pos.y() - scaled_height / 2
                 
@@ -1264,7 +1271,10 @@ class PickerCanvas(QtWidgets.QWidget):
                 buttons_to_show.append(button)
             else:
                 buttons_to_hide.append(button)
-        
+
+        if hasattr(self, 'transform_guides') and self.transform_guides.isVisible():
+            QtCore.QTimer.singleShot(5, self._update_transform_guides_position)
+            
         # Apply all updates at once
         self.setUpdatesEnabled(False)
         
@@ -1281,20 +1291,32 @@ class PickerCanvas(QtWidgets.QWidget):
         
         self.setUpdatesEnabled(True)
         
-        if hasattr(self, 'transform_guides') and self.transform_guides.isVisible():
-            QtCore.QTimer.singleShot(5, self._update_transform_guides_position)
-
     def update_button_data(self, button, deleted=False):
         main_window = self.window()
         if isinstance(main_window, UI.BlenderAnimPickerWindow):
             main_window.update_button_data(button, deleted)
 
     def on_button_changed(self, button):
-        self.update_button_data(button)
+        main_window = self.window()
+    
+        # Only update database if not in batch mode
+        if not getattr(main_window, 'batch_update_active', False):
+            self.update_button_data(button)
+        
+        # Throttle transform guide updates
         if (hasattr(self, 'transform_guides') and 
             self.transform_guides.isVisible() and 
             button in self.get_selected_buttons()):
-            QtCore.QTimer.singleShot(5, self._update_transform_guides_position)
+            
+            if not hasattr(self, '_guide_update_throttle'):
+                self._guide_update_throttle = QtCore.QTimer()
+                self._guide_update_throttle.setSingleShot(True)
+                self._guide_update_throttle.timeout.connect(
+                    lambda: self.transform_guides.update_selection() if hasattr(self, 'transform_guides') else None
+                )
+            
+            self._guide_update_throttle.stop()
+            self._guide_update_throttle.start(50)  # 50ms throttle
     
     def update_hud_counts(self):
         """Optimized HUD count update with caching"""
@@ -1535,13 +1557,23 @@ class PickerCanvas(QtWidgets.QWidget):
             for url in event.mimeData().urls():
                 file_path = url.toLocalFile()
                 if self._is_valid_svg_file(file_path):
-                    # Handle SVG file - create buttons from paths
-                    
+                    # Handle SVG file - show dialog first
                     drop_position = QtCore.QPointF(event.pos())
-                    self._create_buttons_from_svg(file_path, drop_position)
+                    
+                    # Show import options dialog
+                    import_options = self._show_svg_import_dialog()
+                    
+                    if import_options['import']:
+                        if import_options['separate']:
+                            # Create separate buttons (existing functionality)
+                            self._create_buttons_from_svg(file_path, drop_position)
+                        else:
+                            # Create combined button (new functionality)
+                            self._create_combined_button_from_svg(file_path, drop_position)
+                    
                     event.acceptProposedAction()
                     return
-                   
+                
                 elif self._is_valid_image_file(file_path):
                     # Handle image file - set as background
                     main_window = self.window()
@@ -1670,7 +1702,7 @@ class PickerCanvas(QtWidgets.QWidget):
         return QtCore.QRectF(min_x, min_y, width, height)
     #------------------------------------------------------------------------------
     def _create_buttons_from_svg(self, svg_file_path, drop_position):
-        """Create picker buttons from all paths in an SVG file with proper positioning"""
+        """Create picker buttons from all paths in an SVG file with preserved layout"""
         import xml.etree.ElementTree as ET
         
         try:
@@ -1700,66 +1732,74 @@ class PickerCanvas(QtWidgets.QWidget):
             # Store SVG path for ID generation
             self._current_svg_path = svg_file_path
             
-            # ALTERNATIVE APPROACH: Use SVG rendering to get exact positions
-            # This preserves the exact layout as it appears in the SVG
-            
-            # Get SVG dimensions for scaling reference
+            # STEP 1: Get SVG viewBox/dimensions for coordinate system reference
             svg_bounds = self._get_svg_bounds(root)
             svg_width = svg_bounds['width']
             svg_height = svg_bounds['height']
+            svg_x_offset = svg_bounds.get('x', 0)
+            svg_y_offset = svg_bounds.get('y', 0)
             
-            # Convert drop position to scene coordinates
-            scene_drop_pos = self.canvas_to_scene_coords(drop_position)
+            print(f"SVG bounds: {svg_width}x{svg_height}, offset: ({svg_x_offset}, {svg_y_offset})")
             
-            # STEP 1: Use parsed SVG dimensions directly
-            render_width = svg_width
-            render_height = svg_height
-            
-            # Calculate scale factor for reasonable button sizes
-            target_max_dimension = 1000  # Max size for the entire SVG layout
-            svg_scale = target_max_dimension / max(render_width, render_height)
-            
-            # STEP 2: Process each path and extract its visual bounds
-            valid_paths = []
-            path_positions = []
+            # STEP 2: Calculate all path bounds in SVG coordinate space
+            path_data_list = []
+            all_path_bounds = []
             
             for i, path_element in enumerate(path_elements):
                 if 'd' not in path_element.attrib:
                     continue
-                
+                    
                 path_data = path_element.attrib['d']
                 
-                # Get the visual bounding box of this path
-                path_bounds = self._get_accurate_path_bounds(path_data, path_element)
+                # Get the bounding box of this path in original SVG coordinates
+                path_bounds = self._get_path_bounds_in_svg_coords(path_data, path_element)
                 
                 if path_bounds and not path_bounds.isEmpty():
-                    # Calculate the center position in SVG coordinate space
-                    center_x = path_bounds.center().x()
-                    center_y = path_bounds.center().y()
-                    
-                    # Store the path data and its center position
-                    valid_paths.append((i, path_element, path_data, path_bounds))
-                    path_positions.append((center_x, center_y))
+                    path_info = {
+                        'index': i,
+                        'element': path_element,
+                        'path_data': path_data,
+                        'bounds': path_bounds,
+                        'center': path_bounds.center()
+                    }
+                    path_data_list.append(path_info)
+                    all_path_bounds.append(path_bounds)
             
-            if not valid_paths:
+            if not path_data_list:
                 print("No valid paths found")
                 return
             
-            # STEP 3: Calculate the layout bounds to center the entire arrangement
-            if path_positions:
-                min_x = min(pos[0] for pos in path_positions)
-                max_x = max(pos[0] for pos in path_positions)
-                min_y = min(pos[1] for pos in path_positions)
-                max_y = max(pos[1] for pos in path_positions)
+            # STEP 3: Calculate the overall layout bounds in SVG coordinates
+            if all_path_bounds:
+                # Find the bounding rectangle that contains all paths
+                min_x = min(bounds.left() for bounds in all_path_bounds)
+                max_x = max(bounds.right() for bounds in all_path_bounds)
+                min_y = min(bounds.top() for bounds in all_path_bounds)
+                max_y = max(bounds.bottom() for bounds in all_path_bounds)
                 
-                # Calculate the center of the entire layout in SVG coordinates
-                layout_center_x = (min_x + max_x) / 2
-                layout_center_y = (min_y + max_y) / 2
+                layout_bounds = QtCore.QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
+                layout_center = layout_bounds.center()
+                
+                print(f"Layout bounds: {layout_bounds}, center: {layout_center}")
             else:
-                layout_center_x = render_width / 2
-                layout_center_y = render_height / 2
+                layout_center = QtCore.QPointF(svg_width/2, svg_height/2)
+                layout_bounds = QtCore.QRectF(0, 0, svg_width, svg_height)
             
-            # Create buttons for each valid path
+            # STEP 4: Calculate scale factor for reasonable button sizes
+            # Target the entire layout to fit within a reasonable screen area
+            target_layout_size = 800  # Target size for the entire layout
+            current_layout_size = max(layout_bounds.width(), layout_bounds.height())
+            layout_scale = target_layout_size / current_layout_size if current_layout_size > 0 else 1.0
+            
+            # Clamp scale to reasonable range
+            layout_scale = max(0.1, min(layout_scale, 10.0))
+            
+            print(f"Layout scale: {layout_scale}")
+            
+            # Convert drop position to scene coordinates
+            scene_drop_pos = self.canvas_to_scene_coords(drop_position)
+            
+            # STEP 5: Create buttons with preserved spatial relationships
             created_buttons = []
             main_window = self.window()
             
@@ -1783,47 +1823,57 @@ class PickerCanvas(QtWidgets.QWidget):
                 # Prepare for batch database update
                 new_buttons_data = []
                 
-                for j, (original_index, path_element, path_data, path_bounds) in enumerate(valid_paths):
+                for j, path_info in enumerate(path_data_list):
                     # Generate unique ID
-                    unique_id = self._generate_svg_unique_id(current_tab, existing_ids, original_index)
+                    unique_id = self._generate_svg_unique_id(current_tab, existing_ids, path_info['index'])
                     existing_ids.add(unique_id)
                     
                     # Create button label
-                    button_label = path_element.get('id', '')
+                    button_label = path_info['element'].get('id', '')
                     if not button_label:
-                        button_label = ''
-                    
+                        button_label = f"Shape_{j+1}"
                     
                     # Create the button
-                    new_button = PB.PickerButton(button_label, self, unique_id=unique_id, color="#3096bb")
+                    new_button = PB.PickerButton('', self, unique_id=unique_id, color="#3096bb")
                     
                     # Set up the button with SVG path
                     new_button.shape_type = 'custom_path'
-                    new_button.svg_path_data = path_data
+                    new_button.svg_path_data = path_info['path_data']
                     new_button.svg_file_path = svg_file_path
                     
-                    # STEP 4: Calculate position preserving exact SVG layout
-                    # Get this path's center position from our stored positions
-                    path_center_x, path_center_y = path_positions[j]
+                    # CRITICAL: Calculate position to preserve exact SVG layout
+                    path_center = path_info['center']
                     
-                    # Calculate offset from the layout center
-                    offset_x = (path_center_x - layout_center_x) * svg_scale
-                    offset_y = (path_center_y - layout_center_y) * svg_scale
+                    # Calculate offset from layout center in SVG coordinates
+                    svg_offset_x = path_center.x() - layout_center.x()
+                    svg_offset_y = path_center.y() - layout_center.y()
                     
-                    # Position the button relative to the drop position
-                    button_x = scene_drop_pos.x() + offset_x
-                    button_y = scene_drop_pos.y() + offset_y
+                    # Scale the offset and apply to drop position
+                    scaled_offset_x = svg_offset_x * layout_scale
+                    scaled_offset_y = svg_offset_y * layout_scale
+                    
+                    # Position relative to drop position
+                    button_x = scene_drop_pos.x() + scaled_offset_x
+                    button_y = scene_drop_pos.y() + scaled_offset_y
                     
                     new_button.scene_position = QtCore.QPointF(button_x, button_y)
                     
-                    # STEP 5: Set button size based on path bounds
-                    scaled_width = max(25, path_bounds.width() * svg_scale)
-                    scaled_height = max(25, path_bounds.height() * svg_scale)
-                    new_button.width = min(150, max(30, scaled_width))
-                    new_button.height = min(150, max(30, scaled_height))
+                    # STEP 6: Calculate button size based on individual path bounds
+                    path_bounds = path_info['bounds']
+                    
+                    # Scale path dimensions
+                    scaled_width = path_bounds.width() * layout_scale
+                    scaled_height = path_bounds.height() * layout_scale
+                    
+                    # Set reasonable button size limits
+                    min_size = 25
+                    max_size = 200
+                    
+                    new_button.width = max(min_size, min(max_size, scaled_width))
+                    new_button.height = max(min_size, min(max_size, scaled_height))
                     
                     # Apply SVG styling
-                    self._apply_svg_styling(new_button, path_element)
+                    self._apply_svg_styling(new_button, path_info['element'])
                     
                     # Add to canvas
                     self.add_button(new_button)
@@ -1867,7 +1917,7 @@ class PickerCanvas(QtWidgets.QWidget):
                     self.update()
                     self.update_hud_counts()
                     
-                    print(f"Created {len(created_buttons)} buttons from SVG with preserved layout")
+                    print(f"Created {len(created_buttons)} buttons with preserved SVG layout")
                     
         except Exception as e:
             # Show error dialog
@@ -1878,6 +1928,174 @@ class PickerCanvas(QtWidgets.QWidget):
             dialog.add_button_box()
             dialog.exec_()
 
+    def _create_combined_button_from_svg(self, svg_file_path, drop_position):
+        """Create a single button with combined SVG paths"""
+        import xml.etree.ElementTree as ET
+        
+        try:
+            # Parse the SVG file
+            tree = ET.parse(svg_file_path)
+            root = tree.getroot()
+            
+            # Find all path elements
+            path_elements = root.findall('.//{http://www.w3.org/2000/svg}path')
+            if not path_elements:
+                path_elements = root.findall('.//path')
+            
+            if not path_elements:
+                self._show_no_paths_dialog()
+                return
+            
+            # Combine all paths into one
+            combined_path_data = ""
+            for path_element in path_elements:
+                if 'd' in path_element.attrib:
+                    path_data = path_element.attrib['d']
+                    if combined_path_data:
+                        combined_path_data += " "
+                    combined_path_data += path_data
+            
+            if not combined_path_data:
+                self._show_no_paths_dialog()
+                return
+            
+            # Create single button
+            main_window = self.window()
+            if isinstance(main_window, UI.BlenderAnimPickerWindow):
+                current_tab = main_window.tab_system.current_tab
+                unique_id = main_window.generate_unique_id(current_tab)
+                
+                # Convert drop position to scene coordinates
+                scene_drop_pos = self.canvas_to_scene_coords(drop_position)
+                
+                # Create button
+                new_button = PB.PickerButton('', self, unique_id=unique_id, color="#3096bb")
+                new_button.shape_type = 'custom_path'
+                new_button.svg_path_data = combined_path_data
+                new_button.svg_file_path = svg_file_path
+                new_button.scene_position = scene_drop_pos
+                
+                # Set reasonable size
+                new_button.width = 80
+                new_button.height = 80
+                
+                # Apply styling from first path element if available
+                if path_elements:
+                    self._apply_svg_styling(new_button, path_elements[0])
+                
+                # Add to canvas
+                self.add_button(new_button)
+                
+                # Update database
+                button_data = {
+                    "id": unique_id,
+                    "selectable": new_button.selectable,
+                    "label": new_button.label,
+                    "color": new_button.color,
+                    "opacity": new_button.opacity,
+                    "position": (new_button.scene_position.x(), new_button.scene_position.y()),
+                    "width": new_button.width,
+                    "height": new_button.height,
+                    "radius": new_button.radius,
+                    "assigned_objects": new_button.assigned_objects,
+                    "mode": new_button.mode,
+                    "script_data": new_button.script_data,
+                    "shape_type": new_button.shape_type,
+                    "svg_path_data": new_button.svg_path_data,
+                    "svg_file_path": new_button.svg_file_path
+                }
+                
+                tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+                tab_data['buttons'].append(button_data)
+                DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                DM.PickerDataManager.save_data(DM.PickerDataManager.get_data(), force_immediate=True)
+                
+                # Select the new button
+                self.clear_selection()
+                new_button.toggle_selection()
+                
+                self.update_button_positions()
+                self.update()
+                self.update_hud_counts()
+                
+                print("Created combined SVG button successfully")
+                
+        except Exception as e:
+            self._show_svg_error(str(e))
+
+    def _show_no_paths_dialog(self):
+        """Show dialog when no paths are found"""
+        dialog = CD.CustomDialog(self, title="No Paths Found", size=(250, 100), info_box=True)
+        message_label = QtWidgets.QLabel("The SVG file does not contain any path elements.")
+        message_label.setWordWrap(True)
+        dialog.add_widget(message_label)
+        dialog.add_button_box()
+        dialog.exec_()
+
+    def _show_svg_error(self, error_message):
+        """Show SVG processing error dialog"""
+        dialog = CD.CustomDialog(self, title="SVG Error", size=(300, 120), info_box=True)
+        message_label = QtWidgets.QLabel(f"Error processing SVG file: {error_message}")
+        message_label.setWordWrap(True)
+        dialog.add_widget(message_label)
+        dialog.add_button_box()
+        dialog.exec_()
+
+    def _get_path_bounds_in_svg_coords(self, path_data, path_element):
+        """Get path bounds in original SVG coordinate space"""
+        try:
+            # Create QPainterPath from the SVG path data (using the fixed parser)\
+
+            #picker button
+            button = PB.PickerButton("",None)
+            path = button._parse_svg_path(path_data)
+            if not path:
+                return None
+            
+            # Get bounds in the original coordinate space
+            bounds = path.boundingRect()
+            
+            # Apply any transforms from the path element
+            transform = path_element.get('transform')
+            if transform:
+                bounds = self._apply_simple_transform(bounds, transform)
+            
+            return bounds
+            
+        except Exception as e:
+            print(f"Error getting path bounds: {e}")
+            return None
+
+    def _get_svg_bounds(self, svg_root):
+        """Extract SVG viewBox or calculate bounds from width/height with proper coordinate handling"""
+        # Try to get viewBox first (most accurate)
+        viewbox = svg_root.get('viewBox')
+        if viewbox:
+            try:
+                parts = viewbox.replace(',', ' ').split()
+                if len(parts) >= 4:
+                    x, y, width, height = map(float, parts[:4])
+                    return {'x': x, 'y': y, 'width': width, 'height': height}
+            except:
+                pass
+        
+        # Fallback to width/height attributes
+        try:
+            width_str = svg_root.get('width', '100')
+            height_str = svg_root.get('height', '100')
+            
+            # Remove units (px, pt, mm, etc.)
+            width_str = re.sub(r'[^\d.-]', '', width_str)
+            height_str = re.sub(r'[^\d.-]', '', height_str)
+            
+            width = float(width_str) if width_str else 100
+            height = float(height_str) if height_str else 100
+            
+            return {'x': 0, 'y': 0, 'width': width, 'height': height}
+        except:
+            # Ultimate fallback
+            return {'x': 0, 'y': 0, 'width': 100, 'height': 100}
+    
     def _get_accurate_path_bounds(self, path_data, path_element):
         """Get accurate path bounds considering transforms and actual visual placement"""
         try:
@@ -2104,26 +2322,6 @@ class PickerCanvas(QtWidgets.QWidget):
         timestamp_id = f"{tab_name}_svg_{int(time.time() * 1000)}_{path_index}"
         return timestamp_id
 
-    def _get_svg_bounds(self, svg_root):
-        """Extract SVG viewBox or calculate bounds from width/height"""
-        # Try to get viewBox first
-        viewbox = svg_root.get('viewBox')
-        if viewbox:
-            try:
-                x, y, width, height = map(float, viewbox.split())
-                return {'x': x, 'y': y, 'width': width, 'height': height}
-            except:
-                pass
-        
-        # Fallback to width/height attributes
-        try:
-            width = float(svg_root.get('width', '100').replace('px', ''))
-            height = float(svg_root.get('height', '100').replace('px', ''))
-            return {'x': 0, 'y': 0, 'width': width, 'height': height}
-        except:
-            # Default bounds
-            return {'x': 0, 'y': 0, 'width': 100, 'height': 100}
-
     def _apply_svg_styling(self, button, path_element):
         """Apply SVG styling to the button"""
         # Extract fill color
@@ -2152,6 +2350,45 @@ class PickerCanvas(QtWidgets.QWidget):
                 pass
         
         # You can add more styling extraction here (stroke, etc.)
+    
+    def _show_svg_import_dialog(self):
+        """Show dialog to choose between separate buttons or combined import"""
+        dialog = CD.CustomDialog(self, title="SVG Import Options", size=(300, 150))
+        
+        # Create main layout
+        main_layout = QtWidgets.QVBoxLayout()
+        
+        # Info label
+        info_label = QtWidgets.QLabel("How would you like to import the SVG paths?")
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("font-weight: bold; margin-bottom: 10px;")
+        main_layout.addWidget(info_label)
+        
+        # Radio buttons for import options
+        radio_layout = QtWidgets.QVBoxLayout()
+        
+        self.separate_radio = CB.CustomRadioButton("Separate buttons", group=True)
+        self.separate_radio.setToolTip("Each SVG path is imported as a separate picker button")
+        
+        self.combined_radio = CB.CustomRadioButton("Combined button", group=True)
+        self.combined_radio.setToolTip("All SVG paths are merged into one picker button")
+        
+        self.separate_radio.group('import_option')
+        self.combined_radio.group('import_option')
+        
+        radio_layout.addWidget(self.separate_radio)
+        radio_layout.addWidget(self.combined_radio)
+        main_layout.addLayout(radio_layout)
+        
+        dialog.add_layout(main_layout)
+        
+        dialog.add_button_box()
+
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            if self.separate_radio.isChecked():
+                return {'import': True, 'separate': True}
+            else:
+                return {'import': True, 'separate': False}
     #------------------------------------------------------------------------------
     def show_context_menu(self, position):
         if not hasattr(self, 'context_menu'):
@@ -2759,23 +2996,19 @@ class PickerCanvas(QtWidgets.QWidget):
             self.initial_selection_state = {button: button.is_selected for button in self.buttons}
             self.ctrl_held_during_selection = ctrl_pressed
             
-            # CRITICAL FIX: Track which button was actually clicked
-            clicked_button = None
+            # Find clicked button
+            '''clicked_button = None
             for button in self.buttons:
                 if button.isVisible() and button.geometry().contains(event.pos()):
                     clicked_button = button
-                    break
-            
-            # Store the last clicked button for proper active selection
-            if clicked_button:
-                self.last_clicked_button = clicked_button
-            
+                    break'''
+            clicked_button = self._get_button_at_position(event.pos())
             if clicked_button and not alt_pressed:
-                # Button was clicked and Alt not pressed - let it handle the event normally
-                # The button's mousePressEvent will handle selection logic
-                pass  # Don't interfere with button's own event handling
+                # Button was clicked - let button handle its own selection logic
+                # Remove canvas interference - let button's mousePressEvent handle everything
+                pass
             elif alt_pressed:
-                # Alt+Left click for panning (works on buttons or empty space)
+                # Alt+Left click for panning
                 self.last_pan_pos = event.pos()
                 event.accept()
             else:
@@ -2797,14 +3030,6 @@ class PickerCanvas(QtWidgets.QWidget):
                                     bpy.ops.pose.select_all(action='DESELECT')
                                 elif bpy.context.mode == 'OBJECT':
                                     bpy.ops.object.select_all(action='DESELECT')
-                                elif bpy.context.mode == 'EDIT_ARMATURE':
-                                    bpy.ops.armature.select_all(action='DESELECT')
-                                elif bpy.context.mode == 'EDIT_MESH':
-                                    bpy.ops.mesh.select_all(action='DESELECT')
-                                
-                                for obj in TF.selected_objects():
-                                    obj.select = False
-                                TF.deselect_all_selected_bones_in_pose_mode()
                         except:
                             pass
                         self.clear_selection()
@@ -2814,7 +3039,6 @@ class PickerCanvas(QtWidgets.QWidget):
                 self.rubberband.setGeometry(QtCore.QRect(self.rubberband_origin, QtCore.QSize()))
                 self.rubberband.show()
                 self.is_selecting = True
-                # Clear the drag tracking for rubber band
                 self.buttons_in_current_drag.clear()
             
             event.accept()

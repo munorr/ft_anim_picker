@@ -13,4 +13,4 @@ try:
     from .blender_main import open
 except ImportError:
     # Fall back to Maya
-    from .main import open
+    from .blender_main import open

@@ -26,10 +26,10 @@ class PickerDataManager:
 
     # Batch update system
     _batch_timer = None
-    _batch_delay = 0.2  # 200ms delay for batching
+    _batch_delay = 0.0  # 200ms delay for batching
     _pending_updates = False
     _last_save_time = 0
-    _min_save_interval = 0.1  # Minimum 100ms between saves
+    _min_save_interval = 0.0  # Minimum 100ms between saves
     _cached_data = None
 
     @classmethod

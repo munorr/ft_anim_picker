@@ -582,126 +582,228 @@ class PickerButton(QtWidgets.QWidget):
             return self._create_rounded_rect_path(rect, self.radius, zoom_factor)
 
     def _parse_svg_path(self, path_data):
-        """Parse SVG path data string into QPainterPath"""
+        """Parse SVG path data string into QPainterPath - IMPROVED VERSION"""
         if not path_data:
             return None
             
         try:
             path = QtGui.QPainterPath()
             
-            # Clean up the path data
-            path_data = re.sub(r'[,\s]+', ' ', path_data.strip())
+            # Clean up the path data - normalize separators and whitespace
+            path_data = path_data.strip()
+            # Replace commas with spaces for easier parsing
+            path_data = re.sub(r',', ' ', path_data)
+            # Normalize whitespace
+            path_data = re.sub(r'\s+', ' ', path_data)
+            # Add spaces before negative signs that aren't preceded by 'e' or 'E' (for scientific notation)
+            path_data = re.sub(r'(?<![eE])-', ' -', path_data)
             
-            # Split path data into commands and coordinates
-            commands = re.findall(r'[MmLlHhVvCcSsQqTtAaZz][^MmLlHhVvCcSsQqTtAaZz]*', path_data)
+            # Improved regex pattern that handles scientific notation and complex numbers
+            # This pattern captures commands and all their numeric parameters
+            command_pattern = r'([MmLlHhVvCcSsQqTtAaZz])\s*((?:[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?\s*)*)'
+            
+            commands = re.findall(command_pattern, path_data)
             
             current_point = QtCore.QPointF(0, 0)
             path_start = QtCore.QPointF(0, 0)
+            last_control_point = None  # For smooth curves
             
-            for command_str in commands:
-                command = command_str[0]
-                coords_str = command_str[1:].strip()
-                
-                if coords_str:
-                    coords = [float(x) for x in coords_str.split() if x]
-                else:
-                    coords = []
+            for command, coords_str in commands:
+                # Parse coordinates more robustly
+                coords = []
+                if coords_str.strip():
+                    # Handle scientific notation and regular numbers
+                    number_pattern = r'[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?'
+                    coord_matches = re.findall(number_pattern, coords_str)
+                    try:
+                        coords = [float(x) for x in coord_matches if x]
+                    except ValueError as e:
+                        print(f"Error parsing coordinates '{coords_str}': {e}")
+                        continue
                 
                 # Handle different SVG path commands
                 if command.upper() == 'M':  # Move to
                     if len(coords) >= 2:
+                        x, y = coords[0], coords[1]
                         if command.islower():  # Relative
-                            current_point += QtCore.QPointF(coords[0], coords[1])
-                        else:  # Absolute
-                            current_point = QtCore.QPointF(coords[0], coords[1])
+                            x += current_point.x()
+                            y += current_point.y()
                         
+                        current_point = QtCore.QPointF(x, y)
                         path.moveTo(current_point)
                         path_start = current_point
                         
                         # Handle additional coordinate pairs as line-to commands
                         for i in range(2, len(coords), 2):
                             if i + 1 < len(coords):
+                                x, y = coords[i], coords[i + 1]
                                 if command.islower():
-                                    current_point += QtCore.QPointF(coords[i], coords[i + 1])
+                                    x += current_point.x()
+                                    y += current_point.y()
                                 else:
-                                    current_point = QtCore.QPointF(coords[i], coords[i + 1])
+                                    # Convert to absolute if needed
+                                    pass
+                                current_point = QtCore.QPointF(x, y)
                                 path.lineTo(current_point)
                 
                 elif command.upper() == 'L':  # Line to
                     for i in range(0, len(coords), 2):
                         if i + 1 < len(coords):
+                            x, y = coords[i], coords[i + 1]
                             if command.islower():  # Relative
-                                current_point += QtCore.QPointF(coords[i], coords[i + 1])
-                            else:  # Absolute
-                                current_point = QtCore.QPointF(coords[i], coords[i + 1])
+                                x += current_point.x()
+                                y += current_point.y()
+                            
+                            current_point = QtCore.QPointF(x, y)
                             path.lineTo(current_point)
                 
                 elif command.upper() == 'H':  # Horizontal line
                     for coord in coords:
                         if command.islower():  # Relative
-                            current_point += QtCore.QPointF(coord, 0)
+                            x = current_point.x() + coord
                         else:  # Absolute
-                            current_point = QtCore.QPointF(coord, current_point.y())
+                            x = coord
+                        
+                        current_point = QtCore.QPointF(x, current_point.y())
                         path.lineTo(current_point)
                 
                 elif command.upper() == 'V':  # Vertical line
                     for coord in coords:
                         if command.islower():  # Relative
-                            current_point += QtCore.QPointF(0, coord)
+                            y = current_point.y() + coord
                         else:  # Absolute
-                            current_point = QtCore.QPointF(current_point.x(), coord)
+                            y = coord
+                        
+                        current_point = QtCore.QPointF(current_point.x(), y)
                         path.lineTo(current_point)
                 
                 elif command.upper() == 'C':  # Cubic Bezier curve
                     for i in range(0, len(coords), 6):
                         if i + 5 < len(coords):
+                            x1, y1 = coords[i], coords[i + 1]
+                            x2, y2 = coords[i + 2], coords[i + 3]
+                            x, y = coords[i + 4], coords[i + 5]
+                            
                             if command.islower():  # Relative
-                                c1 = current_point + QtCore.QPointF(coords[i], coords[i + 1])
-                                c2 = current_point + QtCore.QPointF(coords[i + 2], coords[i + 3])
-                                end = current_point + QtCore.QPointF(coords[i + 4], coords[i + 5])
-                            else:  # Absolute
-                                c1 = QtCore.QPointF(coords[i], coords[i + 1])
-                                c2 = QtCore.QPointF(coords[i + 2], coords[i + 3])
-                                end = QtCore.QPointF(coords[i + 4], coords[i + 5])
+                                x1 += current_point.x()
+                                y1 += current_point.y()
+                                x2 += current_point.x()
+                                y2 += current_point.y()
+                                x += current_point.x()
+                                y += current_point.y()
+                            
+                            c1 = QtCore.QPointF(x1, y1)
+                            c2 = QtCore.QPointF(x2, y2)
+                            end = QtCore.QPointF(x, y)
                             
                             path.cubicTo(c1, c2, end)
                             current_point = end
+                            last_control_point = c2  # Store for smooth curves
+                
+                elif command.upper() == 'S':  # Smooth cubic Bezier
+                    for i in range(0, len(coords), 4):
+                        if i + 3 < len(coords):
+                            x2, y2 = coords[i], coords[i + 1]
+                            x, y = coords[i + 2], coords[i + 3]
+                            
+                            if command.islower():  # Relative
+                                x2 += current_point.x()
+                                y2 += current_point.y()
+                                x += current_point.x()
+                                y += current_point.y()
+                            
+                            # Calculate first control point as reflection of last control point
+                            if last_control_point:
+                                x1 = 2 * current_point.x() - last_control_point.x()
+                                y1 = 2 * current_point.y() - last_control_point.y()
+                            else:
+                                x1, y1 = current_point.x(), current_point.y()
+                            
+                            c1 = QtCore.QPointF(x1, y1)
+                            c2 = QtCore.QPointF(x2, y2)
+                            end = QtCore.QPointF(x, y)
+                            
+                            path.cubicTo(c1, c2, end)
+                            current_point = end
+                            last_control_point = c2
                 
                 elif command.upper() == 'Q':  # Quadratic Bezier curve
                     for i in range(0, len(coords), 4):
                         if i + 3 < len(coords):
+                            x1, y1 = coords[i], coords[i + 1]
+                            x, y = coords[i + 2], coords[i + 3]
+                            
                             if command.islower():  # Relative
-                                c1 = current_point + QtCore.QPointF(coords[i], coords[i + 1])
-                                end = current_point + QtCore.QPointF(coords[i + 2], coords[i + 3])
-                            else:  # Absolute
-                                c1 = QtCore.QPointF(coords[i], coords[i + 1])
-                                end = QtCore.QPointF(coords[i + 2], coords[i + 3])
+                                x1 += current_point.x()
+                                y1 += current_point.y()
+                                x += current_point.x()
+                                y += current_point.y()
+                            
+                            c1 = QtCore.QPointF(x1, y1)
+                            end = QtCore.QPointF(x, y)
                             
                             path.quadTo(c1, end)
                             current_point = end
+                            last_control_point = c1  # Store for smooth curves
+                
+                elif command.upper() == 'T':  # Smooth quadratic Bezier
+                    for i in range(0, len(coords), 2):
+                        if i + 1 < len(coords):
+                            x, y = coords[i], coords[i + 1]
+                            
+                            if command.islower():  # Relative
+                                x += current_point.x()
+                                y += current_point.y()
+                            
+                            # Calculate control point as reflection of last control point
+                            if last_control_point:
+                                x1 = 2 * current_point.x() - last_control_point.x()
+                                y1 = 2 * current_point.y() - last_control_point.y()
+                            else:
+                                x1, y1 = current_point.x(), current_point.y()
+                            
+                            c1 = QtCore.QPointF(x1, y1)
+                            end = QtCore.QPointF(x, y)
+                            
+                            path.quadTo(c1, end)
+                            current_point = end
+                            last_control_point = c1
                 
                 elif command.upper() == 'A':  # Elliptical arc
-                    # Simplified arc implementation - for full arc support, 
-                    # you might need a more complex implementation
                     for i in range(0, len(coords), 7):
                         if i + 6 < len(coords):
-                            if command.islower():  # Relative
-                                end = current_point + QtCore.QPointF(coords[i + 5], coords[i + 6])
-                            else:  # Absolute
-                                end = QtCore.QPointF(coords[i + 5], coords[i + 6])
+                            rx, ry = coords[i], coords[i + 1]
+                            x_axis_rotation = coords[i + 2]
+                            large_arc_flag = int(coords[i + 3])
+                            sweep_flag = int(coords[i + 4])
+                            x, y = coords[i + 5], coords[i + 6]
                             
-                            # For simplicity, draw a line (you can implement proper arc later)
+                            if command.islower():  # Relative
+                                x += current_point.x()
+                                y += current_point.y()
+                            
+                            end = QtCore.QPointF(x, y)
+                            
+                            # For now, approximate arc with a line (proper arc implementation is complex)
+                            # TODO: Implement proper arc-to-bezier conversion
                             path.lineTo(end)
                             current_point = end
                 
                 elif command.upper() == 'Z':  # Close path
                     path.closeSubpath()
                     current_point = path_start
+                    last_control_point = None
+                
+                # Reset last_control_point for non-smooth commands
+                if command.upper() not in ['S', 'T']:
+                    if command.upper() not in ['C', 'Q']:
+                        last_control_point = None
             
             return path
             
         except Exception as e:
             print(f"Error parsing SVG path: {e}")
+            print(f"Problematic path data: {path_data[:100]}...")  # Show first 100 chars
             return None
 
     def set_custom_shape(self, preserve_individual=True):
@@ -850,8 +952,6 @@ class PickerButton(QtWidgets.QWidget):
             return svg_path_data
         
         try:
-            # Use existing parsing method to create QPainterPath
-            from PySide6 import QtGui, QtCore
             
             # Create a temporary path using your existing parser
             temp_path = self._parse_svg_path(svg_path_data)
@@ -901,7 +1001,6 @@ class PickerButton(QtWidgets.QWidget):
         
         try:
             # Use existing parsing method to create QPainterPath
-            from PySide6 import QtGui, QtCore
             
             # Create a temporary path using your existing parser
             temp_path = self._parse_svg_path(svg_path_data)
@@ -950,7 +1049,6 @@ class PickerButton(QtWidgets.QWidget):
             return ""
         
         try:
-            from PySide6 import QtGui, QtCore
             
             svg_commands = []
             
@@ -983,6 +1081,80 @@ class PickerButton(QtWidgets.QWidget):
         except Exception as e:
             print(f"Error converting path to SVG string: {e}")
             return ""
+    #---------------------------------------------------------------------------------------
+    def contains_point(self, local_pos):
+        """
+        Check if a local point is within the button's actual shape.
+        This respects custom SVG shapes and rounded rectangles.
+        
+        Args:
+            local_pos (QPoint): Position in button-local coordinates
+            
+        Returns:
+            bool: True if point is within the button's shape
+        """
+        # Convert QPoint to QPointF for consistency
+        point = QtCore.QPointF(local_pos.x(), local_pos.y())
+        
+        # Get current zoom factor from parent canvas
+        zoom_factor = self.parent().zoom_factor if self.parent() else 1.0
+        
+        # Create the button path using the same method as in paintEvent
+        rect = self.rect().adjusted(zoom_factor, zoom_factor, -zoom_factor, -zoom_factor)
+        path = self._create_button_path(rect, self.radius, zoom_factor)
+        
+        # Check if the point is within the path
+        return path.contains(point)
+
+    def _create_button_path_for_hit_testing(self, rect, zoom_factor):
+        """
+        Create button path specifically for hit testing.
+        This is similar to _create_button_path but optimized for hit detection.
+        """
+        if self.shape_type == 'custom_path' and self.svg_path_data:
+            return self._create_svg_path_for_hit_testing(rect, zoom_factor)
+        else:
+            return self._create_rounded_rect_path(rect, self.radius, zoom_factor)
+
+    def _create_svg_path_for_hit_testing(self, rect, zoom_factor):
+        """Create SVG path for hit testing with proper scaling"""
+        try:
+            # Parse the SVG path data
+            svg_path = self._parse_svg_path(self.svg_path_data)
+            if not svg_path:
+                # Fallback to rounded rect if parsing fails
+                return self._create_rounded_rect_path(rect, self.radius, zoom_factor)
+            
+            # Get the original path bounds
+            original_bounds = svg_path.boundingRect()
+            if original_bounds.isEmpty():
+                return self._create_rounded_rect_path(rect, self.radius, zoom_factor)
+            
+            # Calculate scaling factors to fit the button rect
+            scale_x = rect.width() / original_bounds.width()
+            scale_y = rect.height() / original_bounds.height()
+            
+            # Use uniform scaling to maintain aspect ratio
+            scale = min(scale_x, scale_y) * 0.9  # 0.9 for slight padding
+            
+            # Calculate centering offsets
+            scaled_width = original_bounds.width() * scale
+            scaled_height = original_bounds.height() * scale
+            offset_x = rect.center().x() - (scaled_width / 2) - (original_bounds.x() * scale)
+            offset_y = rect.center().y() - (scaled_height / 2) - (original_bounds.y() * scale)
+            
+            # Create transformation matrix
+            transform = QtGui.QTransform()
+            transform.translate(offset_x, offset_y)
+            transform.scale(scale, scale)
+            
+            # Apply transformation to the SVG path
+            return transform.map(svg_path)
+            
+        except Exception as e:
+            print(f"Error creating SVG path for hit testing: {e}")
+            # Fallback to rounded rect
+            return self._create_rounded_rect_path(rect, self.radius, zoom_factor)
     #---------------------------------------------------------------------------------------
     def _should_update_mask(self, zoom_factor, current_size, current_radius, current_shape_type, current_svg_data):
         """Check if mask needs to be regenerated based on cached parameters"""
@@ -1052,143 +1224,6 @@ class PickerButton(QtWidgets.QWidget):
         self.last_mask_radius = None
         self.last_mask_shape_type = None
         self.last_mask_svg_data = None
-    #---------------------------------------------------------------------------------------
-    def mousePressEvent(self, event):
-        if event.button() == QtCore.Qt.LeftButton:
-            canvas = self.parent()
-            if canvas:
-                alt_held = event.modifiers() & QtCore.Qt.AltModifier
-                ctrl_held = event.modifiers() & QtCore.Qt.ControlModifier
-                shift_held = event.modifiers() & QtCore.Qt.ShiftModifier
-                # Allow dragging only in edit mode
-                if self.edit_mode:
-                    if alt_held:
-                        self.start_duplication_drag(event)
-                    else:
-                        self.dragging = True
-                        self.drag_start_pos = event.globalPos()
-                        self.button_start_pos = self.scene_position
-                        self.setCursor(QtCore.Qt.ClosedHandCursor)
-                        
-                        selected_buttons = canvas.get_selected_buttons()
-                        
-                        if not self.is_selected and not (event.modifiers() & QtCore.Qt.ShiftModifier):
-                            canvas.clear_selection()
-                            canvas.buttons_in_current_drag.add(self)
-                            self.is_selected = True
-                            self.selected.emit(self, True)
-                            canvas.last_selected_button = self  # Set as last selected
-                            self.update()
-                        elif event.modifiers() & QtCore.Qt.ShiftModifier:
-                            canvas.buttons_in_current_drag.add(self)
-                            self.is_selected = not self.is_selected
-                            if self.is_selected:
-                                canvas.last_selected_button = self  # Set as last selected if being selected
-                            self.selected.emit(self, self.is_selected)
-                            self.update()
-                        
-                        for button in selected_buttons:
-                            button.button_start_pos = button.scene_position
-                else:
-                    if self.mode == 'select':       
-                        # Only allow selection if the button is selectable
-                        if hasattr(self, 'selectable') and self.selectable:
-                            # Existing selection behavior
-                            canvas.buttons_in_current_drag.clear()
-                            canvas.buttons_in_current_drag.add(self)
-                            
-                            if not event.modifiers() & QtCore.Qt.ShiftModifier:
-                                canvas.clear_selection()
-                            #self.is_selected = True #not self.is_selected if event.modifiers() & QtCore.Qt.ShiftModifier else True
-                            self.is_selected = not self.is_selected if shift_held and ctrl_held else True
-                            self.update()
-                            
-                            if shift_held and ctrl_held:
-                                canvas.apply_final_selection(shift_held)
-                                canvas.apply_final_selection(shift_held,ctrl_held)
-                            else:
-                                canvas.apply_final_selection(shift_held, ctrl_held)
-                                
-                    elif self.mode == 'script':
-                        # script mode behavior
-                        self.execute_script_command()
-                    elif self.mode == 'pose':
-                        # pose mode behavior
-                        if ctrl_held:
-                            self.apply_mirrored_pose()
-                        else:
-                            self.apply_pose()
-                        
-                
-                event.accept()
-        elif event.button() == QtCore.Qt.RightButton:
-            if not self.is_selected:
-                self.parent().clear_selection()
-                self.toggle_selection()
-            self.show_context_menu(event.pos())
-            event.accept()
-        else:
-            super().mousePressEvent(event)
-        UT.maya_main_window().activateWindow()
-
-    def mouseMoveEvent(self, event):
-        if hasattr(self, 'duplicating') and self.duplicating and event.buttons() & QtCore.Qt.LeftButton:
-            # Handle duplication drag
-            self.handle_duplication_drag(event)
-            event.accept()
-        elif self.dragging and event.buttons() & QtCore.Qt.LeftButton:
-            canvas = self.parent()
-            if not canvas:
-                return
-
-            delta = event.globalPos() - self.drag_start_pos
-            scene_delta = QtCore.QPointF(delta.x(), delta.y()) / canvas.zoom_factor
-            
-            selected_buttons = canvas.get_selected_buttons()
-            for button in selected_buttons:
-                button.scene_position = button.button_start_pos + scene_delta
-            
-            if hasattr(self.parent(), '_update_transform_guides_position'):
-                QtCore.QTimer.singleShot(1, self.parent()._update_transform_guides_position)
-            
-            canvas.update_button_positions()
-            event.accept()
-        else:
-            super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == QtCore.Qt.LeftButton:
-            canvas = self.parent()
-            
-            # Handle duplication completion
-            if hasattr(self, 'duplicating') and self.duplicating:
-                self.complete_duplication_drag(event)
-                event.accept()
-                return
-
-        if event.button() == QtCore.Qt.LeftButton and self.dragging:
-            self.dragging = False
-            self.update_cursor()
-            canvas = self.parent()
-            if canvas:
-                for button in canvas.get_selected_buttons():
-                    canvas.update_button_data(button)
-            event.accept()
-        else:
-            super().mouseReleaseEvent(event)
-        UT.maya_main_window().activateWindow()
-    
-    def enterEvent(self, event):
-        """Called when mouse enters the button area."""
-        self.is_hovered = True
-        self.update()  # Trigger repaint
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        """Called when mouse leaves the button area."""
-        self.is_hovered = False
-        self.update()  # Trigger repaint
-        super().leaveEvent(event)
     #---------------------------------------------------------------------------------------
     def start_duplication_drag(self, event):
         """Start the duplication drag operation"""
@@ -1374,6 +1409,77 @@ class PickerButton(QtWidgets.QWidget):
         self.last_zoom_factor = 0
         self.last_size = None
 
+    def _handle_edit_mode_selection(self, event, canvas, shift_held):
+        """Handle selection in edit mode"""
+        self.dragging = True
+        self.drag_start_pos = event.globalPos()
+        self.button_start_pos = self.scene_position
+        self.setCursor(QtCore.Qt.ClosedHandCursor)
+
+        # Store the initial movement state for constraint calculation
+        self._initial_drag_pos = event.globalPos()
+        self._constraint_determined = False
+        self._constraint_axis = None  # 'x', 'y', or None
+        
+        selected_buttons = canvas.get_selected_buttons()
+        
+        if not self.is_selected and not shift_held:
+            canvas.clear_selection()
+            canvas.buttons_in_current_drag.add(self)
+            self.is_selected = True
+            self.selected.emit(self, True)
+            canvas.last_selected_button = self
+            self.update()
+        elif shift_held:
+            canvas.buttons_in_current_drag.add(self)
+            self.selected.emit(self, True)
+            self.is_selected = not self.is_selected
+            if self.is_selected:
+                canvas.last_selected_button = self
+            self.selected.emit(self, self.is_selected)
+            self.update()
+        
+        # Store positions for dragging
+        for button in selected_buttons:
+            button.button_start_pos = button.scene_position
+        
+        canvas.button_selection_changed.emit()
+        self.update()
+
+    def _handle_select_mode_click(self, event, canvas, shift_held, ctrl_held, alt_held):
+        """Handle button click in select mode with all modifier combinations"""
+        # Only allow selection if the button is selectable
+        if not (hasattr(self, 'selectable') and self.selectable):
+            return
+        
+        # Store this button in current drag for selection processing
+        canvas.buttons_in_current_drag.clear()
+        canvas.buttons_in_current_drag.add(self)
+        
+        # Store modifier states for selection processing
+        canvas.ctrl_held_during_selection = ctrl_held
+        canvas.alt_held_during_selection = alt_held
+        
+        # Handle visual selection state
+        if shift_held and ctrl_held:
+            # Shift + Ctrl: Remove from selection
+            self.is_selected = False
+            self.selected.emit(self, False)
+        elif shift_held:
+            # Shift only: Add to selection (keep current state, will be processed in apply_final_selection)
+            self.is_selected = True
+            self.selected.emit(self, True)
+        else:
+            # No modifiers or Alt only: Clear others and select this one
+            canvas.clear_selection()
+            self.is_selected = True
+            self.selected.emit(self, True)
+        
+        self.update()
+        canvas.button_selection_changed.emit()
+        # Apply the selection immediately with all modifier states
+        canvas.apply_final_selection(shift_held, ctrl_held, alt_held)
+
     def toggle_selection(self):
         self.set_selected(not self.is_selected)
         if self.parent():
@@ -1410,76 +1516,6 @@ class PickerButton(QtWidgets.QWidget):
         for button in self.parent().get_selected_buttons():
             button.toggle_unselectable()
     #---------------------------------------------------------------------------------------
-    def show_selection_manager(self):
-        if not hasattr(self, 'selection_manager'):
-            self.selection_manager = SelectionManagerWidget()
-        
-        self.selection_manager.set_picker_button(self)
-        
-        # Position widget to the right of the button
-        pos = self.mapToGlobal(self.rect().topRight())
-        self.selection_manager.move(pos + QtCore.QPoint(10, 0))
-        self.selection_manager.show()
-
-    def show_script_manager(self):
-        if not hasattr(self, 'script_manager'):
-            self.script_manager = ScriptManagerWidget()
-        
-        self.script_manager.set_picker_button(self)
-        self.script_manager.show()
-
-    def move_button_behind(self):
-        """Move the selected buttons behind other buttons in the z-order"""
-        canvas = self.parent()
-        if canvas and canvas.edit_mode:
-            selected_buttons = canvas.get_selected_buttons()
-            if selected_buttons:
-                # For each selected button, move it to the beginning of the buttons list
-                for button in selected_buttons:
-                    if button in canvas.buttons:
-                        canvas.buttons.remove(button)
-                        canvas.buttons.insert(0, button)  # Insert at the beginning (bottom of z-order)
-                        # Ensure button is visually at the bottom of the stack
-                        button.lower()
-                        # Trigger data update
-                        canvas.update_button_data(button)
-                
-                # Update the button positions and z-order
-                canvas.update_button_positions()
-                # Force a repaint
-                canvas.update()
-                
-                # Update the main window data
-                main_window = canvas.window()
-                if hasattr(main_window, 'update_button_z_order'):
-                    main_window.update_button_z_order()
-    
-    def bring_button_forward(self):
-        """Bring the selected buttons forward in the z-order"""
-        canvas = self.parent()
-        if canvas and canvas.edit_mode:
-            selected_buttons = canvas.get_selected_buttons()
-            if selected_buttons:
-                # For each selected button, move it to the end of the buttons list
-                for button in selected_buttons:
-                    if button in canvas.buttons:
-                        canvas.buttons.remove(button)
-                        canvas.buttons.append(button)  # Append to the end (top of z-order)
-                        # Ensure button is visually at the top of the stack
-                        button.raise_()
-                        # Trigger data update
-                        canvas.update_button_data(button)
-                
-                # Update the button positions and z-order
-                canvas.update_button_positions()
-                # Force a repaint
-                canvas.update()
-                
-                # Update the main window data
-                main_window = canvas.window()
-                if hasattr(main_window, 'update_button_z_order'):
-                    main_window.update_button_z_order()
-
     def show_context_menu(self, pos):
         menu = QtWidgets.QMenu()
         menu.setWindowFlags(menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
@@ -1493,7 +1529,7 @@ class PickerButton(QtWidgets.QWidget):
             }
             QMenu::item {
                 background-color: transparent;
-                padding: 3px 15px 3px 3px; ;
+                padding: 3px 30px 3px 3px; ;
                 margin: 3px 0px  ;
                 border-radius: 3px;
             }
@@ -1502,6 +1538,10 @@ class PickerButton(QtWidgets.QWidget):
             }
             QMenu::item:selected {
                 background-color: #444444;
+            }
+            QMenu::right-arrow {
+                width: 10px;
+                height: 10px;
             }
             QPushButton {
                 border-radius: 3px;
@@ -1622,7 +1662,7 @@ class PickerButton(QtWidgets.QWidget):
             align_bottom_btn = create_alignment_button("align_bottom.png", "Align Bottom", self.align_button_bottom)
             h_space_btn = create_alignment_button("h_spacing.png", "Distribute Evenly (Horizontal)", self.evenly_space_horizontal)
 
-            color_palette_btn = CCP.ColorPicker(palette=True)
+            color_palette_btn = CCP.ColorPicker(mode='palette')
             current_qcolor = QtGui.QColor(self.color)  # Convert hex string to QColor
             color_palette_btn.current_color = current_qcolor
             color_palette_btn.update_all_from_color()  # Update the palette's display
@@ -1784,6 +1824,176 @@ class PickerButton(QtWidgets.QWidget):
 
         menu.exec_(self.mapToGlobal(pos))
     
+    def show_selection_manager(self):
+        if not hasattr(self, 'selection_manager'):
+            self.selection_manager = SelectionManagerWidget()
+        
+        self.selection_manager.set_picker_button(self)
+        
+        # Position widget to the right of the button
+        pos = self.mapToGlobal(self.rect().topRight())
+        self.selection_manager.move(pos + QtCore.QPoint(10, 0))
+        self.selection_manager.show()
+
+    def show_script_manager(self):
+        if not hasattr(self, 'script_manager'):
+            self.script_manager = ScriptManagerWidget()
+        
+        self.script_manager.set_picker_button(self)
+        self.script_manager.show()
+
+    def move_button_behind(self):
+        """Move the selected buttons behind other buttons in the z-order"""
+        canvas = self.parent()
+        if canvas and canvas.edit_mode:
+            selected_buttons = canvas.get_selected_buttons()
+            if selected_buttons:
+                # For each selected button, move it to the beginning of the buttons list
+                for button in selected_buttons:
+                    if button in canvas.buttons:
+                        canvas.buttons.remove(button)
+                        canvas.buttons.insert(0, button)  # Insert at the beginning (bottom of z-order)
+                        # Ensure button is visually at the bottom of the stack
+                        button.lower()
+                        # Trigger data update
+                        canvas.update_button_data(button)
+                
+                # Update the button positions and z-order
+                canvas.update_button_positions()
+                # Force a repaint
+                canvas.update()
+                
+                # Update the main window data
+                main_window = canvas.window()
+                if hasattr(main_window, 'update_button_z_order'):
+                    main_window.update_button_z_order()
+    
+    def bring_button_forward(self):
+        """Bring the selected buttons forward in the z-order"""
+        canvas = self.parent()
+        if canvas and canvas.edit_mode:
+            selected_buttons = canvas.get_selected_buttons()
+            if selected_buttons:
+                # For each selected button, move it to the end of the buttons list
+                for button in selected_buttons:
+                    if button in canvas.buttons:
+                        canvas.buttons.remove(button)
+                        canvas.buttons.append(button)  # Append to the end (top of z-order)
+                        # Ensure button is visually at the top of the stack
+                        button.raise_()
+                        # Trigger data update
+                        canvas.update_button_data(button)
+                
+                # Update the button positions and z-order
+                canvas.update_button_positions()
+                # Force a repaint
+                canvas.update()
+                
+                # Update the main window data
+                main_window = canvas.window()
+                if hasattr(main_window, 'update_button_z_order'):
+                    main_window.update_button_z_order()
+
+    def _batch_update_button_positions(self, selected_buttons, main_window):
+        """Optimized batch update for button positions after drag"""
+        if not selected_buttons:
+            return
+        
+        current_tab = main_window.tab_system.current_tab
+        if not current_tab:
+            return
+        
+        # CRITICAL: Completely disable all update systems during batch
+        was_batch_active = getattr(main_window, 'batch_update_active', False)
+        main_window.batch_update_active = True
+        
+        # Stop any running timers to prevent interference
+        timers_to_stop = ['batch_update_timer', 'widget_update_timer']
+        stopped_timers = {}
+        
+        for timer_name in timers_to_stop:
+            if hasattr(main_window, timer_name):
+                timer = getattr(main_window, timer_name)
+                if timer.isActive():
+                    timer.stop()
+                    stopped_timers[timer_name] = True
+        
+        # Clear any pending updates
+        if hasattr(main_window, 'pending_button_updates'):
+            main_window.pending_button_updates.clear()
+        
+        try:
+            # Store original signal connections for restoration
+            signal_connections = {}
+            
+            # Disconnect changed signals temporarily to prevent interference
+            for button in selected_buttons:
+                try:
+                    # Store the connection info before disconnecting
+                    signal_connections[button.unique_id] = button.changed.receivers()
+                    button.changed.disconnect()
+                except:
+                    pass
+            
+            # Get tab data once for efficiency
+            tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+            
+            # Build position update dictionary
+            position_updates = {}
+            for button in selected_buttons:
+                position_updates[button.unique_id] = (
+                    button.scene_position.x(), 
+                    button.scene_position.y()
+                )
+            
+            # Single database update for all positions
+            updated_count = 0
+            for button_data in tab_data['buttons']:
+                if button_data['id'] in position_updates:
+                    new_x, new_y = position_updates[button_data['id']]
+                    button_data['position'] = (new_x, new_y)
+                    updated_count += 1
+            
+            # Write to database once
+            if updated_count > 0:
+                DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                #print(f"Batch updated positions for {updated_count} buttons")
+            
+            # Reconnect signals properly
+            for button in selected_buttons:
+                # Reconnect to the main window's handler
+                if hasattr(main_window, 'on_button_changed'):
+                    button.changed.connect(main_window.on_button_changed)
+                else:
+                    # Fallback connection
+                    button.changed.connect(main_window.update_button_data)
+            
+        except Exception as e:
+            print(f"Error during batch position update: {e}")
+            
+            # Emergency signal reconnection
+            for button in selected_buttons:
+                try:
+                    button.changed.connect(main_window.update_button_data)
+                except:
+                    pass
+                    
+        finally:
+            # Restore batch mode state
+            main_window.batch_update_active = was_batch_active
+            
+            # Restart stopped timers if they were originally active
+            for timer_name, was_active in stopped_timers.items():
+                if was_active and hasattr(main_window, timer_name):
+                    timer = getattr(main_window, timer_name)
+                    # Give a small delay before restarting
+                    QtCore.QTimer.singleShot(100, timer.start)
+            
+            # Update transform guides once at the end
+            canvas = self.parent()
+            if canvas and hasattr(canvas, 'transform_guides') and canvas.transform_guides.isVisible():
+                QtCore.QTimer.singleShot(50, canvas.transform_guides.update_selection)
+
     def color_button_clicked(self, color):
         self.change_color_for_selected_buttons(color)
     #---------------------------------------------------------------------------------------
@@ -2134,6 +2344,36 @@ class PickerButton(QtWidgets.QWidget):
             finally:
                 # Restore batch mode state
                 main_window.batch_update_active = was_batch_active
+    
+    def _apply_axis_constraint(self, scene_delta):
+        """
+        Apply axis constraint for shift-drag movement.
+        Determines the dominant movement axis and constrains to that axis only.
+        
+        Args:
+            scene_delta (QPointF): The original movement delta
+            
+        Returns:
+            QPointF: The constrained movement delta
+        """
+        # Determine which axis has the larger movement
+        abs_x = abs(scene_delta.x())
+        abs_y = abs(scene_delta.y())
+        
+        # Set a minimum threshold to avoid jittery behavior
+        threshold = 2.0  # Minimum movement before axis is determined
+        
+        if abs_x < threshold and abs_y < threshold:
+            # Movement too small, don't constrain yet
+            return scene_delta
+        
+        # Constrain to the axis with larger movement
+        if abs_x >= abs_y:
+            # Horizontal movement is dominant - constrain to X axis
+            return QtCore.QPointF(scene_delta.x(), 0)
+        else:
+            # Vertical movement is dominant - constrain to Y axis
+            return QtCore.QPointF(0, scene_delta.y())
     #---------------------------------------------------------------------------------------
     def copy_selected_buttons(self):
         canvas = self.parent()
@@ -4010,94 +4250,138 @@ class PickerButton(QtWidgets.QWidget):
     #---------------------------------------------------------------------------------------
     def execute_script_command(self):
         """Execute the script with namespace and match function token handling"""
-        if self.mode == 'script' and self.script_data:
-            script_type = self.script_data.get('type', 'python')
+        if self.mode != 'script' or not self.script_data:
+            return
+        
+        script_type = self.script_data.get('type', 'python')
+        
+        # Get the appropriate code based on type
+        if script_type == 'python':
+            code = self.script_data.get('python_code', self.script_data.get('code', ''))
+        else:
+            code = self.script_data.get('mel_code', self.script_data.get('code', ''))
+        
+        if not code.strip():
+            cmds.warning("No script code to execute.")
+            return
+        
+        try:
+            # Get namespace info
+            current_ns, ns_prefix = self._get_namespace_info()
             
-            # Get the appropriate code based on type
-            if script_type == 'python':
-                code = self.script_data.get('python_code', self.script_data.get('code', ''))
-            else:
-                code = self.script_data.get('mel_code', self.script_data.get('code', ''))
+            # Process the code (handle tokens and imports)
+            modified_code = self._process_script_code(code, ns_prefix)
             
-            if code:
-                try:
-                    # Get current namespace from picker window
-                    main_window = self.window()
-                    if isinstance(main_window, UI.AnimPickerWindow):
-                        current_ns = main_window.namespace_dropdown.currentText()
-                        ns_prefix = f"{current_ns}:" if current_ns and current_ns != 'None' else ""
-                        
-                        modified_code = code
-                        # Remove tooltip functions (already handled in script manager)
-                        patterns_to_remove = [
-                            r'@TF\.tool_tip\s*\(\s*["\'](.+?)["\']\s*\)',
-                            r'@tool_tip\s*\(\s*["\'](.+?)["\']\s*\)',
-                            r'@tt\s*\(\s*["\'](.+?)["\']\s*\)',
-                        ]
-                        for pattern in patterns_to_remove:
-                            modified_code = re.sub(pattern, '', modified_code, flags=re.IGNORECASE)
-                        
-                        # Replace '@ns' tokens
-                        modified_code = re.sub(r'@ns\.?([a-zA-Z0-9_])', fr'{ns_prefix}\1', modified_code, flags=re.IGNORECASE)  # Replace @ns. followed by identifier
-                        modified_code = re.sub(r'@ns\.?(?!\w)', f'"{ns_prefix}"', modified_code, flags=re.IGNORECASE)
-                        
-                       
-                        #--------------------------------------------------------------------------------------------------------
-                        needs_tf_import = False
+            # Execute the modified code
+            self._execute_processed_code(modified_code, script_type)
+            
+        except Exception as e:
+            cmds.warning(f"Error executing {script_type} code: {str(e)}")
 
-                        # Handle general @TF.function_name calls
-                        tf_pattern = r'(\s*)@TF\.(?!tool_tip|tt)(\w+)\s*\(([^)]*)\)'
-                        if re.search(tf_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
-                            modified_code = re.sub(tf_pattern, r'\1TF.\2(\3)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
-                            needs_tf_import = True
-                        #--------------------------------------------------------------------------------------------------------
-                        # Handle @pb function calls and add import if needed
-                        pb_pattern = r'@pb\s*\(([^)]+)\)'
-                        if re.search(pb_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
-                            modified_code = re.sub(pb_pattern, r'TF.pb(\1)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
-                            needs_tf_import = True
-                        # second pattern for @pb
-                        pb_pattern_02 = r'@picker_button\s*\(([^)]+)\)'
-                        if re.search(pb_pattern_02, modified_code, re.MULTILINE | re.IGNORECASE):
-                            modified_code = re.sub(pb_pattern_02, r'TF.pb(\1)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
-                            needs_tf_import = True
-                        #--------------------------------------------------------------------------------------------------------
-                        # handle @ba calls and add import if needed
-                        button_appearance_pattern = r'@ba\s*\(([^)]+)\)'
-                        if re.search(button_appearance_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
-                            modified_code = re.sub(button_appearance_pattern, r'TF.button_appearance(\1)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
-                            needs_tf_import = True
-                        # second pattern for @ba
-                        button_appearance_pattern_02 = r'@button_appearance\s*\(([^)]+)\)'
-                        if re.search(button_appearance_pattern_02, modified_code, re.MULTILINE | re.IGNORECASE):
-                            modified_code = re.sub(button_appearance_pattern_02, r'TF.button_appearance(\1)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
-                            needs_tf_import = True
-                        #--------------------------------------------------------------------------------------------------------
-                        # Handle Tool Tip calls and add import if needed
-                        tool_tip_pattern = r'@tt\s*\(([^)]+)\)'
-                        if re.search(tool_tip_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
-                            modified_code = re.sub(tool_tip_pattern, r'TF.tool_tip(\1)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
-                            needs_tf_import = True
-                        # second pattern for @tt
-                        tool_tip_pattern_02 = r'@tool_tip\s*\(([^)]+)\)'
-                        if re.search(tool_tip_pattern_02, modified_code, re.MULTILINE | re.IGNORECASE):
-                            modified_code = re.sub(tool_tip_pattern_02, r'TF.tool_tip(\1)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
-                            needs_tf_import = True
-                        #--------------------------------------------------------------------------------------------------------
-                        # Add TF import if needed
-                        if needs_tf_import and 'import ft_anim_picker.src.tool_functions as TF' not in modified_code:
-                            modified_code = 'import ft_anim_picker.src.tool_functions as TF\n' + modified_code
-                        #--------------------------------------------------------------------------------------------------------
-                        
-                        # Execute the modified code
-                        if script_type == 'python':
-                            #print(modified_code)
-                            exec(modified_code)
-                        else:
-                            import maya.mel as mel
-                            mel.eval(modified_code)
-                except Exception as e:
-                    cmds.warning(f"Error executing {script_type} code: {str(e)}")
+    def _get_namespace_info(self):
+        """Get current namespace and prefix from picker window"""
+        main_window = self.window()
+        current_ns = ""
+        ns_prefix = ""
+        
+        if isinstance(main_window, UI.AnimPickerWindow):
+            current_ns = main_window.namespace_dropdown.currentText()
+            ns_prefix = f"{current_ns}:" if current_ns and current_ns != 'None' else ""
+        
+        return current_ns, ns_prefix
+
+    def _process_script_code(self, code, ns_prefix):
+        """Process script code to handle tokens and imports"""
+        modified_code = code
+        
+        # Remove tooltip functions (already handled in script manager)
+        patterns_to_remove = [
+            r'@TF\.tool_tip\s*\(\s*["\'](.+?)["\']\s*\)',
+            r'@tool_tip\s*\(\s*["\'](.+?)["\']\s*\)',
+            r'@tt\s*\(\s*["\'](.+?)["\']\s*\)',
+        ]
+        for pattern in patterns_to_remove:
+            modified_code = re.sub(pattern, '', modified_code, flags=re.IGNORECASE)
+        
+        # Replace '@ns' tokens
+        modified_code = re.sub(r'@ns\.?([a-zA-Z0-9_])', fr'{ns_prefix}\1', modified_code, flags=re.IGNORECASE)  # Replace @ns. followed by identifier
+        modified_code = re.sub(r'@ns\.?(?!\w)', f'"{ns_prefix}"', modified_code, flags=re.IGNORECASE)
+        
+        #--------------------------------------------------------------------------------------------------------
+        needs_tf_import = False
+
+        # Handle general @TF.function_name calls
+        tf_pattern = r'(\s*)@TF\.(?!tool_tip|tt)(\w+)\s*\(([^)]*)\)'
+        if re.search(tf_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(tf_pattern, r'\1TF.\2(\3)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        #--------------------------------------------------------------------------------------------------------
+        # Handle @pb function calls and add import if needed
+        pb_pattern = r'@pb\s*\(([^)]+)\)'
+        if re.search(pb_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(pb_pattern, r'TF.pb(\1)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        # second pattern for @pb
+        pb_pattern_02 = r'@picker_button\s*\(([^)]+)\)'
+        if re.search(pb_pattern_02, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(pb_pattern_02, r'TF.pb(\1)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        #--------------------------------------------------------------------------------------------------------
+        # handle @ba calls and add import if needed
+        button_appearance_pattern = r'@ba\s*\(([^)]+)\)'
+        if re.search(button_appearance_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(button_appearance_pattern, r'TF.button_appearance(\1)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        # second pattern for @ba
+        button_appearance_pattern_02 = r'@button_appearance\s*\(([^)]+)\)'
+        if re.search(button_appearance_pattern_02, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(button_appearance_pattern_02, r'TF.button_appearance(\1)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        #--------------------------------------------------------------------------------------------------------
+        # handle @reset_all, @reset_translate, @reset_rotate, @reset_scale
+        reset_all_pattern = r'@reset_all\b'
+        if re.search(reset_all_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(reset_all_pattern, r'TF.reset_all()', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        reset_translate_pattern = r'@reset_move\b'
+        if re.search(reset_translate_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(reset_translate_pattern, r'TF.reset_move()', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        reset_rotate_pattern = r'@reset_rotate\b'
+        if re.search(reset_rotate_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(reset_rotate_pattern, r'TF.reset_rotate()', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        reset_scale_pattern = r'@reset_scale\b'
+        if re.search(reset_scale_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(reset_scale_pattern, r'TF.reset_scale()', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        #--------------------------------------------------------------------------------------------------------
+        # Handle Tool Tip calls and add import if needed
+        tool_tip_pattern = r'@tt\s*\(([^)]+)\)'
+        if re.search(tool_tip_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(tool_tip_pattern, r'TF.tool_tip(\1)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        # second pattern for @tt
+        tool_tip_pattern_02 = r'@tool_tip\s*\(([^)]+)\)'
+        if re.search(tool_tip_pattern_02, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(tool_tip_pattern_02, r'TF.tool_tip(\1)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        #--------------------------------------------------------------------------------------------------------
+        # Add TF import if needed
+        if needs_tf_import and 'import ft_anim_picker.src.tool_functions as TF' not in modified_code:
+            modified_code = 'import ft_anim_picker.src.tool_functions as TF\n' + modified_code
+        #--------------------------------------------------------------------------------------------------------
+        
+        return modified_code
+
+    def _execute_processed_code(self, modified_code, script_type):
+        """Execute the processed code based on script type"""
+        if script_type == 'python':
+            #print(modified_code)
+            exec(modified_code)
+        else:
+            import maya.mel as mel
+            mel.eval(modified_code)
     #---------------------------------------------------------------------------------------
     # BUTTON EDIT
     #---------------------------------------------------------------------------------------
@@ -4379,3 +4663,141 @@ class PickerButton(QtWidgets.QWidget):
                 button.assigned_objects = []
                 button.update_tooltip()
                 button.changed.emit(button)  # Notify about the change to update data
+    #---------------------------------------------------------------------------------------
+    def mousePressEvent(self, event):
+        """Enhanced button mouse press with proper modifier handling"""
+        if event.button() == QtCore.Qt.LeftButton:
+            canvas = self.parent()
+            if canvas:
+                alt_held = event.modifiers() & QtCore.Qt.AltModifier
+                ctrl_held = event.modifiers() & QtCore.Qt.ControlModifier
+                shift_held = event.modifiers() & QtCore.Qt.ShiftModifier
+                
+                # Allow dragging only in edit mode
+                if self.edit_mode:
+                    if alt_held:
+                        self.start_duplication_drag(event)
+                    else:
+                        self._handle_edit_mode_selection(event, canvas, shift_held)
+                else:
+                    # Select mode - handle different button modes
+                    if self.mode == 'select':
+                        self._handle_select_mode_click(event, canvas, shift_held, ctrl_held, alt_held)
+                    elif self.mode == 'script':
+                        self.execute_script_command()
+                    elif self.mode == 'pose':
+                        if alt_held:
+                            self.apply_mirrored_pose()
+                        else:
+                            self.apply_pose()
+                
+                event.accept()
+        elif event.button() == QtCore.Qt.RightButton:
+            shift_held = event.modifiers() & QtCore.Qt.ShiftModifier
+            if not self.is_selected:
+                self.parent().clear_selection() if not shift_held else None
+                self.toggle_selection()
+            self.show_context_menu(event.pos())
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+        UT.maya_main_window().activateWindow()
+
+    def mouseMoveEvent(self, event):
+        """Optimized mouse move with minimal updates during drag"""
+        if hasattr(self, 'duplicating') and self.duplicating and event.buttons() & QtCore.Qt.LeftButton:
+            self.handle_duplication_drag(event)
+            event.accept()
+            
+        elif self.dragging and event.buttons() & QtCore.Qt.LeftButton:
+            canvas = self.parent()
+            if not canvas:
+                return
+
+            # Throttle updates for better performance
+            current_time = QtCore.QTime.currentTime().msecsSinceStartOfDay()
+            if hasattr(self, 'last_drag_update'):
+                if current_time - self.last_drag_update < 16:  # ~60fps limit
+                    return
+            self.last_drag_update = current_time
+
+            delta = event.globalPos() - self.drag_start_pos
+            scene_delta = QtCore.QPointF(delta.x(), delta.y()) / canvas.zoom_factor
+            
+            # Check for shift modifier for constrained movement
+            shift_held = event.modifiers() & QtCore.Qt.ShiftModifier
+            
+            if shift_held:
+                # Constrain movement to the dominant axis
+                scene_delta = self._apply_axis_constraint(scene_delta)
+
+            # Update positions without triggering database updates
+            selected_buttons = canvas.get_selected_buttons()
+            for button in selected_buttons:
+                button.scene_position = button.button_start_pos + scene_delta
+            
+            # Lightweight visual update only
+            canvas.update_button_positions()
+            
+            # Throttled transform guide update
+            if hasattr(canvas, 'transform_guides') and canvas.transform_guides.isVisible():
+                if not hasattr(self, 'guide_update_timer'):
+                    self.guide_update_timer = QtCore.QTimer()
+                    self.guide_update_timer.setSingleShot(True)
+                    self.guide_update_timer.timeout.connect(
+                        lambda: canvas.transform_guides.update_position() if canvas.transform_guides.isVisible() else None
+                    )
+                
+                self.guide_update_timer.start(50)  # Update guides every 50ms during drag
+            
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        """Enhanced mouse release with optimized batch updates"""
+        if event.button() == QtCore.Qt.LeftButton:
+            canvas = self.parent()
+            
+            # Handle duplication completion
+            if hasattr(self, 'duplicating') and self.duplicating:
+                self.complete_duplication_drag(event)
+                event.accept()
+                return
+            
+            # Handle normal dragging completion
+            if self.dragging:
+                self.dragging = False
+                self.update_cursor()
+                
+                if canvas:
+                    selected_buttons = canvas.get_selected_buttons()
+                    main_window = canvas.window()
+                    
+                    # Check for the correct main window class (you had BlenderAnimPickerWindow, should be AnimPickerWindow)
+                    if isinstance(main_window, UI.AnimPickerWindow):
+                        # Use optimized batch position update
+                        self._batch_update_button_positions(selected_buttons, main_window)
+                    else:
+                        # Fallback to individual updates if needed
+                        for button in selected_buttons:
+                            canvas.update_button_data(button)
+                
+                event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+        
+        # Fixed the window activation call
+        UT.maya_main_window().activateWindow()
+    
+    def enterEvent(self, event):
+        """Called when mouse enters the button area."""
+        self.is_hovered = True
+        self.update()  # Trigger repaint
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """Called when mouse leaves the button area."""
+        self.is_hovered = False
+        self.update()  # Trigger repaint
+        super().leaveEvent(event)

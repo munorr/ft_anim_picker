@@ -130,6 +130,13 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
             r'(@tt\s*\(([^)]+)\))',
             r'(@tool_tip\s*\(([^)]+)\))',
             r'(@tool_tip\s*\(([^)]+)\))',
+            
+        ]
+        tool_function_patterns_02 = [
+            r'(@reset_all\b)',
+            r'(@reset_move\b)',
+            r'(@reset_scale\b)',
+            r'(@reset_rotate\b)',
         ]
         #--------------------------------------------------------------------------------------------------------
         for pattern in tool_function_patterns:
@@ -138,6 +145,11 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
                 self.setFormat(match.start(1), len(match.group(1)), self.special_format)
                 # Apply sky blue to the function name
                 self.setFormat(match.start(2), len(match.group(2)), self.tf_function_format)
+        #--------------------------------------------------------------------------------------------------------
+        for pattern in tool_function_patterns_02:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                # Apply bright green to the function name
+                self.setFormat(match.start(1), len(match.group(1)), self.special_format)
         #--------------------------------------------------------------------------------------------------------
         # Apply highlighting for @ns.qualifier pattern (handles both direct and quoted contexts)
         # This comes AFTER quoted text highlighting so it can override the quote formatting
@@ -287,7 +299,7 @@ class CodeEditor(QtWidgets.QPlainTextEdit):
 
         color_sample_action = QtWidgets.QWidgetAction(context_menu)
         color_sample_widget = QtWidgets.QWidget()
-        color_sample = CCP.ColorPicker(sample_hex=True)
+        color_sample = CCP.ColorPicker(mode='hex')
         color_sample_widget.setLayout(QtWidgets.QHBoxLayout())
         color_sample_widget.layout().setContentsMargins(0, 0, 0, 0)
         color_sample_widget.layout().addWidget(color_sample)
@@ -627,7 +639,7 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.frame.setStyleSheet("""
             QFrame {
                 background-color: rgba(36, 36, 36, .9);
-                border: 1px solid #444444;
+                border: 0px solid #444444;
                 border-radius: 4px;
             }
         """)
@@ -706,7 +718,7 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.python_function_preset_button.addToMenu('Button Appearance', self.ppf_button_appearance, position=(2,0))
         self.python_function_preset_button.addToMenu('Add Selected Button IDs', self.ppf_get_selected_button_ids, position=(3,0))
 
-        self.color_sample = CCP.ColorPicker(sample_hex=True)
+        self.color_sample = CCP.ColorPicker(mode='hex')
         
         self.mel_function_preset_button = CB.CustomButton(text='', icon=UT.get_icon('add.png', size=14), height=fps, width=fps, radius=3,color='#222222',alpha=0,textColor='#aaaaaa', 
                                                           ContextMenu=True, onlyContext= True, cmColor='#333333',cmHeight=fps, tooltip='Mel function presets',flat=True)
@@ -729,16 +741,57 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         # Create custom QPlainTextEdit subclass with line numbers and tab handling
         
         # Editor style
-        editor_style = """
-            QPlainTextEdit {
-                background-color: #1e1e1e;
+        editor_style = f"""
+            QPlainTextEdit {{
+                background-color: #1b1b1b;
                 color: #dddddd;
-                border: 0px solid #444444;
+                border: None;
                 border-radius: 3px;
                 padding: 5px 5px 5px 15px; /* Added significant left padding to prevent text from being under line numbers */
                 font-family: Consolas, Monaco, monospace;
                 selection-background-color: #264f78;
-            }
+            }}
+            QScrollBar:vertical {{
+                border: none;
+                background: transparent;
+                width: 8px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: rgba(100, 100, 100, 0.5);
+                min-height: 20px;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: rgba(120, 120, 120, 0.7);
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: transparent;
+            }}
+            QScrollBar:horizontal {{
+                border: none;
+                background: transparent;
+                height: 8px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: rgba(100, 100, 100, 0.5);
+                min-width: 20px;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:horizontal:hover {{
+                background: rgba(120, 120, 120, 0.7);
+            }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+                width: 0px;
+            }}
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+                background: transparent;
+            }}
+
         """
         #--------------------------------------------------------------------------------------------------------------------------
         # Create editors using the custom CodeEditor class

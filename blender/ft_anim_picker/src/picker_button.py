@@ -545,7 +545,6 @@ class PickerButton(QtWidgets.QWidget):
         else:
             if self.text_pixmap and not self.text_pixmap.isNull():
                 painter.drawPixmap(0, 0, self.text_pixmap)
-    
     #---------------------------------------------------------------------------------------
     def _create_button_path(self, rect, radii, zoom_factor):
         """Create button path based on shape type"""
@@ -597,138 +596,241 @@ class PickerButton(QtWidgets.QWidget):
             return self._create_rounded_rect_path(rect, self.radius, zoom_factor)
 
     def _parse_svg_path(self, path_data):
-        """Parse SVG path data string into QPainterPath"""
+        """Parse SVG path data string into QPainterPath - IMPROVED VERSION"""
         if not path_data:
             return None
             
         try:
             path = QtGui.QPainterPath()
             
-            # Clean up the path data
-            path_data = re.sub(r'[,\s]+', ' ', path_data.strip())
+            # Clean up the path data - normalize separators and whitespace
+            path_data = path_data.strip()
+            # Replace commas with spaces for easier parsing
+            path_data = re.sub(r',', ' ', path_data)
+            # Normalize whitespace
+            path_data = re.sub(r'\s+', ' ', path_data)
+            # Add spaces before negative signs that aren't preceded by 'e' or 'E' (for scientific notation)
+            path_data = re.sub(r'(?<![eE])-', ' -', path_data)
             
-            # Split path data into commands and coordinates
-            commands = re.findall(r'[MmLlHhVvCcSsQqTtAaZz][^MmLlHhVvCcSsQqTtAaZz]*', path_data)
+            # Improved regex pattern that handles scientific notation and complex numbers
+            # This pattern captures commands and all their numeric parameters
+            command_pattern = r'([MmLlHhVvCcSsQqTtAaZz])\s*((?:[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?\s*)*)'
+            
+            commands = re.findall(command_pattern, path_data)
             
             current_point = QtCore.QPointF(0, 0)
             path_start = QtCore.QPointF(0, 0)
+            last_control_point = None  # For smooth curves
             
-            for command_str in commands:
-                command = command_str[0]
-                coords_str = command_str[1:].strip()
-                
-                if coords_str:
-                    coords = [float(x) for x in coords_str.split() if x]
-                else:
-                    coords = []
+            for command, coords_str in commands:
+                # Parse coordinates more robustly
+                coords = []
+                if coords_str.strip():
+                    # Handle scientific notation and regular numbers
+                    number_pattern = r'[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?'
+                    coord_matches = re.findall(number_pattern, coords_str)
+                    try:
+                        coords = [float(x) for x in coord_matches if x]
+                    except ValueError as e:
+                        print(f"Error parsing coordinates '{coords_str}': {e}")
+                        continue
                 
                 # Handle different SVG path commands
                 if command.upper() == 'M':  # Move to
                     if len(coords) >= 2:
+                        x, y = coords[0], coords[1]
                         if command.islower():  # Relative
-                            current_point += QtCore.QPointF(coords[0], coords[1])
-                        else:  # Absolute
-                            current_point = QtCore.QPointF(coords[0], coords[1])
+                            x += current_point.x()
+                            y += current_point.y()
                         
+                        current_point = QtCore.QPointF(x, y)
                         path.moveTo(current_point)
                         path_start = current_point
                         
                         # Handle additional coordinate pairs as line-to commands
                         for i in range(2, len(coords), 2):
                             if i + 1 < len(coords):
+                                x, y = coords[i], coords[i + 1]
                                 if command.islower():
-                                    current_point += QtCore.QPointF(coords[i], coords[i + 1])
+                                    x += current_point.x()
+                                    y += current_point.y()
                                 else:
-                                    current_point = QtCore.QPointF(coords[i], coords[i + 1])
+                                    # Convert to absolute if needed
+                                    pass
+                                current_point = QtCore.QPointF(x, y)
                                 path.lineTo(current_point)
                 
                 elif command.upper() == 'L':  # Line to
                     for i in range(0, len(coords), 2):
                         if i + 1 < len(coords):
+                            x, y = coords[i], coords[i + 1]
                             if command.islower():  # Relative
-                                current_point += QtCore.QPointF(coords[i], coords[i + 1])
-                            else:  # Absolute
-                                current_point = QtCore.QPointF(coords[i], coords[i + 1])
+                                x += current_point.x()
+                                y += current_point.y()
+                            
+                            current_point = QtCore.QPointF(x, y)
                             path.lineTo(current_point)
                 
                 elif command.upper() == 'H':  # Horizontal line
                     for coord in coords:
                         if command.islower():  # Relative
-                            current_point += QtCore.QPointF(coord, 0)
+                            x = current_point.x() + coord
                         else:  # Absolute
-                            current_point = QtCore.QPointF(coord, current_point.y())
+                            x = coord
+                        
+                        current_point = QtCore.QPointF(x, current_point.y())
                         path.lineTo(current_point)
                 
                 elif command.upper() == 'V':  # Vertical line
                     for coord in coords:
                         if command.islower():  # Relative
-                            current_point += QtCore.QPointF(0, coord)
+                            y = current_point.y() + coord
                         else:  # Absolute
-                            current_point = QtCore.QPointF(current_point.x(), coord)
+                            y = coord
+                        
+                        current_point = QtCore.QPointF(current_point.x(), y)
                         path.lineTo(current_point)
                 
                 elif command.upper() == 'C':  # Cubic Bezier curve
                     for i in range(0, len(coords), 6):
                         if i + 5 < len(coords):
+                            x1, y1 = coords[i], coords[i + 1]
+                            x2, y2 = coords[i + 2], coords[i + 3]
+                            x, y = coords[i + 4], coords[i + 5]
+                            
                             if command.islower():  # Relative
-                                c1 = current_point + QtCore.QPointF(coords[i], coords[i + 1])
-                                c2 = current_point + QtCore.QPointF(coords[i + 2], coords[i + 3])
-                                end = current_point + QtCore.QPointF(coords[i + 4], coords[i + 5])
-                            else:  # Absolute
-                                c1 = QtCore.QPointF(coords[i], coords[i + 1])
-                                c2 = QtCore.QPointF(coords[i + 2], coords[i + 3])
-                                end = QtCore.QPointF(coords[i + 4], coords[i + 5])
+                                x1 += current_point.x()
+                                y1 += current_point.y()
+                                x2 += current_point.x()
+                                y2 += current_point.y()
+                                x += current_point.x()
+                                y += current_point.y()
+                            
+                            c1 = QtCore.QPointF(x1, y1)
+                            c2 = QtCore.QPointF(x2, y2)
+                            end = QtCore.QPointF(x, y)
                             
                             path.cubicTo(c1, c2, end)
                             current_point = end
+                            last_control_point = c2  # Store for smooth curves
+                
+                elif command.upper() == 'S':  # Smooth cubic Bezier
+                    for i in range(0, len(coords), 4):
+                        if i + 3 < len(coords):
+                            x2, y2 = coords[i], coords[i + 1]
+                            x, y = coords[i + 2], coords[i + 3]
+                            
+                            if command.islower():  # Relative
+                                x2 += current_point.x()
+                                y2 += current_point.y()
+                                x += current_point.x()
+                                y += current_point.y()
+                            
+                            # Calculate first control point as reflection of last control point
+                            if last_control_point:
+                                x1 = 2 * current_point.x() - last_control_point.x()
+                                y1 = 2 * current_point.y() - last_control_point.y()
+                            else:
+                                x1, y1 = current_point.x(), current_point.y()
+                            
+                            c1 = QtCore.QPointF(x1, y1)
+                            c2 = QtCore.QPointF(x2, y2)
+                            end = QtCore.QPointF(x, y)
+                            
+                            path.cubicTo(c1, c2, end)
+                            current_point = end
+                            last_control_point = c2
                 
                 elif command.upper() == 'Q':  # Quadratic Bezier curve
                     for i in range(0, len(coords), 4):
                         if i + 3 < len(coords):
+                            x1, y1 = coords[i], coords[i + 1]
+                            x, y = coords[i + 2], coords[i + 3]
+                            
                             if command.islower():  # Relative
-                                c1 = current_point + QtCore.QPointF(coords[i], coords[i + 1])
-                                end = current_point + QtCore.QPointF(coords[i + 2], coords[i + 3])
-                            else:  # Absolute
-                                c1 = QtCore.QPointF(coords[i], coords[i + 1])
-                                end = QtCore.QPointF(coords[i + 2], coords[i + 3])
+                                x1 += current_point.x()
+                                y1 += current_point.y()
+                                x += current_point.x()
+                                y += current_point.y()
+                            
+                            c1 = QtCore.QPointF(x1, y1)
+                            end = QtCore.QPointF(x, y)
                             
                             path.quadTo(c1, end)
                             current_point = end
+                            last_control_point = c1  # Store for smooth curves
+                
+                elif command.upper() == 'T':  # Smooth quadratic Bezier
+                    for i in range(0, len(coords), 2):
+                        if i + 1 < len(coords):
+                            x, y = coords[i], coords[i + 1]
+                            
+                            if command.islower():  # Relative
+                                x += current_point.x()
+                                y += current_point.y()
+                            
+                            # Calculate control point as reflection of last control point
+                            if last_control_point:
+                                x1 = 2 * current_point.x() - last_control_point.x()
+                                y1 = 2 * current_point.y() - last_control_point.y()
+                            else:
+                                x1, y1 = current_point.x(), current_point.y()
+                            
+                            c1 = QtCore.QPointF(x1, y1)
+                            end = QtCore.QPointF(x, y)
+                            
+                            path.quadTo(c1, end)
+                            current_point = end
+                            last_control_point = c1
                 
                 elif command.upper() == 'A':  # Elliptical arc
-                    # Simplified arc implementation - for full arc support, 
-                    # you might need a more complex implementation
                     for i in range(0, len(coords), 7):
                         if i + 6 < len(coords):
-                            if command.islower():  # Relative
-                                end = current_point + QtCore.QPointF(coords[i + 5], coords[i + 6])
-                            else:  # Absolute
-                                end = QtCore.QPointF(coords[i + 5], coords[i + 6])
+                            rx, ry = coords[i], coords[i + 1]
+                            x_axis_rotation = coords[i + 2]
+                            large_arc_flag = int(coords[i + 3])
+                            sweep_flag = int(coords[i + 4])
+                            x, y = coords[i + 5], coords[i + 6]
                             
-                            # For simplicity, draw a line (you can implement proper arc later)
+                            if command.islower():  # Relative
+                                x += current_point.x()
+                                y += current_point.y()
+                            
+                            end = QtCore.QPointF(x, y)
+                            
+                            # For now, approximate arc with a line (proper arc implementation is complex)
+                            # TODO: Implement proper arc-to-bezier conversion
                             path.lineTo(end)
                             current_point = end
                 
                 elif command.upper() == 'Z':  # Close path
                     path.closeSubpath()
                     current_point = path_start
+                    last_control_point = None
+                
+                # Reset last_control_point for non-smooth commands
+                if command.upper() not in ['S', 'T']:
+                    if command.upper() not in ['C', 'Q']:
+                        last_control_point = None
             
             return path
             
         except Exception as e:
             print(f"Error parsing SVG path: {e}")
+            print(f"Problematic path data: {path_data[:100]}...")  # Show first 100 chars
             return None
 
     def set_custom_shape(self, preserve_individual=True):
         """Set buttons to use custom SVG shapes with option to preserve individual data"""
         canvas = self.parent()
+        main_window = canvas.window() if canvas else None
         if canvas:
             selected_buttons = canvas.get_selected_buttons()
             if not selected_buttons:
                 selected_buttons = [self]
         else:
             selected_buttons = [self]
-        
+
         # Apply custom shape type to all selected buttons
         for button in selected_buttons:
             button.shape_type = 'custom_path'
@@ -744,10 +846,14 @@ class PickerButton(QtWidgets.QWidget):
                 button.svg_file_path = self.svg_file_path
             
             # Force update of the button
-            button._invalidate_mask_cache()
-            button.update()
-            button.changed.emit(button)
-
+            #button._invalidate_mask_cache()
+            #button.update()
+        
+        if hasattr(main_window, 'batch_update_buttons_to_database'):
+            main_window.batch_update_buttons_to_database(selected_buttons)
+        canvas.update_button_positions()
+        canvas.update()
+        
     def apply_same_shape_to_selected(self):
         """Apply this button's SVG shape to all selected buttons"""
         self.set_custom_shape(preserve_individual=False)
@@ -835,6 +941,7 @@ class PickerButton(QtWidgets.QWidget):
     def reset_to_rounded_rect(self):
         """Reset button shape to default rounded rectangle"""
         canvas = self.parent()
+        main_window = canvas.window() if canvas else None
         if canvas:
             selected_buttons = canvas.get_selected_buttons()
             if not selected_buttons:
@@ -846,9 +953,14 @@ class PickerButton(QtWidgets.QWidget):
             button.shape_type = 'rounded_rect'
             #button.svg_path_data = None
             #button.svg_file_path = None
-            button._invalidate_mask_cache()
-            button.update()
+            #button._invalidate_mask_cache()
+            #button.update()
             button.changed.emit(button)
+        
+        if hasattr(main_window, 'batch_update_buttons_to_database'):
+            main_window.batch_update_buttons_to_database(selected_buttons)
+        canvas.update_button_positions()
+        canvas.update()
     
     def mirror_svg_path_horizontal(self, svg_path_data, canvas_width=None):
         """
@@ -865,8 +977,6 @@ class PickerButton(QtWidgets.QWidget):
             return svg_path_data
         
         try:
-            # Use existing parsing method to create QPainterPath
-            from PySide6 import QtGui, QtCore
             
             # Create a temporary path using your existing parser
             temp_path = self._parse_svg_path(svg_path_data)
@@ -999,6 +1109,80 @@ class PickerButton(QtWidgets.QWidget):
             print(f"Error converting path to SVG string: {e}")
             return ""
     #---------------------------------------------------------------------------------------
+    def contains_point(self, local_pos):
+        """
+        Check if a local point is within the button's actual shape.
+        This respects custom SVG shapes and rounded rectangles.
+        
+        Args:
+            local_pos (QPoint): Position in button-local coordinates
+            
+        Returns:
+            bool: True if point is within the button's shape
+        """
+        # Convert QPoint to QPointF for consistency
+        point = QtCore.QPointF(local_pos.x(), local_pos.y())
+        
+        # Get current zoom factor from parent canvas
+        zoom_factor = self.parent().zoom_factor if self.parent() else 1.0
+        
+        # Create the button path using the same method as in paintEvent
+        rect = self.rect().adjusted(zoom_factor, zoom_factor, -zoom_factor, -zoom_factor)
+        path = self._create_button_path(rect, self.radius, zoom_factor)
+        
+        # Check if the point is within the path
+        return path.contains(point)
+
+    def _create_button_path_for_hit_testing(self, rect, zoom_factor):
+        """
+        Create button path specifically for hit testing.
+        This is similar to _create_button_path but optimized for hit detection.
+        """
+        if self.shape_type == 'custom_path' and self.svg_path_data:
+            return self._create_svg_path_for_hit_testing(rect, zoom_factor)
+        else:
+            return self._create_rounded_rect_path(rect, self.radius, zoom_factor)
+
+    def _create_svg_path_for_hit_testing(self, rect, zoom_factor):
+        """Create SVG path for hit testing with proper scaling"""
+        try:
+            # Parse the SVG path data
+            svg_path = self._parse_svg_path(self.svg_path_data)
+            if not svg_path:
+                # Fallback to rounded rect if parsing fails
+                return self._create_rounded_rect_path(rect, self.radius, zoom_factor)
+            
+            # Get the original path bounds
+            original_bounds = svg_path.boundingRect()
+            if original_bounds.isEmpty():
+                return self._create_rounded_rect_path(rect, self.radius, zoom_factor)
+            
+            # Calculate scaling factors to fit the button rect
+            scale_x = rect.width() / original_bounds.width()
+            scale_y = rect.height() / original_bounds.height()
+            
+            # Use uniform scaling to maintain aspect ratio
+            scale = min(scale_x, scale_y) * 0.9  # 0.9 for slight padding
+            
+            # Calculate centering offsets
+            scaled_width = original_bounds.width() * scale
+            scaled_height = original_bounds.height() * scale
+            offset_x = rect.center().x() - (scaled_width / 2) - (original_bounds.x() * scale)
+            offset_y = rect.center().y() - (scaled_height / 2) - (original_bounds.y() * scale)
+            
+            # Create transformation matrix
+            transform = QtGui.QTransform()
+            transform.translate(offset_x, offset_y)
+            transform.scale(scale, scale)
+            
+            # Apply transformation to the SVG path
+            return transform.map(svg_path)
+            
+        except Exception as e:
+            print(f"Error creating SVG path for hit testing: {e}")
+            # Fallback to rounded rect
+            return self._create_rounded_rect_path(rect, self.radius, zoom_factor)
+    #---------------------------------------------------------------------------------------
     def _should_update_mask(self, zoom_factor, current_size, current_radius, current_shape_type, current_svg_data):
         """Check if mask needs to be regenerated based on cached parameters"""
         
@@ -1067,178 +1251,6 @@ class PickerButton(QtWidgets.QWidget):
         self.last_mask_radius = None
         self.last_mask_shape_type = None
         self.last_mask_svg_data = None
-    #---------------------------------------------------------------------------------------
-    def mousePressEvent(self, event):
-        """Button mouse press with alt-click duplication support - ENHANCED VERSION"""
-        if event.button() == QtCore.Qt.LeftButton:
-            canvas = self.parent()
-            if canvas:
-                # Check for Alt and Ctrl modifiers
-                alt_held = event.modifiers() & QtCore.Qt.AltModifier
-                ctrl_held = event.modifiers() & QtCore.Qt.ControlModifier
-                
-                if self.edit_mode:
-                    # Alt+Click duplication in edit mode
-                    if alt_held:
-                        self.start_duplication_drag(event)
-                    else:
-                        # Normal dragging behavior
-                        self.dragging = True
-                        self.drag_start_pos = event.globalPos()
-                        self.button_start_pos = self.scene_position
-                        self.setCursor(QtCore.Qt.ClosedHandCursor)
-                        
-                        selected_buttons = canvas.get_selected_buttons()
-                        
-                        if not self.is_selected and not (event.modifiers() & QtCore.Qt.ShiftModifier):
-                            canvas.clear_selection()
-                            self.is_selected = True
-                            self.selected.emit(self, True)
-                            canvas.last_selected_button = self
-                            canvas.button_selection_changed.emit()
-                            self.update()
-                        elif event.modifiers() & QtCore.Qt.ShiftModifier:
-                            self.is_selected = not self.is_selected
-                            if self.is_selected:
-                                canvas.last_selected_button = self
-                            self.selected.emit(self, self.is_selected)
-                            canvas.button_selection_changed.emit()
-                            self.update()
-                        
-                        # Set button start positions for dragging
-                        for button in selected_buttons:
-                            button.button_start_pos = button.scene_position
-                else:
-                    # Select mode behavior (existing code remains the same)
-                    if self.mode == 'select':
-                        if hasattr(self, 'selectable') and self.selectable:
-                            shift_held = event.modifiers() & QtCore.Qt.ShiftModifier
-                            
-                            if not shift_held:
-                                canvas.clear_selection()
-                            
-                            self.is_selected = not self.is_selected if shift_held and ctrl_held else True
-                            
-                            if self.is_selected:
-                                canvas.last_selected_button = self
-                            
-                            self.selected.emit(self, self.is_selected)
-                            canvas.button_selection_changed.emit()
-                            self.update()
-                            
-                            if ctrl_held and shift_held:
-                                canvas.apply_final_selection(shift_held)
-                                canvas.apply_final_selection(shift_held,ctrl_held)
-                            else:
-                                canvas.apply_final_selection(shift_held,ctrl_held)
-                            
-                    elif self.mode == 'script':
-                        self.execute_script_command()
-                    elif self.mode == 'pose':
-                        # Handle pose mode with mirror pose support
-                        if ctrl_held:
-                            # Ctrl+LMB applies mirrored pose
-                            self.apply_pose_to_mirrored_objects()
-                        else:
-                            # Normal LMB applies regular pose
-                            self.apply_pose()
-                    
-                event.accept()
-        elif event.button() == QtCore.Qt.RightButton:
-            canvas = self.parent()
-            if canvas:
-                if not self.is_selected:
-                    canvas.clear_selection()
-                    self.is_selected = True
-                    self.selected.emit(self, True)
-                    canvas.last_selected_button = self
-                    canvas.button_selection_changed.emit()
-                    self.update()
-            
-            self.show_context_menu(event.pos())
-            event.accept()
-        else:
-            super().mousePressEvent(event)
-        
-        UT.blender_main_window()
-    
-    def mouseMoveEvent(self, event):
-        """Enhanced mouse move with duplication support"""
-        if hasattr(self, 'duplicating') and self.duplicating and event.buttons() & QtCore.Qt.LeftButton:
-            # Handle duplication drag
-            self.handle_duplication_drag(event)
-            event.accept()
-        elif self.dragging and event.buttons() & QtCore.Qt.LeftButton:
-            # Normal dragging behavior
-            canvas = self.parent()
-            if not canvas:
-                return
-
-            delta = event.globalPos() - self.drag_start_pos
-            scene_delta = QtCore.QPointF(delta.x(), delta.y()) / canvas.zoom_factor
-            
-            selected_buttons = canvas.get_selected_buttons()
-            for button in selected_buttons:
-                button.scene_position = button.button_start_pos + scene_delta
-            
-            if hasattr(self.parent(), '_update_transform_guides_position'):
-                QtCore.QTimer.singleShot(1, self.parent()._update_transform_guides_position)
-            
-            canvas.update_button_positions()
-            event.accept()
-        else:
-            super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        """Enhanced mouse release with duplication completion"""
-        if event.button() == QtCore.Qt.LeftButton:
-            canvas = self.parent()
-            
-            # Handle duplication completion
-            if hasattr(self, 'duplicating') and self.duplicating:
-                self.complete_duplication_drag(event)
-                event.accept()
-                return
-            
-            # Handle normal dragging completion
-            if self.dragging:
-                self.dragging = False
-                self.update_cursor()
-                
-                if canvas:
-                    selected_buttons = canvas.get_selected_buttons()
-                    
-                    main_window = canvas.window()
-                    if isinstance(main_window, UI.BlenderAnimPickerWindow):
-                        was_batch_active = getattr(main_window, 'batch_update_active', False)
-                        main_window.batch_update_active = False
-                        
-                        try:
-                            for button in selected_buttons:
-                                main_window._process_single_button_update(button)
-                            
-                            main_window.update_buttons_for_current_tab(force_update=True)
-                            
-                        finally:
-                            main_window.batch_update_active = was_batch_active
-                
-                event.accept()
-        else:
-            super().mouseReleaseEvent(event)
-        
-        UT.blender_main_window()
-    
-    def enterEvent(self, event):
-        """Called when mouse enters the button area."""
-        self.is_hovered = True
-        self.update()  # Trigger repaint
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        """Called when mouse leaves the button area."""
-        self.is_hovered = False
-        self.update()  # Trigger repaint
-        super().leaveEvent(event)
     #---------------------------------------------------------------------------------------
     def start_duplication_drag(self, event):
         """Start the duplication drag operation"""
@@ -1437,6 +1449,62 @@ class PickerButton(QtWidgets.QWidget):
         self.last_zoom_factor = 0
         self.last_size = None
 
+    def handle_select_mode_click(self, shift_held, ctrl_held, alt_held, canvas):
+        """Handle selection logic for different modifier combinations"""
+        if not self.selectable:
+            return
+        # Store this as the last clicked button for active object determination
+        canvas.last_clicked_button = self
+        
+        if ctrl_held and shift_held and not alt_held:
+            # Ctrl + Shift + Click: Toggle this button off if selected, ignore if not selected
+            if self.is_selected:
+                self.is_selected = False
+                self.selected.emit(self, False)
+                # Don't set as last_selected_button when deselecting
+            # If not selected, do nothing (don't select it)
+            
+        elif shift_held and not ctrl_held and not alt_held:
+            # Shift + Click: Add to selection
+            if not self.is_selected:
+                self.is_selected = True
+                self.selected.emit(self, True)
+                canvas.last_selected_button = self
+            # If already selected, keep it selected
+            
+        elif alt_held and shift_held and not ctrl_held:
+            # Alt + Shift + Click: Add counterparts to selection
+            if not self.is_selected:
+                self.is_selected = True
+                self.selected.emit(self, True)
+                canvas.last_selected_button = self
+            # Apply selection with counterpart mode
+            canvas.apply_final_selection(add_to_selection=True, ctrl_held=True)  # ctrl_held=True for counterparts
+            return  # Early return since apply_final_selection handles everything
+            
+        elif alt_held and not shift_held and not ctrl_held:
+            # Alt + Click: Replace selection with counterparts
+            canvas.clear_selection()
+            self.is_selected = True
+            self.selected.emit(self, True)
+            canvas.last_selected_button = self
+            # Apply selection with counterpart mode
+            canvas.apply_final_selection(add_to_selection=False, ctrl_held=True)  # ctrl_held=True for counterparts
+            return  # Early return since apply_final_selection handles everything
+            
+        else:
+            # No modifiers or unsupported combination: Replace selection
+            canvas.clear_selection()
+            self.is_selected = True
+            self.selected.emit(self, True)
+            canvas.last_selected_button = self
+        
+        # Update UI
+        canvas.button_selection_changed.emit()
+        self.update()
+        
+        # Apply regular selection (not counterpart)
+        canvas.apply_final_selection(add_to_selection=shift_held, ctrl_held=False)
 
     def toggle_selection(self):
         self.set_selected(not self.is_selected)
@@ -1474,106 +1542,40 @@ class PickerButton(QtWidgets.QWidget):
         for button in self.parent().get_selected_buttons():
             button.toggle_unselectable()
     #---------------------------------------------------------------------------------------
-    def show_selection_manager(self):
-        if not hasattr(self, 'selection_manager'):
-            self.selection_manager = SelectionManagerWidget()
-        
-        self.selection_manager.set_picker_button(self)
-        
-        # Position widget to the right of the button
-        pos = self.mapToGlobal(self.rect().topRight())
-        self.selection_manager.move(pos + QtCore.QPoint(10, 0))
-        self.selection_manager.show()
-
-    def show_script_manager(self):
-        if not hasattr(self, 'script_manager'):
-            self.script_manager = ScriptManagerWidget()
-        
-        self.script_manager.set_picker_button(self)
-        self.script_manager.show()
-
-    def move_button_behind(self):
-        """Move the selected buttons behind other buttons in the z-order"""
-        canvas = self.parent()
-        if canvas and canvas.edit_mode:
-            selected_buttons = canvas.get_selected_buttons()
-            if selected_buttons:
-                # For each selected button, move it to the beginning of the buttons list
-                for button in selected_buttons:
-                    if button in canvas.buttons:
-                        canvas.buttons.remove(button)
-                        canvas.buttons.insert(0, button)  # Insert at the beginning (bottom of z-order)
-                        # Ensure button is visually at the bottom of the stack
-                        button.lower()
-                        # Trigger data update
-                        canvas.update_button_data(button)
-                
-                # Update the button positions and z-order
-                canvas.update_button_positions()
-                # Force a repaint
-                canvas.update()
-                
-                # Update the main window data
-                main_window = canvas.window()
-                if hasattr(main_window, 'update_button_z_order'):
-                    main_window.update_button_z_order()
-                     
-    def bring_button_forward(self):
-        """Bring the selected buttons forward in the z-order"""
-        canvas = self.parent()
-        if canvas and canvas.edit_mode:
-            selected_buttons = canvas.get_selected_buttons()
-            if selected_buttons:
-                # For each selected button, move it to the end of the buttons list
-                for button in selected_buttons:
-                    if button in canvas.buttons:
-                        canvas.buttons.remove(button)
-                        canvas.buttons.append(button)  # Append to the end (top of z-order)
-                        # Ensure button is visually at the top of the stack
-                        button.raise_()
-                        # Trigger data update
-                        canvas.update_button_data(button)
-                
-                # Update the button positions and z-order
-                canvas.update_button_positions()
-                # Force a repaint
-                canvas.update()
-                
-                # Update the main window data
-                main_window = canvas.window()
-                if hasattr(main_window, 'update_button_z_order'):
-                    main_window.update_button_z_order()
-
     def show_context_menu(self, pos):
         menu = QtWidgets.QMenu()
         menu.setWindowFlags(menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
         menu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        menu.setStyleSheet('''
-            QMenu {
+        menu.setStyleSheet(f'''
+            QMenu {{
                 background-color: rgba(30, 30, 30, .9);
                 border: 1px solid #444444;
                 border-radius: 3px;
                 padding: 5px 7px;
-            }
-            QMenu::item {
+            }}
+            QMenu::item {{
                 background-color: transparent;
-                padding: 3px 15px 3px 3px; ;
+                padding: 3px 30px 3px 3px; ;
                 margin: 3px 0px  ;
                 border-radius: 3px;
-            }
-            QMenu::item:hover {
+            }}
+            QMenu::item:hover {{
                 background-color: #444444;
-            }
-            QMenu::item:selected {
+            }}
+            QMenu::item:selected {{
                 background-color: #444444;
-            }
-            QPushButton {
+            }}
+            QMenu::right-arrow {{
+                width: 10px;
+                height: 10px;
+            }}
+            QPushButton {{
                 border-radius: 3px;
                 background-color: #333333;
-            }
-            QPushButton:hover {
+            }}
+            QPushButton:hover {{
                 background-color: #444444;
-            }''')
+            }}''')
 
         # Mode selection
         mode_menu = QtWidgets.QMenu("Mode")
@@ -1684,7 +1686,7 @@ class PickerButton(QtWidgets.QWidget):
             align_bottom_btn = create_alignment_button("align_bottom.png", "Align Bottom", self.align_button_bottom)
             h_space_btn = create_alignment_button("h_spacing.png", "Distribute Evenly (Horizontal)", self.evenly_space_horizontal)
             
-            color_palette_btn = CCP.ColorPicker(palette=True)
+            color_palette_btn = CCP.ColorPicker(mode='palette')
             current_qcolor = QtGui.QColor(self.color)  # Convert hex string to QColor
             color_palette_btn.current_color = current_qcolor
             color_palette_btn.update_all_from_color()  # Update the palette's display
@@ -1844,6 +1846,239 @@ class PickerButton(QtWidgets.QWidget):
         menu.addSeparator()
 
         menu.exec_(self.mapToGlobal(pos))
+        
+    def show_selection_manager(self):
+        if not hasattr(self, 'selection_manager'):
+            self.selection_manager = SelectionManagerWidget()
+        
+        self.selection_manager.set_picker_button(self)
+        
+        # Position widget to the right of the button
+        pos = self.mapToGlobal(self.rect().topRight())
+        self.selection_manager.move(pos + QtCore.QPoint(10, 0))
+        self.selection_manager.show()
+
+    def show_script_manager(self):
+        if not hasattr(self, 'script_manager'):
+            self.script_manager = ScriptManagerWidget()
+        
+        self.script_manager.set_picker_button(self)
+        self.script_manager.show()
+
+    def move_button_behind(self):
+        """Move the selected buttons behind other buttons in the z-order"""
+        canvas = self.parent()
+        if canvas and canvas.edit_mode:
+            selected_buttons = canvas.get_selected_buttons()
+            if selected_buttons:
+                # For each selected button, move it to the beginning of the buttons list
+                for button in selected_buttons:
+                    if button in canvas.buttons:
+                        canvas.buttons.remove(button)
+                        canvas.buttons.insert(0, button)  # Insert at the beginning (bottom of z-order)
+                        # Ensure button is visually at the bottom of the stack
+                        button.lower()
+                        # Trigger data update
+                        canvas.update_button_data(button)
+                
+                # Update the button positions and z-order
+                canvas.update_button_positions()
+                # Force a repaint
+                canvas.update()
+                
+                # Update the main window data
+                main_window = canvas.window()
+                if hasattr(main_window, 'update_button_z_order'):
+                    main_window.update_button_z_order()
+                     
+    def bring_button_forward(self):
+        """Bring the selected buttons forward in the z-order"""
+        canvas = self.parent()
+        if canvas and canvas.edit_mode:
+            selected_buttons = canvas.get_selected_buttons()
+            if selected_buttons:
+                # For each selected button, move it to the end of the buttons list
+                for button in selected_buttons:
+                    if button in canvas.buttons:
+                        canvas.buttons.remove(button)
+                        canvas.buttons.append(button)  # Append to the end (top of z-order)
+                        # Ensure button is visually at the top of the stack
+                        button.raise_()
+                        # Trigger data update
+                        canvas.update_button_data(button)
+                
+                # Update the button positions and z-order
+                canvas.update_button_positions()
+                # Force a repaint
+                canvas.update()
+                
+                # Update the main window data
+                main_window = canvas.window()
+                if hasattr(main_window, 'update_button_z_order'):
+                    main_window.update_button_z_order()
+
+    def _batch_update_button_positions(self, selected_buttons, main_window):
+        """Optimized batch update for button positions after drag"""
+        if not selected_buttons:
+            return
+        
+        current_tab = main_window.tab_system.current_tab
+        if not current_tab:
+            return
+        
+        # CRITICAL: Completely disable all update systems during batch
+        was_batch_active = getattr(main_window, 'batch_update_active', False)
+        main_window.batch_update_active = True
+        
+        # Stop any running timers
+        if hasattr(main_window, 'batch_update_timer'):
+            main_window.batch_update_timer.stop()
+        
+        try:
+            # Get tab data once
+            tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+            
+            # Build position update dictionary
+            position_updates = {}
+            updated_buttons = []
+            
+            # Disconnect changed signals temporarily to prevent interference
+            for button in selected_buttons:
+                try:
+                    button.changed.disconnect()
+                except:
+                    pass
+                
+                # Collect position data
+                position_updates[button.unique_id] = (
+                    button.scene_position.x(), 
+                    button.scene_position.y()
+                )
+                updated_buttons.append(button.unique_id)
+            
+            # Single database update for all positions
+            for button_data in tab_data['buttons']:
+                if button_data['id'] in position_updates:
+                    new_x, new_y = position_updates[button_data['id']]
+                    button_data['position'] = (new_x, new_y)
+            
+            # Write to database once
+            DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+            
+            # Reconnect signals
+            for button in selected_buttons:
+                button.changed.connect(main_window.on_button_changed)
+            
+            #print(f"Batch updated positions for {len(selected_buttons)} buttons")
+            
+        finally:
+            # Restore batch mode state
+            main_window.batch_update_active = was_batch_active
+            
+            # Update transform guides once at the end
+            canvas = self.parent()
+            if hasattr(canvas, 'transform_guides') and canvas.transform_guides.isVisible():
+                QtCore.QTimer.singleShot(10, canvas._update_transform_guides_position)
+    
+    def _batch_update_button_scaling(self, selected_buttons, main_window):
+        """Optimized batch update for button scaling after transform guide operations"""
+        if not selected_buttons:
+            return
+        
+        current_tab = main_window.tab_system.current_tab
+        if not current_tab:
+            return
+        
+        # CRITICAL: Completely disable all update systems during batch
+        was_batch_active = getattr(main_window, 'batch_update_active', False)
+        main_window.batch_update_active = True
+        
+        # Stop any running timers to prevent interference
+        timers_to_stop = ['batch_update_timer', 'widget_update_timer']
+        stopped_timers = {}
+        
+        for timer_name in timers_to_stop:
+            if hasattr(main_window, timer_name):
+                timer = getattr(main_window, timer_name)
+                if timer.isActive():
+                    timer.stop()
+                    stopped_timers[timer_name] = True
+        
+        # Clear any pending updates
+        if hasattr(main_window, 'pending_button_updates'):
+            main_window.pending_button_updates.clear()
+        
+        try:
+            # Store original signal connections for restoration
+            signal_connections = {}
+            
+            # Disconnect changed signals temporarily to prevent interference
+            for button in selected_buttons:
+                try:
+                    # Store the connection info before disconnecting
+                    signal_connections[button.unique_id] = button.changed.receivers()
+                    button.changed.disconnect()
+                except:
+                    pass
+            
+            # Get tab data once for efficiency
+            tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+            
+            # Build scaling update dictionary with all properties
+            scaling_updates = {}
+            for button in selected_buttons:
+                scaling_updates[button.unique_id] = {
+                    'position': (button.scene_position.x(), button.scene_position.y()),
+                    'width': button.width,
+                    'height': button.height,
+                    'radius': button.radius.copy() if hasattr(button.radius, 'copy') else list(button.radius)
+                }
+            
+            # Single database update for all scaling changes
+            updated_count = 0
+            for button_data in tab_data['buttons']:
+                if button_data['id'] in scaling_updates:
+                    updates = scaling_updates[button_data['id']]
+                    button_data['position'] = updates['position']
+                    button_data['width'] = updates['width']
+                    button_data['height'] = updates['height']
+                    button_data['radius'] = updates['radius']
+                    updated_count += 1
+            
+            # Write to database once
+            if updated_count > 0:
+                DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                #print(f"Batch updated scaling for {updated_count} buttons")
+            
+            # Reconnect signals properly
+            for button in selected_buttons:
+                # Reconnect to the main window's handler
+                if hasattr(main_window, 'on_button_changed'):
+                    button.changed.connect(main_window.on_button_changed)
+                else:
+                    # Fallback connection
+                    button.changed.connect(main_window.update_button_data)
+            
+        except Exception as e:
+            print(f"Error during batch scaling update: {e}")
+            
+            # Emergency signal reconnection
+            for button in selected_buttons:
+                try:
+                    button.changed.connect(main_window.update_button_data)
+                except:
+                    pass
+                    
+        finally:
+            # Restore batch mode state
+            main_window.batch_update_active = was_batch_active
+            
+            # Restart stopped timers if they were originally active
+            for timer_name, was_active in stopped_timers.items():
+                if was_active and hasattr(main_window, timer_name):
+                    timer = getattr(main_window, timer_name)
+                    # Give a small delay before restarting
+                    QtCore.QTimer.singleShot(100, timer.start)
 
     def color_button_clicked(self, color):
         self.change_color_for_selected_buttons(color)
@@ -1851,350 +2086,263 @@ class PickerButton(QtWidgets.QWidget):
     def align_button_center(self):
         """Align selected buttons to be centered horizontally"""
         canvas = self.parent()
+        main_window = canvas.window()
         if canvas and canvas.edit_mode:
             selected_buttons = canvas.get_selected_buttons()
             if len(selected_buttons) <= 1:
                 return
                 
-            # Get main window for batch processing
-            main_window = canvas.window()
+            # Calculate the average x position (center point)
+            avg_x = sum(button.scene_position.x() for button in selected_buttons) / len(selected_buttons)
             
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
-            
-            try:
-                # Calculate the average x position (center point)
-                avg_x = sum(button.scene_position.x() for button in selected_buttons) / len(selected_buttons)
+            # Move all buttons to have the same x coordinate
+            for button in selected_buttons:
+                current_pos = button.scene_position
+                new_pos = QtCore.QPointF(avg_x, current_pos.y())
+                button.scene_position = new_pos
                 
-                # Move all buttons to have the same x coordinate
-                for button in selected_buttons:
-                    current_pos = button.scene_position
-                    new_pos = QtCore.QPointF(avg_x, current_pos.y())
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
-    
+                if hasattr(main_window, 'batch_update_buttons_to_database'):
+                    main_window.batch_update_buttons_to_database(selected_buttons)
+                canvas.update_button_positions()
+                canvas.update()
+
     def align_button_left(self):
         """Align selected buttons to the leftmost button's left edge"""
         canvas = self.parent()
+        main_window = canvas.window()
+
         if canvas and canvas.edit_mode:
             selected_buttons = canvas.get_selected_buttons()
             if len(selected_buttons) <= 1:
                 return
                 
-            # Get main window for batch processing
-            main_window = canvas.window()
+            # Find the leftmost button's left edge position
+            left_edge = float('inf')
+            for button in selected_buttons:
+                # Calculate the left edge position (center x - half width)
+                button_left = button.scene_position.x() - (button.width / 2)
+                left_edge = min(left_edge, button_left)
             
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
-            
-            try:
-                # Find the leftmost button's left edge position
-                left_edge = float('inf')
-                for button in selected_buttons:
-                    # Calculate the left edge position (center x - half width)
-                    button_left = button.scene_position.x() - (button.width / 2)
-                    left_edge = min(left_edge, button_left)
-                
-                # Move all buttons to align their left edges
-                for button in selected_buttons:
-                    current_pos = button.scene_position
-                    # Calculate new center position (left_edge + half width)
-                    new_center_x = left_edge + (button.width / 2)
-                    new_pos = QtCore.QPointF(new_center_x, current_pos.y())
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
+            # Move all buttons to align their left edges
+            for button in selected_buttons:
+                current_pos = button.scene_position
+                # Calculate new center position (left_edge + half width)
+                new_center_x = left_edge + (button.width / 2)
+                new_pos = QtCore.QPointF(new_center_x, current_pos.y())
+                button.scene_position = new_pos
+
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            canvas.update_button_positions()
+            canvas.update()
     
     def align_button_right(self):
         """Align selected buttons to the rightmost button's right edge"""
         canvas = self.parent()
+        main_window = canvas.window()
         if canvas and canvas.edit_mode:
             selected_buttons = canvas.get_selected_buttons()
             if len(selected_buttons) <= 1:
                 return
                 
-            # Get main window for batch processing
-            main_window = canvas.window()
+            # Find the rightmost button's right edge position
+            right_edge = float('-inf')
+            for button in selected_buttons:
+                # Calculate the right edge position (center x + half width)
+                button_right = button.scene_position.x() + (button.width / 2)
+                right_edge = max(right_edge, button_right)
             
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
+            # Move all buttons to align their right edges
+            for button in selected_buttons:
+                current_pos = button.scene_position
+                # Calculate new center position (right_edge - half width)
+                new_center_x = right_edge - (button.width / 2)
+                new_pos = QtCore.QPointF(new_center_x, current_pos.y())
+                button.scene_position = new_pos
             
-            try:
-                # Find the rightmost button's right edge position
-                right_edge = float('-inf')
-                for button in selected_buttons:
-                    # Calculate the right edge position (center x + half width)
-                    button_right = button.scene_position.x() + (button.width / 2)
-                    right_edge = max(right_edge, button_right)
-                
-                # Move all buttons to align their right edges
-                for button in selected_buttons:
-                    current_pos = button.scene_position
-                    # Calculate new center position (right_edge - half width)
-                    new_center_x = right_edge - (button.width / 2)
-                    new_pos = QtCore.QPointF(new_center_x, current_pos.y())
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            canvas.update_button_positions()
+            canvas.update()
     #---------------------------------------------------------------------------------------
     def align_button_top(self):
         """Align selected buttons to the topmost button's top edge"""
         canvas = self.parent()
+        main_window = canvas.window()
         if canvas and canvas.edit_mode:
             selected_buttons = canvas.get_selected_buttons()
             if len(selected_buttons) <= 1:
                 return
                 
-            # Get main window for batch processing
-            main_window = canvas.window()
+            # Find the topmost button's top edge position (lowest y value in scene coordinates)
+            top_edge = float('inf')
+            for button in selected_buttons:
+                # Calculate the top edge position (center y - half height)
+                button_top = button.scene_position.y() - (button.height / 2)
+                top_edge = min(top_edge, button_top)
             
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
+            # Move all buttons to align their top edges
+            for button in selected_buttons:
+                current_pos = button.scene_position
+                # Calculate new center position (top_edge + half height)
+                new_center_y = top_edge + (button.height / 2)
+                new_pos = QtCore.QPointF(current_pos.x(), new_center_y)
+                button.scene_position = new_pos
             
-            try:
-                # Find the topmost button's top edge position (lowest y value in scene coordinates)
-                top_edge = float('inf')
-                for button in selected_buttons:
-                    # Calculate the top edge position (center y - half height)
-                    button_top = button.scene_position.y() - (button.height / 2)
-                    top_edge = min(top_edge, button_top)
-                
-                # Move all buttons to align their top edges
-                for button in selected_buttons:
-                    current_pos = button.scene_position
-                    # Calculate new center position (top_edge + half height)
-                    new_center_y = top_edge + (button.height / 2)
-                    new_pos = QtCore.QPointF(current_pos.x(), new_center_y)
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            canvas.update_button_positions()
+            canvas.update()
     
     def align_button_middle(self):
         """Align selected buttons to be centered vertically"""
         canvas = self.parent()
+        main_window = canvas.window()
         if canvas and canvas.edit_mode:
             selected_buttons = canvas.get_selected_buttons()
             if len(selected_buttons) <= 1:
                 return
                 
-            # Get main window for batch processing
-            main_window = canvas.window()
+            # Calculate the average y position (middle point)
+            avg_y = sum(button.scene_position.y() for button in selected_buttons) / len(selected_buttons)
             
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
+            # Move all buttons to have the same y coordinate
+            for button in selected_buttons:
+                current_pos = button.scene_position
+                new_pos = QtCore.QPointF(current_pos.x(), avg_y)
+                button.scene_position = new_pos
             
-            try:
-                # Calculate the average y position (middle point)
-                avg_y = sum(button.scene_position.y() for button in selected_buttons) / len(selected_buttons)
-                
-                # Move all buttons to have the same y coordinate
-                for button in selected_buttons:
-                    current_pos = button.scene_position
-                    new_pos = QtCore.QPointF(current_pos.x(), avg_y)
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            canvas.update_button_positions()
+            canvas.update()
     
     def align_button_bottom(self):
         """Align selected buttons to the bottommost button's bottom edge"""
         canvas = self.parent()
+        main_window = canvas.window()
         if canvas and canvas.edit_mode:
             selected_buttons = canvas.get_selected_buttons()
             if len(selected_buttons) <= 1:
                 return
                 
-            # Get main window for batch processing
-            main_window = canvas.window()
+            # Find the bottommost button's bottom edge position (highest y value in scene coordinates)
+            bottom_edge = float('-inf')
+            for button in selected_buttons:
+                # Calculate the bottom edge position (center y + half height)
+                button_bottom = button.scene_position.y() + (button.height / 2)
+                bottom_edge = max(bottom_edge, button_bottom)
             
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
+            # Move all buttons to align their bottom edges
+            for button in selected_buttons:
+                current_pos = button.scene_position
+                # Calculate new center position (bottom_edge - half height)
+                new_center_y = bottom_edge - (button.height / 2)
+                new_pos = QtCore.QPointF(current_pos.x(), new_center_y)
+                button.scene_position = new_pos
             
-            try:
-                # Find the bottommost button's bottom edge position (highest y value in scene coordinates)
-                bottom_edge = float('-inf')
-                for button in selected_buttons:
-                    # Calculate the bottom edge position (center y + half height)
-                    button_bottom = button.scene_position.y() + (button.height / 2)
-                    bottom_edge = max(bottom_edge, button_bottom)
-                
-                # Move all buttons to align their bottom edges
-                for button in selected_buttons:
-                    current_pos = button.scene_position
-                    # Calculate new center position (bottom_edge - half height)
-                    new_center_y = bottom_edge - (button.height / 2)
-                    new_pos = QtCore.QPointF(current_pos.x(), new_center_y)
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            canvas.update_button_positions()
+            canvas.update()
     #---------------------------------------------------------------------------------------       
     def evenly_space_horizontal(self):
         """Distribute selected buttons evenly along the horizontal axis"""
         canvas = self.parent()
+        main_window = canvas.window()
         if canvas and canvas.edit_mode:
             selected_buttons = canvas.get_selected_buttons()
             if len(selected_buttons) <= 2:  # Need at least 3 buttons for spacing to make sense
                 return
                 
-            # Get main window for batch processing
-            main_window = canvas.window()
+            # Sort buttons by x position
+            sorted_buttons = sorted(selected_buttons, key=lambda btn: btn.scene_position.x())
             
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
+            # Get leftmost and rightmost positions
+            left_x = sorted_buttons[0].scene_position.x()
+            right_x = sorted_buttons[-1].scene_position.x()
             
-            try:
-                # Sort buttons by x position
-                sorted_buttons = sorted(selected_buttons, key=lambda btn: btn.scene_position.x())
-                
-                # Get leftmost and rightmost positions
-                left_x = sorted_buttons[0].scene_position.x()
-                right_x = sorted_buttons[-1].scene_position.x()
-                
-                # Calculate spacing
-                total_width = right_x - left_x
-                spacing = total_width / (len(sorted_buttons) - 1) if len(sorted_buttons) > 1 else 0
-                
-                # Skip first and last buttons (they define the range)
-                for i, button in enumerate(sorted_buttons[1:-1], 1):
-                    # Calculate new x position
-                    new_x = left_x + (i * spacing)
-                    current_pos = button.scene_position
-                    new_pos = QtCore.QPointF(new_x, current_pos.y())
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
+            # Calculate spacing
+            total_width = right_x - left_x
+            spacing = total_width / (len(sorted_buttons) - 1) if len(sorted_buttons) > 1 else 0
+            
+            # Skip first and last buttons (they define the range)
+            for i, button in enumerate(sorted_buttons[1:-1], 1):
+                # Calculate new x position
+                new_x = left_x + (i * spacing)
+                current_pos = button.scene_position
+                new_pos = QtCore.QPointF(new_x, current_pos.y())
+                button.scene_position = new_pos
+            
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            canvas.update_button_positions()
+            canvas.update()
                 
     def evenly_space_vertical(self):
         """Distribute selected buttons evenly along the vertical axis"""
         canvas = self.parent()
+        main_window = canvas.window()
         if canvas and canvas.edit_mode:
             selected_buttons = canvas.get_selected_buttons()
             if len(selected_buttons) <= 2:  # Need at least 3 buttons for spacing to make sense
                 return
                 
-            # Get main window for batch processing
             main_window = canvas.window()
             
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
+            # Sort buttons by y position
+            sorted_buttons = sorted(selected_buttons, key=lambda btn: btn.scene_position.y())
             
-            try:
-                # Sort buttons by y position
-                sorted_buttons = sorted(selected_buttons, key=lambda btn: btn.scene_position.y())
-                
-                # Get topmost and bottommost positions
-                top_y = sorted_buttons[0].scene_position.y()
-                bottom_y = sorted_buttons[-1].scene_position.y()
-                
-                # Calculate spacing
-                total_height = bottom_y - top_y
-                spacing = total_height / (len(sorted_buttons) - 1) if len(sorted_buttons) > 1 else 0
-                
-                # Skip first and last buttons (they define the range)
-                for i, button in enumerate(sorted_buttons[1:-1], 1):
-                    # Calculate new y position
-                    new_y = top_y + (i * spacing)
-                    current_pos = button.scene_position
-                    new_pos = QtCore.QPointF(current_pos.x(), new_y)
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
+            # Get topmost and bottommost positions
+            top_y = sorted_buttons[0].scene_position.y()
+            bottom_y = sorted_buttons[-1].scene_position.y()
+            
+            # Calculate spacing
+            total_height = bottom_y - top_y
+            spacing = total_height / (len(sorted_buttons) - 1) if len(sorted_buttons) > 1 else 0
+            
+            # Skip first and last buttons (they define the range)
+            for i, button in enumerate(sorted_buttons[1:-1], 1):
+                # Calculate new y position
+                new_y = top_y + (i * spacing)
+                current_pos = button.scene_position
+                new_pos = QtCore.QPointF(current_pos.x(), new_y)
+                button.scene_position = new_pos
+            
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            canvas.update_button_positions()
+            canvas.update()
+    
+    def _apply_axis_constraint(self, scene_delta):
+        """
+        Apply axis constraint for shift-drag movement.
+        Determines the dominant movement axis and constrains to that axis only.
+        
+        Args:
+            scene_delta (QPointF): The original movement delta
+            
+        Returns:
+            QPointF: The constrained movement delta
+        """
+        # Determine which axis has the larger movement
+        abs_x = abs(scene_delta.x())
+        abs_y = abs(scene_delta.y())
+        
+        # Set a minimum threshold to avoid jittery behavior
+        threshold = 2.0  # Minimum movement before axis is determined
+        
+        if abs_x < threshold and abs_y < threshold:
+            # Movement too small, don't constrain yet
+            return scene_delta
+        
+        # Constrain to the axis with larger movement
+        if abs_x >= abs_y:
+            # Horizontal movement is dominant - constrain to X axis
+            return QtCore.QPointF(scene_delta.x(), 0)
+        else:
+            # Vertical movement is dominant - constrain to Y axis
+            return QtCore.QPointF(0, scene_delta.y())
     #---------------------------------------------------------------------------------------
     def copy_selected_buttons(self):
         canvas = self.parent()
@@ -2206,6 +2354,7 @@ class PickerButton(QtWidgets.QWidget):
     def paste_attributes(self, paste_type='all'):
         """Enhanced paste method that handles different types of paste operations - TRULY FIXED VERSION"""
         canvas = self.parent()
+        main_window = canvas.window()
         if canvas and canvas.edit_mode:
             attributes = ButtonClipboard.instance().get_last_attributes()
             if attributes:
@@ -2214,158 +2363,73 @@ class PickerButton(QtWidgets.QWidget):
                 if not selected_buttons:
                     return
                 
-                # Get main window for batch processing
-                main_window = canvas.window()
+                # Get current tab data once
+                current_tab = main_window.tab_system.current_tab
+                tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+                updated_buttons = []
                 
-                # CRITICAL FIX: Stop ALL timers and disable ALL update systems
-                was_batch_active = getattr(main_window, 'batch_update_active', False)
-                main_window.batch_update_active = False
-                
-                # Stop any pending batch timer
-                if hasattr(main_window, 'batch_update_timer'):
-                    main_window.batch_update_timer.stop()
-                
-                # Clear any pending updates
-                if hasattr(main_window, 'pending_button_updates'):
-                    main_window.pending_button_updates.clear()
-                
-                # Disable widget updates
-                if hasattr(main_window, 'edit_widgets_update_enabled'):
-                    was_widgets_enabled = main_window.edit_widgets_update_enabled
-                    main_window.edit_widgets_update_enabled = False
-                else:
-                    was_widgets_enabled = True
-                
-                # Disable canvas updates during batch operation
-                canvas.setUpdatesEnabled(False)
-                
-                # Disconnect the changed signal temporarily to prevent interference
+                # Process all buttons individually
                 for button in selected_buttons:
-                    try:
-                        button.changed.disconnect()
-                    except:
-                        pass
-                
-                try:
-                    # Get current tab data once
-                    current_tab = main_window.tab_system.current_tab
-                    tab_data = DM.PickerDataManager.get_tab_data(current_tab)
-                    updated_buttons = []
-                    
-                    # Process all buttons individually
-                    for button in selected_buttons:
-                        if paste_type == 'all':
-                            # Paste everything
-                            button.label = attributes['label']
-                            button.color = attributes['color']
-                            button.opacity = attributes['opacity']
-                            button.width = attributes['width']
-                            button.height = attributes['height']
-                            button.radius = attributes['radius'].copy()
-                            button.assigned_objects = attributes.get('assigned_objects', []).copy()
-                            button.mode = attributes.get('mode', 'select')
-                            button.script_data = attributes.get('script_data', {}).copy()
-                            button.shape_type = attributes.get('shape_type', 'rounded_rect')
-                            button.svg_path_data = attributes.get('svg_path_data', None)
-                            button.svg_file_path = attributes.get('svg_file_path', None) 
+                    if paste_type == 'all':
+                        # Paste everything
+                        button.label = attributes['label']
+                        button.color = attributes['color']
+                        button.opacity = attributes['opacity']
+                        button.width = attributes['width']
+                        button.height = attributes['height']
+                        button.radius = attributes['radius'].copy()
+                        button.assigned_objects = attributes.get('assigned_objects', []).copy()
+                        button.mode = attributes.get('mode', 'select')
+                        button.script_data = attributes.get('script_data', {}).copy()
+                        button.shape_type = attributes.get('shape_type', 'rounded_rect')
+                        button.svg_path_data = attributes.get('svg_path_data', None)
+                        button.svg_file_path = attributes.get('svg_file_path', None) 
 
-                            # Handle pose data if available
-                            if 'pose_data' in attributes:
-                                button.pose_data = attributes['pose_data'].copy()
-                            if 'thumbnail_path' in attributes:
-                                button.thumbnail_path = attributes.get('thumbnail_path', '')
-                                if attributes.get('thumbnail_path') and os.path.exists(attributes['thumbnail_path']):
-                                    button.thumbnail_pixmap = QtGui.QPixmap(attributes['thumbnail_path'])
-                                    
-                        elif paste_type == 'dimension':
-                            # Paste only dimensions
-                            button.width = attributes['width']
-                            button.height = attributes['height']
-                            button.radius = attributes['radius'].copy()
-                            
-                        elif paste_type == 'function':
-                            # Paste only functionality
-                            button.assigned_objects = attributes.get('assigned_objects', []).copy()
-                            button.mode = attributes.get('mode', 'select')
-                            button.script_data = attributes.get('script_data', {}).copy()
-                            
-                            if 'pose_data' in attributes:
-                                button.pose_data = attributes['pose_data'].copy()
-                            if 'thumbnail_path' in attributes:
-                                button.thumbnail_path = attributes.get('thumbnail_path', '')
-                                if attributes.get('thumbnail_path') and os.path.exists(attributes['thumbnail_path']):
-                                    button.thumbnail_pixmap = QtGui.QPixmap(attributes['thumbnail_path'])
-                                    
-                        elif paste_type == 'text':
-                            # Paste only the label text
-                            button.label = attributes['label']
+                        # Handle pose data if available
+                        if 'pose_data' in attributes:
+                            button.pose_data = attributes['pose_data'].copy()
+                        if 'thumbnail_path' in attributes:
+                            button.thumbnail_path = attributes.get('thumbnail_path', '')
+                            if attributes.get('thumbnail_path') and os.path.exists(attributes['thumbnail_path']):
+                                button.thumbnail_pixmap = QtGui.QPixmap(attributes['thumbnail_path'])
+                                
+                    elif paste_type == 'dimension':
+                        # Paste only dimensions
+                        button.width = attributes['width']
+                        button.height = attributes['height']
+                        button.radius = attributes['radius'].copy()
                         
-                        # Clear cached pixmaps to force regeneration
-                        button.text_pixmap = None
-                        button.pose_pixmap = None
-                        button.last_zoom_factor = 0
-                        button.last_size = None
+                    elif paste_type == 'function':
+                        # Paste only functionality
+                        button.assigned_objects = attributes.get('assigned_objects', []).copy()
+                        button.mode = attributes.get('mode', 'select')
+                        button.script_data = attributes.get('script_data', {}).copy()
                         
-                        # Update the button visually
-                        button.update()
-                        button.update_tooltip()
-                        
-                        # Create complete button data for database
-                        button_data = {
-                            "id": button.unique_id,
-                            "label": button.label,
-                            "color": button.color,
-                            "opacity": button.opacity,
-                            "position": (button.scene_position.x(), button.scene_position.y()),
-                            "width": button.width,
-                            "height": button.height,
-                            "radius": button.radius,
-                            "assigned_objects": getattr(button, 'assigned_objects', []),
-                            "mode": getattr(button, 'mode', 'select'),
-                            "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
-                            "pose_data": getattr(button, 'pose_data', {}),
-                            "thumbnail_path": getattr(button, 'thumbnail_path', '')
-                        }
-                        
-                        # Update in tab_data
-                        updated = False
-                        for i, existing_button in enumerate(tab_data['buttons']):
-                            if existing_button['id'] == button.unique_id:
-                                tab_data['buttons'][i] = button_data
-                                updated = True
-                                break
-                        
-                        if not updated:
-                            tab_data['buttons'].append(button_data)
-                        
-                        updated_buttons.append(button.unique_id)
+                        if 'pose_data' in attributes:
+                            button.pose_data = attributes['pose_data'].copy()
+                        if 'thumbnail_path' in attributes:
+                            button.thumbnail_path = attributes.get('thumbnail_path', '')
+                            if attributes.get('thumbnail_path') and os.path.exists(attributes['thumbnail_path']):
+                                button.thumbnail_pixmap = QtGui.QPixmap(attributes['thumbnail_path'])
+                                
+                    elif paste_type == 'text':
+                        # Paste only the label text
+                        button.label = attributes['label']
                     
-                    # Save all updates at once
-                    DM.PickerDataManager.update_tab_data(current_tab, tab_data)
-                    #print(f"Pasted attributes to {len(updated_buttons)} buttons: {updated_buttons}")
+                    # Clear cached pixmaps to force regeneration
+                    button.text_pixmap = None
+                    button.pose_pixmap = None
+                    button.last_zoom_factor = 0
+                    button.last_size = None
                     
-                finally:
-                    # Reconnect signals
-                    for button in selected_buttons:
-                        button.changed.connect(main_window.on_button_changed)
-                    
-                    # Restore batch mode state
-                    main_window.batch_update_active = was_batch_active
-                    
-                    # Restore widget updates
-                    if hasattr(main_window, 'edit_widgets_update_enabled'):
-                        main_window.edit_widgets_update_enabled = was_widgets_enabled
-                    
-                    # Re-enable canvas updates
-                    canvas.setUpdatesEnabled(True)
-                    canvas.update_button_positions()
-                    canvas.update()
-                
-                # Force immediate main window update
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-                
-               #print(f"Paste operation completed successfully for {len(selected_buttons)} buttons ({paste_type})")
+                    # Update the button visually
+                    button.update()
+                    button.update_tooltip()
+
+                if hasattr(main_window, 'batch_update_buttons_to_database'):
+                    main_window.batch_update_buttons_to_database(selected_buttons)
+                canvas.update_button_positions()
+                canvas.update()
     #---------------------------------------------------------------------------------------
     def set_script_data(self, data):
         self.script_data = data
@@ -3070,6 +3134,7 @@ class PickerButton(QtWidgets.QWidget):
         """Repath thumbnails for selected pose buttons by choosing a new directory"""
         # Get the parent canvas and selected buttons
         canvas = self.parent()
+        main_window = canvas.window() if canvas else None
         if not canvas:
             return
             
@@ -3221,6 +3286,10 @@ class PickerButton(QtWidgets.QWidget):
             
             # Update thumbnail directory preference
             DM.PickerDataManager.set_thumbnail_directory(new_directory)
+            # Update buttons in database
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            canvas.update()
 
     def _find_thumbnail_files_recursive(self, root_directory, target_filename, max_depth=10):
         """Find files recursively that match the target filename exactly"""
@@ -3705,7 +3774,7 @@ class PickerButton(QtWidgets.QWidget):
         except Exception as e:
             self._handle_apply_error(e, successfully_posed_objects, posed_bones_by_armature)
 
-    def apply_pose_to_mirrored_objects(self):
+    def apply_mirrored_pose(self):
         """Apply the stored pose to mirrored objects - OPTIMIZED VERSION WITH NAMESPACE INTEGRATION"""
         if not self._validate_pose_data():
             return
@@ -4097,8 +4166,14 @@ class PickerButton(QtWidgets.QWidget):
         
         return None
 
-    def _select_posed_objects_and_bones_with_namespace(self, successfully_posed_objects, posed_bones_by_armature):
-        """Select the successfully posed objects and their bones in Blender with namespace priority"""
+    def _select_posed_objects_and_bones_with_namespace(self, successfully_posed_objects, posed_bones_by_armature, is_mirrored=False):
+        """Select the successfully posed objects and their bones in Blender with namespace priority
+        
+        Args:
+            successfully_posed_objects: List of objects that were successfully posed
+            posed_bones_by_armature: Dictionary of armature names to posed bones
+            is_mirrored: True if this is a mirrored pose application, False for regular poses
+        """
         if not successfully_posed_objects:
             return
         
@@ -4115,11 +4190,10 @@ class PickerButton(QtWidgets.QWidget):
             bpy.ops.object.select_all(action='DESELECT')
             for obj in successfully_posed_objects:
                 obj.select_set(True)
-            bpy.context.view_layer.objects.active = successfully_posed_objects[-1]
             
-            # Select posed bones if any exist, prioritizing current namespace
+            # Handle bone posing and object posing separately
             if posed_bones_by_armature:
-                # Find the target armature (namespace priority)
+                # BONE POSING: Find the target armature (namespace priority)
                 target_armature = None
                 
                 if current_namespace and current_namespace in posed_bones_by_armature:
@@ -4141,6 +4215,15 @@ class PickerButton(QtWidgets.QWidget):
                             posed_bones = posed_bones_by_armature[target_armature]
                             for bone in posed_bones:
                                 bone.bone.select = True
+                            bpy.context.object.data.bones.active = bpy.context.object.data.bones[posed_bones[-1].name]
+                        
+                        # Stay in pose mode for bone posing
+            else:
+                # OBJECT POSING: Set the last selected object as active
+                # For regular poses: this is the last original object
+                # For mirrored poses: this is the last mirrored object
+                last_selected_object = successfully_posed_objects[-1]
+                bpy.context.view_layer.objects.active = last_selected_object
                                 
         except Exception as e:
             print(f"Error selecting posed objects and bones: {e}")
@@ -4356,6 +4439,24 @@ class PickerButton(QtWidgets.QWidget):
         button_appearance_pattern_02 = r'@button_appearance\s*\(([^)]+)\)'
         if re.search(button_appearance_pattern_02, modified_code, re.MULTILINE | re.IGNORECASE):
             modified_code = re.sub(button_appearance_pattern_02, r'TF.button_appearance(\1)', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        #--------------------------------------------------------------------------------------------------------
+        # handle @reset_all, @reset_translate, @reset_rotate, @reset_scale
+        reset_all_pattern = r'@reset_all\b'
+        if re.search(reset_all_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(reset_all_pattern, r'TF.reset_all()', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        reset_translate_pattern = r'@reset_move\b'
+        if re.search(reset_translate_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(reset_translate_pattern, r'TF.reset_move()', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        reset_rotate_pattern = r'@reset_rotate\b'
+        if re.search(reset_rotate_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(reset_rotate_pattern, r'TF.reset_rotate()', modified_code, flags=re.MULTILINE | re.IGNORECASE)
+            needs_tf_import = True
+        reset_scale_pattern = r'@reset_scale\b'
+        if re.search(reset_scale_pattern, modified_code, re.MULTILINE | re.IGNORECASE):
+            modified_code = re.sub(reset_scale_pattern, r'TF.reset_scale()', modified_code, flags=re.MULTILINE | re.IGNORECASE)
             needs_tf_import = True
         #--------------------------------------------------------------------------------------------------------
         # Handle Tool Tip calls and add import if needed
@@ -4757,3 +4858,179 @@ class PickerButton(QtWidgets.QWidget):
                 button.assigned_objects = []
                 button.update_tooltip()
                 button.changed.emit(button)  # Notify about the change to update data
+    #---------------------------------------------------------------------------------------
+    def mousePressEvent(self, event):
+        """Enhanced button mouse press with proper modifier handling"""
+        if event.button() == QtCore.Qt.LeftButton:
+            canvas = self.parent()
+            if canvas:
+                # Get modifier states
+                shift_held = event.modifiers() & QtCore.Qt.ShiftModifier
+                ctrl_held = event.modifiers() & QtCore.Qt.ControlModifier
+                alt_held = event.modifiers() & QtCore.Qt.AltModifier
+                
+                if self.edit_mode:
+                    # Edit mode behavior (existing drag/duplicate logic)
+                    if alt_held:
+                        self.start_duplication_drag(event)
+                    else:
+                        self.dragging = True
+                        self.drag_start_pos = event.globalPos()
+                        self.button_start_pos = self.scene_position
+                        self.setCursor(QtCore.Qt.ClosedHandCursor)
+
+                        # Store the initial movement state for constraint calculation
+                        self._initial_drag_pos = event.globalPos()
+                        self._constraint_determined = False
+                        self._constraint_axis = None  # 'x', 'y', or None
+                        
+                        if not self.is_selected and not shift_held:
+                            canvas.clear_selection()
+                            self.is_selected = True
+                            self.selected.emit(self, True)
+                            canvas.last_selected_button = self
+                            canvas.button_selection_changed.emit()
+                            self.update()
+                        elif shift_held:
+                            self.is_selected = not self.is_selected
+                            if self.is_selected:
+                                canvas.last_selected_button = self
+                            self.selected.emit(self, self.is_selected)
+                            canvas.button_selection_changed.emit()
+                            self.update()
+                        
+                        # Set button start positions for dragging
+                        for button in canvas.get_selected_buttons():
+                            button.button_start_pos = button.scene_position
+                else:
+                    # Select mode behavior - handle all modifier combinations
+                    if self.mode == 'select':
+                        self.handle_select_mode_click(shift_held, ctrl_held, alt_held, canvas)
+                    elif self.mode == 'script':
+                        self.execute_script_command()
+                    elif self.mode == 'pose':
+                        if alt_held:
+                            self.apply_mirrored_pose()
+                        else:
+                            self.apply_pose()
+                    
+                    
+                event.accept()
+        elif event.button() == QtCore.Qt.RightButton:
+            shift_held = event.modifiers() & QtCore.Qt.ShiftModifier
+            canvas = self.parent()
+            if canvas:
+                if not self.is_selected:
+                    canvas.clear_selection() if not shift_held else None
+                    self.is_selected = True
+                    self.selected.emit(self, True)
+                    canvas.last_selected_button = self
+                    canvas.button_selection_changed.emit()
+                    self.update()
+            
+            self.show_context_menu(event.pos())
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+        
+        UT.blender_main_window()
+
+    def mouseMoveEvent(self, event):
+        """Enhanced mouse move with duplication support and optimized dragging"""
+        if hasattr(self, 'duplicating') and self.duplicating and event.buttons() & QtCore.Qt.LeftButton:
+            # Handle duplication drag
+            self.handle_duplication_drag(event)
+            event.accept()
+        elif self.dragging and event.buttons() & QtCore.Qt.LeftButton:
+            canvas = self.parent()
+            if not canvas:
+                return
+
+            # Throttle updates for better performance
+            current_time = QtCore.QTime.currentTime().msecsSinceStartOfDay()
+            if hasattr(self, 'last_drag_update'):
+                if current_time - self.last_drag_update < 16:  # ~60fps limit
+                    return
+            self.last_drag_update = current_time
+
+            delta = event.globalPos() - self.drag_start_pos
+            scene_delta = QtCore.QPointF(delta.x(), delta.y()) / canvas.zoom_factor
+            
+            # Check for shift modifier for constrained movement
+            shift_held = event.modifiers() & QtCore.Qt.ShiftModifier
+            
+            if shift_held:
+                # Constrain movement to the dominant axis
+                scene_delta = self._apply_axis_constraint(scene_delta)
+
+            # CRITICAL: Disable all updates during drag
+            canvas.setUpdatesEnabled(False)
+            
+            # Update positions without triggering individual signals
+            selected_buttons = canvas.get_selected_buttons()
+            for button in selected_buttons:
+                button.scene_position = button.button_start_pos + scene_delta
+            
+            # Update button positions visually
+            canvas.update_button_positions()
+            
+            # Re-enable updates
+            canvas.setUpdatesEnabled(True)
+            
+            # Throttled transform guides update (much less frequent)
+            if hasattr(canvas, '_update_transform_guides_position'):
+                if not hasattr(canvas, '_last_guides_update'):
+                    canvas._last_guides_update = 0
+                
+                current_time = QtCore.QTime.currentTime().msecsSinceStartOfDay()
+                if current_time - canvas._last_guides_update > 50:  # Only update every 50ms
+                    QtCore.QTimer.singleShot(1, canvas._update_transform_guides_position)
+                    canvas._last_guides_update = current_time
+            
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        """Enhanced mouse release with optimized batch updates"""
+        if event.button() == QtCore.Qt.LeftButton:
+            canvas = self.parent()
+            
+            # Handle duplication completion
+            if hasattr(self, 'duplicating') and self.duplicating:
+                self.complete_duplication_drag(event)
+                event.accept()
+                return
+            
+            # Handle normal dragging completion
+            if self.dragging:
+                self.dragging = False
+                self.update_cursor()
+                
+                if canvas:
+                    # CRITICAL FIX: Batch update all dragged buttons at once
+                    selected_buttons = canvas.get_selected_buttons()
+                    
+                    main_window = canvas.window()
+                    if isinstance(main_window, UI.BlenderAnimPickerWindow):
+                        # Use optimized batch position update
+                        self._batch_update_button_positions(selected_buttons, main_window)
+                
+                event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+        
+        UT.blender_main_window()
+    
+    def enterEvent(self, event):
+        """Called when mouse enters the button area."""
+        self.is_hovered = True
+        self.update()  # Trigger repaint
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """Called when mouse leaves the button area."""
+        self.is_hovered = False
+        self.update()  # Trigger repaint
+        super().leaveEvent(event)
+    
