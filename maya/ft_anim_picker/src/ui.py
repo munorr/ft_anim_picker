@@ -126,7 +126,15 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.pending_widget_changes = {}
         self.widget_update_delay = 10  # ms delay for widget updates
 
+        # Setup update checker timer (every 5 seconds)
+        self.update_checker_timer = QTimer()
+        self.update_checker_timer.timeout.connect(self.update_anim_picker_checker)
+        self.update_checker_timer.start(3600000)
+        
         self.setup_periodic_cleanup()
+
+        # Initial check for updates
+        self.update_anim_picker_checker()
 
     def setup_ui(self):
         # Allow window to be resized
@@ -189,7 +197,10 @@ class AnimPickerWindow(QtWidgets.QWidget):
         
         info_util.addMenuLabel(f"Anim Picker{anim_picker_version}",position=(0,0))
         info_util.addToMenu(f"Manual", self.info, icon=UT.get_icon('manual.png'), position=(1,0))
-        info_util.addToMenu(f"Update", self.update, icon=UT.get_icon('update.png'), position=(2,0))
+        info_util.addToMenu(f"Update", self.update_anim_picker, icon=UT.get_icon('update.png'), position=(2,0))
+        #-----------------------------------------------------------------------------------------------------------------------------------
+        self.update_anim_picker_button = CB.CustomButton(text='Update Available',icon=UT.get_icon('update.png',size=14), height=16, radius=3,color='#7db305',tooltip='Update Anim Picker')
+        self.update_anim_picker_button.clicked.connect(self.update_anim_picker)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         #-Close button
         self.close_button = CB.CustomButton(icon=UT.get_icon('close_01.png',size=12,opacity=.7), height=16, width=16, radius=3,color='#c0091a',tooltip='Close')
@@ -199,6 +210,9 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.util_frame_col.addWidget(edit_util)
         self.util_frame_col.addWidget(info_util)
         self.util_frame_col.addStretch(1)
+        self.util_frame_col.addWidget(self.update_anim_picker_button)
+        self.util_frame_col.addSpacing(4)
+        self.update_anim_picker_button.setVisible(False)
         self.util_frame_col.addWidget(self.close_button)
         self.util_frame_col.addSpacing(2)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -556,8 +570,29 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.update()
         QtCore.QTimer.singleShot(0, self.update_buttons_for_current_tab)
 
-    def update(self):
+    def update_anim_picker(self):
         UpdateWidget(self).show()
+
+    def update_anim_picker_checker(self):
+        # Store the update widget as a class attribute to avoid creating multiple instances
+        if not hasattr(self, '_update_widget'):
+            from .update_ui import UpdateWidget
+            self._update_widget = UpdateWidget(self)
+            # Hide it since we're just using it for API calls
+            self._update_widget.hide()
+        
+        latest_release = self._update_widget.get_latest_tag() 
+        current_version = ft_anim_picker.src.__version__.replace(".", "")
+        print(f'Latest Release: {latest_release}')
+        print(f'Current Version: {current_version}')
+        try:
+            if latest_release:
+                if latest_release > current_version:
+                    self.update_anim_picker_button.setVisible(True)
+                else:
+                    self.update_anim_picker_button.setVisible(False)
+        except Exception as e:
+            print(f"Error checking for updates: {e}")
 
     def setup_layout(self):
         # Add widgets to layouts
@@ -1098,6 +1133,10 @@ class AnimPickerWindow(QtWidgets.QWidget):
         except Exception as e:
             print(f"Error processing pending updates during close: {e}")
         
+        if hasattr(self, 'update_checker_timer') and self.update_checker_timer:
+            self.update_checker_timer.stop()
+            self.update_checker_timer.deleteLater()
+            self.update_checker_timer = None
         # Flush database operations
         try:
             DM.PickerDataManager.flush_pending_saves()

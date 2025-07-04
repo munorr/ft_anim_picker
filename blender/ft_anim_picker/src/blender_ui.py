@@ -127,6 +127,11 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.is_updating_widgets = False
         self.populate_namespace_dropdown()
 
+        # Setup update checker timer (every 5 seconds)
+        self.update_checker_timer = QTimer()
+        self.update_checker_timer.timeout.connect(self.update_anim_picker_checker)
+        self.update_checker_timer.start(3600000)  # 3600000 ms = 1 hour
+
         # Setup periodic cleanup
         self.setup_periodic_cleanup()
     
@@ -135,6 +140,9 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         app = QApplication.instance()
         if app:
             app.aboutToQuit.connect(self.cleanup_resources)
+            
+        # Initial check for updates
+        self.update_anim_picker_checker()
 
     def setup_ui(self):
         # Allow window to be resized
@@ -202,7 +210,10 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                                     cmColor='#333333',tooltip='Info Utilities', flat=True)
         info_util.addMenuLabel(f"Anim Picker{anim_picker_version}",position=(0,0))
         info_util.addToMenu(f"Manual", self.info, icon=UT.get_icon('manual.png'), position=(1,0))
-        info_util.addToMenu(f"Update", self.update, icon=UT.get_icon('update.png'), position=(2,0))
+        info_util.addToMenu(f"Update", self.update_anim_picker, icon=UT.get_icon('update.png'), position=(2,0))
+        #-----------------------------------------------------------------------------------------------------------------------------------
+        self.update_anim_picker_button = CB.CustomButton(text='Update Available',icon=UT.get_icon('update.png',size=14), height=16, radius=3,color='#7db305',tooltip='Update Anim Picker')
+        self.update_anim_picker_button.clicked.connect(self.update_anim_picker)
         #-----------------------------------------------------------------------------------------------------------------------------------
         # Close button
         self.close_button = CB.CustomButton(icon=UT.get_icon('close_01.png',size=12,opacity=.7), height=16, width=16, radius=3,color='#c0091a',tooltip='Close')
@@ -215,6 +226,9 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.util_frame_layout.addWidget(edit_util)
         self.util_frame_layout.addWidget(info_util)
         self.util_frame_layout.addStretch(1)
+        self.util_frame_layout.addWidget(self.update_anim_picker_button)
+        self.util_frame_layout.addSpacing(4)
+        self.update_anim_picker_button.setVisible(False)
         self.util_frame_layout.addWidget(self.close_button)
         self.util_frame_layout.addSpacing(2)
         #-----------------------------------------------------------------------------------------------------------------------------------
@@ -628,8 +642,30 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.update()
         QtCore.QTimer.singleShot(0, self.update_buttons_for_current_tab)
     
-    def update(self):
+    def update_anim_picker(self):
         UpdateWidget(self).show()
+    
+    def update_anim_picker_checker(self):
+        # Store the update widget as a class attribute to avoid creating multiple instances
+        if not hasattr(self, '_update_widget'):
+            from .update_ui import UpdateWidget
+            self._update_widget = UpdateWidget(self)
+            # Hide it since we're just using it for API calls
+            self._update_widget.hide()
+        
+        latest_release = self._update_widget.get_latest_tag() 
+        current_version = ft_anim_picker.src.__version__.replace(".", "")
+        print(f'Latest Release: {latest_release}')
+        print(f'Current Version: {current_version}')
+        try:
+            if latest_release:
+                if latest_release > current_version:
+                    self.update_anim_picker_button.setVisible(True)
+                else:
+                    self.update_anim_picker_button.setVisible(False)
+        except Exception as e:
+            print(f"Error checking for updates: {e}")
+        
     #----------------------------------------------------------------------------------------------------------------------------------------
     def setup_conditional_stay_on_top(self):
         """Setup conditional stay-on-top using hide/show instead of flag changes"""
@@ -1511,6 +1547,11 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             self.stay_on_top_timer.deleteLater()
             self.stay_on_top_timer = None
 
+        if hasattr(self, 'update_checker_timer') and self.update_checker_timer:
+            self.update_checker_timer.stop()
+            self.update_checker_timer.deleteLater()
+            self.update_checker_timer = None
+        
         # Unregister from visibility manager BEFORE cleanup
         try:
             from . import blender_main
@@ -3497,21 +3538,15 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
 
     def _cleanup_timers(self):
         """Stop and delete all timers"""
-        timers_to_cleanup = [
-            'scene_update_timer', 'resize_timer', 'batch_update_timer', 
-            'widget_update_timer', '_resize_update_timer', '_edit_update_timer', 'stay_on_top_timer'
-        ]
-        
-        for timer_name in timers_to_cleanup:
-            if hasattr(self, timer_name):
-                timer = getattr(self, timer_name)
-                if timer and timer.isActive():
+        for timer_attr in ['resize_timer', 'batch_update_timer', 'widget_update_timer', 'stay_on_top_timer', 'update_checker_timer']:
+            if hasattr(self, timer_attr):
+                timer = getattr(self, timer_attr)
+                if timer and isinstance(timer, QtCore.QTimer):
                     timer.stop()
-                if hasattr(timer, 'deleteLater'):
                     timer.deleteLater()
+                    setattr(self, timer_attr, None)
                 
-                delattr(self, timer_name)
-                print(f"Cleaned up timer: {timer_name}")
+                print(f"Cleaned up timer: {timer_attr}")
 
     def _cleanup_tabs_and_canvases(self):
         """Properly cleanup all tabs, canvases and buttons"""

@@ -176,6 +176,11 @@ class DownloadWorker(QThread):
 class UpdateWidget(QWidget):
     """Widget for selecting and downloading GitHub releases"""
     
+    # Class variables for caching
+    _latest_tag_cache = None
+    _last_check_time = 0
+    _cache_duration = 3600  # Cache duration in seconds (1 hour)
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         # Set window properties similar to ScriptManagerWidget
@@ -434,7 +439,7 @@ class UpdateWidget(QWidget):
                 #self.releases_combo.addItem(f"{name} ({tag_name})")
 
                 tag_name_clean = tag_name.replace("_", "")
-                if tag_name_clean >= "100":
+                if tag_name_clean >= "160":
                     self.releases_combo.addItem(f"{tag_name}")
             
             self.status_label.setText(f"Loaded {len(self.releases)} releases")
@@ -444,6 +449,57 @@ class UpdateWidget(QWidget):
             self.status_label.setText(f"Error loading releases: {str(e)}")
             # Note: QMessageBox would need to be styled similarly for consistency
     
+    def get_latest_tag(self):
+        """Get the latest release tag from the GitHub repository with caching"""
+        import time
+        
+        # Check if we have a cached result that's still valid
+        current_time = time.time()
+        if (UpdateWidget._latest_tag_cache is not None and 
+            current_time - UpdateWidget._last_check_time < UpdateWidget._cache_duration):
+            print("Using cached tag result")
+            return UpdateWidget._latest_tag_cache
+        
+        try:
+            # Parse repository URL
+            repo_url = self.repo_url
+            if repo_url.endswith('.git'):
+                repo_url = repo_url[:-4]
+            
+            parts = repo_url.replace('https://github.com/', '').split('/')
+            if len(parts) < 2:
+                return None
+            
+            owner, repo = parts[0], parts[1]
+            
+            # Get releases from GitHub API
+            api_url = f"https://api.github.com/repos/{owner}/{repo}/releases"
+            
+            # Create a request with a User-Agent header
+            headers = {'User-Agent': 'GitReleaseDownloader/1.0'}
+            req = urllib.request.Request(api_url, headers=headers)
+            
+            with urllib.request.urlopen(req) as response:
+                releases_data = json.loads(response.read().decode())
+            
+            if not releases_data:
+                return None
+            
+            # Return the tag of the first (latest) release
+            release_tag = releases_data[0]['tag_name']
+            clean_tag = release_tag.replace("_", "")
+            
+            # Update cache
+            UpdateWidget._latest_tag_cache = clean_tag
+            UpdateWidget._last_check_time = current_time
+            print(f"Updated tag cache with: {clean_tag}")
+            
+            return clean_tag
+            
+        except Exception as e:
+            print(f"Error getting latest tag: {str(e)}")
+            return None
+
     def download_release(self):
         """Download the selected release"""
         if not self.releases or self.releases_combo.currentIndex() < 0:

@@ -434,7 +434,7 @@ class UpdateWidget(QWidget):
                 #self.releases_combo.addItem(f"{name} ({tag_name})")
 
                 tag_name_clean = tag_name.replace("_", "")
-                if tag_name_clean >= "100":
+                if tag_name_clean >= "160":
                     self.releases_combo.addItem(f"{tag_name}")
             
             self.status_label.setText(f"Loaded {len(self.releases)} releases")
@@ -444,6 +444,42 @@ class UpdateWidget(QWidget):
             self.status_label.setText(f"Error loading releases: {str(e)}")
             # Note: QMessageBox would need to be styled similarly for consistency
     
+    def get_latest_tag(self):
+        """Get the latest release tag from the GitHub repository"""
+        try:
+            # Parse repository URL
+            repo_url = self.repo_url
+            if repo_url.endswith('.git'):
+                repo_url = repo_url[:-4]
+            
+            parts = repo_url.replace('https://github.com/', '').split('/')
+            if len(parts) < 2:
+                return None
+            
+            owner, repo = parts[0], parts[1]
+            
+            # Get releases from GitHub API
+            api_url = f"https://api.github.com/repos/{owner}/{repo}/releases"
+            
+            # Create a request with a User-Agent header
+            headers = {'User-Agent': 'GitReleaseDownloader/1.0'}
+            req = urllib.request.Request(api_url, headers=headers)
+            
+            with urllib.request.urlopen(req) as response:
+                releases_data = json.loads(response.read().decode())
+            
+            if not releases_data:
+                return None
+            
+            # Return the tag of the first (latest) release
+            release_tag = releases_data[0]['tag_name']
+            clean_tag = release_tag.replace("_", "")
+            return clean_tag
+            
+        except Exception as e:
+            print(f"Error getting latest tag: {str(e)}")
+            return None
+
     def download_release(self):
         """Download the selected release"""
         if not self.releases or self.releases_combo.currentIndex() < 0:
