@@ -205,7 +205,7 @@ class UpdateWidget(QWidget):
         self.folder_path = "blender/ft_anim_picker"
         self.releases = []
         self.download_worker = None
-        self.LAST_AVAILABLE_VERSION = '1.5.0'
+        self.LAST_AVAILABLE_VERSION = '1.7.0'
         #-------------------------------------------------------------------------------------------------     
         
         self.init_ui()
