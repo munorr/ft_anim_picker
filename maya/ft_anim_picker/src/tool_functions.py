@@ -1714,6 +1714,7 @@ def _persist_appearance_changes(modified_buttons, context, validated_params):
                     "label": button.label,
                     "color": button.color,
                     "opacity": button.opacity,
+                    "selectable": button.selectable,
                     "position": (button.scene_position.x(), button.scene_position.y()),
                     "width": getattr(button, 'width', 80),
                     "height": getattr(button, 'height', 30),

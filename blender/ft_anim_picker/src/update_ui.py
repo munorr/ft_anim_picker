@@ -20,7 +20,7 @@ try:
 except ImportError:
     # Fall back to PySide2
     from PySide2 import QtCore, QtWidgets
-    from PySide2.QtCore import Qt, Signal as Signal
+    from PySide2.QtCore import Qt, Signal, QThread
     from PySide2.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QComboBox, 
         QPushButton, QLabel, QProgressBar, QMessageBox,QFrame,QApplication
@@ -184,7 +184,7 @@ class UpdateWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         # Set window properties similar to ScriptManagerWidget
-        self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setAttribute(QtCore.Qt.WA_AlwaysShowToolTips, True)
         
@@ -196,62 +196,59 @@ class UpdateWidget(QWidget):
         
         # Set initial size and position to center of screen
         self.width = 300
-        self.height = 125
+        self.height = 170
         self.setFixedSize(self.width, self.height)
-        
-        '''# Get screen geometry based on PySide version
-        if PYSIDE_VERSION == 6:
-            # In PySide6, we use QScreen
-            screen = QApplication.primaryScreen()
-            screen_geometry = screen.geometry()
-        else:
-            # In PySide2, we can still use desktop()
-            screen_geometry = QApplication.desktop().screenGeometry()
-            
-        x = (screen_geometry.width() - self.width) // 2
-        y = (screen_geometry.height() - self.height) // 2
-        self.move(x, y)'''
-        
+        #-------------------------------------------------------------------------------------------------     
         # Hardcoded repository URL
         self.repo_url = "https://github.com/munorr/ft_anim_picker"
         # Hardcoded folder path to download (set to None to download entire release)
         self.folder_path = "blender/ft_anim_picker"
         self.releases = []
         self.download_worker = None
+        self.LAST_AVAILABLE_VERSION = '1.5.0'
+        #-------------------------------------------------------------------------------------------------     
         
         self.init_ui()
         self.load_releases()
     
     def init_ui(self):
+
+        def set_margin_space(layout,margin,space):
+            layout.setContentsMargins(margin,margin,margin,margin)
+            layout.setSpacing(space)
+        
         # Setup main layout
         self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(4, 4, 4, 4)
-        self.main_layout.setSpacing(4)
+        #align vertical center
+        set_margin_space(self.main_layout,10,4)
         
         # Create main frame
         self.frame = QFrame()
         #self.frame.setMinimumWidth(300)
         self.frame.setStyleSheet(f"""
             QFrame {{
-                background-color: rgba(36, 36, 36, .95);
+                background-color: rgba(36, 36, 36, .98);
                 border: 1px solid #444444;
-                border-radius: {self.br}px;
+                border-radius: 10px;
             }}""")
         self.frame_layout = QVBoxLayout(self.frame)
+        # Align vertical center
+        self.frame_layout.setAlignment(QtCore.Qt.AlignVCenter)
         self.frame_layout.setContentsMargins(6, 6, 6, 6)
         self.frame_layout.setSpacing(6)
         
         # Title bar with draggable area and close button
         self.title_bar = QWidget()
-        self.title_bar.setFixedHeight(30)
-        self.title_bar.setStyleSheet(f"background: rgba(30, 30, 30, .9); border: none; border-radius: {self.br}px;")
+        self.title_bar.setFixedHeight(34)
+        self.title_bar.setStyleSheet(f"background: rgba(30, 30, 30, 0); border: none; border-radius: {self.br}px;")
         title_layout = QHBoxLayout(self.title_bar)
         title_layout.setContentsMargins(6, 6, 6, 6)
         title_layout.setSpacing(6)
         
         # Title label
         self.title_label = QLabel("Update FT Anim Picker")
-        self.title_label.setStyleSheet("color: #dddddd; background: transparent; border: none; font-weight: bold;")
+        self.title_label.setStyleSheet("color: #dddddd; background: transparent; border: none; font-weight: bold; font-size: 18px;")
+        title_layout.addStretch(1)
         title_layout.addWidget(self.title_label)
         
         # Close button
@@ -259,14 +256,14 @@ class UpdateWidget(QWidget):
         self.close_button.setFixedSize(16, 16)
         self.close_button.setStyleSheet("""
             QPushButton {
-                background-color: rgba(200, 0, 0, 0.6);
+                background-color: #c0091a;
                 color: #ff9393;
                 border: none;
                 border-radius: 2px;
                 padding: 0px 0px 2px 0px;
             }
             QPushButton:hover {
-                background-color: rgba(255, 0, 0, 0.6);
+                background-color: #e60a1f;
             }
         """)
         title_layout.addStretch(1)
@@ -287,6 +284,8 @@ class UpdateWidget(QWidget):
         # Releases dropdown section
         releases_widget = QWidget()
         releases_layout = QHBoxLayout(releases_widget)
+        # Align center
+        releases_layout.setAlignment(QtCore.Qt.AlignCenter)
         releases_layout.setContentsMargins(0, 0, 0, 0)
         releases_layout.setSpacing(10)
         
@@ -294,13 +293,14 @@ class UpdateWidget(QWidget):
         releases_label.setStyleSheet("color: #dddddd; font-weight: bold; border: none;")
         
         self.releases_combo = QComboBox()
+        self.releases_combo.setFixedSize(80, 24)
         #self.releases_combo.setMinimumWidth(300)
         self.releases_combo.setStyleSheet(f"""
             QComboBox {{
                 background-color: #2a2a2a;
                 color: #dddddd;
                 border: 1px solid #555555;
-                border-radius: {self.br}px;
+                border-radius: 3px;
                 padding: 6px;
                 selection-background-color: #4ca3fe;
             }}
@@ -332,26 +332,35 @@ class UpdateWidget(QWidget):
         releases_layout.addWidget(self.releases_combo)
         #---------------------------------------------------------------------------------------------------------------------------------------------
         # Download button
-        self.download_button = QPushButton("Download Release")
-        self.download_button.setFixedHeight(32)
+
+        #download button layout
+        download_button_layout = QHBoxLayout()
+        download_button_layout.setContentsMargins(0, 0, 0, 0)
+        download_button_layout.setSpacing(0)
+        download_button_layout.setAlignment(QtCore.Qt.AlignCenter)
+        
+        
+        self.download_button = QPushButton("Update")
+        self.download_button.setFixedSize(240, 32)
         self.download_button.setEnabled(False)
         self.download_button.setStyleSheet(f"""
             QPushButton {{
-                background-color: #5285a6;
+                background-color: #7db305;
                 color: white;
                 border: none;
-                border-radius: {self.br}px;
-                padding: 6px 16px;
+                border-radius: 16px;
+                
                 font-weight: bold;
             }}
             QPushButton:hover {{
-                background-color: #67c2f2;
+                background-color: #97d906;
             }}
             QPushButton:disabled {{
                 background-color: #444444;
                 color: #888888;
             }}
         """)
+        download_button_layout.addWidget(self.download_button)
         #---------------------------------------------------------------------------------------------------------------------------------------------
         # Status and progress section
         self.status_label = QLabel("Ready")
@@ -374,11 +383,13 @@ class UpdateWidget(QWidget):
         """)
         
         # Add all widgets to frame layout
+        self.frame_layout.addStretch()
         self.frame_layout.addWidget(self.title_bar)
         #self.frame_layout.addWidget(self.repo_info_label)
         #self.frame_layout.addWidget(self.folder_info_label)
         self.frame_layout.addWidget(releases_widget)
-        self.frame_layout.addWidget(self.download_button)
+        self.frame_layout.addSpacing(10)
+        self.frame_layout.addLayout(download_button_layout)
         #self.frame_layout.addWidget(self.status_label)
         #self.frame_layout.addWidget(self.progress_bar)
         self.frame_layout.addStretch()
@@ -438,8 +449,8 @@ class UpdateWidget(QWidget):
                 })
                 #self.releases_combo.addItem(f"{name} ({tag_name})")
 
-                tag_name_clean = tag_name.replace("_", "")
-                if tag_name_clean >= "160":
+                # Add the release if it's compatible based on version comparison
+                if self.is_newer_version(tag_name, self.LAST_AVAILABLE_VERSION):
                     self.releases_combo.addItem(f"{tag_name}")
             
             self.status_label.setText(f"Loaded {len(self.releases)} releases")
@@ -449,6 +460,50 @@ class UpdateWidget(QWidget):
             self.status_label.setText(f"Error loading releases: {str(e)}")
             # Note: QMessageBox would need to be styled similarly for consistency
     
+    def parse_version(self, version_string):
+        """Parse version string into comparable tuple of integers"""
+        # Remove common prefixes and clean the version
+        version = version_string.strip()
+        if version.startswith('v'):
+            version = version[1:]
+        
+        # Handle underscore separators
+        version = version.replace('_', '.')
+        
+        # Split by dots and convert to integers
+        try:
+            parts = []
+            for part in version.split('.'):
+                # Extract numeric part only
+                numeric_part = ''.join(filter(str.isdigit, part))
+                if numeric_part:
+                    parts.append(int(numeric_part))
+                else:
+                    parts.append(0)
+            return tuple(parts)
+        except (ValueError, AttributeError):
+            # Fallback: try to extract just numbers
+            numeric_only = ''.join(filter(str.isdigit, version_string))
+            if numeric_only:
+                return tuple(int(d) for d in numeric_only)
+            return (0,)
+
+    def is_newer_version(self, latest, current):
+        """Compare two version strings and return True if latest is newer"""
+        try:
+            latest_tuple = self.parse_version(latest)
+            current_tuple = self.parse_version(current)
+            
+            # Pad tuples to same length
+            max_len = max(len(latest_tuple), len(current_tuple))
+            latest_padded = latest_tuple + (0,) * (max_len - len(latest_tuple))
+            current_padded = current_tuple + (0,) * (max_len - len(current_tuple))
+            
+            return latest_padded > current_padded
+        except Exception as e:
+            print(f"Version comparison error: {e}")
+            return False
+            
     def get_latest_tag(self):
         """Get the latest release tag from the GitHub repository with caching"""
         import time
@@ -571,10 +626,91 @@ class UpdateWidget(QWidget):
         self.download_button.setEnabled(True)
         
         if success:
-            # Note: QMessageBox would need to be styled similarly for consistency
+            # Show success message and ask user to restart Blender
             print(f"Download Complete: Release downloaded successfully to:\n{message}")
+            self.show_success_message()
         else:
             print(f"Download Failed: Failed to download release: {message}")
+            
+    def show_success_message(self):
+        """Show success message layout asking user to restart Blender"""
+        # Clear the current frame layout
+        while self.frame_layout.count():
+            item = self.frame_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                # If it's a layout, we need to clear it recursively
+                while item.layout().count():
+                    subitem = item.layout().takeAt(0)
+                    if subitem.widget():
+                        subitem.widget().deleteLater()
+        
+        # Add title bar back
+        self.frame_layout.addStretch()
+        self.frame_layout.addWidget(self.title_bar)
+        
+        # Create success icon
+        success_icon = QLabel("✓")
+        success_icon.setStyleSheet("""
+            color: #7db305;
+            font-size: 18px;
+            font-weight: bold;
+            padding: 0px;
+            border: None;
+        """)
+        success_icon.setAlignment(QtCore.Qt.AlignCenter)
+        
+        # Create success message
+        success_message = QLabel("Update Successful!")
+        success_message.setStyleSheet("""
+            color: #dddddd;
+            font-size: 18px;
+            font-weight: bold;
+            padding: 0px;
+            border: None;
+        """)
+        success_message.setAlignment(QtCore.Qt.AlignCenter)
+        
+        # Create restart message
+        restart_message = QLabel("Please restart Blender\nto complete the update.")
+        restart_message.setStyleSheet("""
+            color: #aaaaaa;
+            font-size: 12px;
+            padding: 0px;
+            border: None;
+        """)
+        restart_message.setAlignment(QtCore.Qt.AlignCenter)
+        
+        # Add widgets to frame layout
+        #self.frame_layout.addWidget(success_icon)
+        self.frame_layout.addWidget(success_message)
+        self.frame_layout.addWidget(restart_message)
+        
+        # Add close button at the bottom
+        close_layout = QHBoxLayout()
+        close_layout.setContentsMargins(0, 10, 0, 0)
+        close_layout.setAlignment(QtCore.Qt.AlignCenter)
+        
+        close_btn = QPushButton("Okay")
+        close_btn.setFixedSize(120, 32)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #4ca3fe;
+                color: white;
+                border: none;
+                border-radius: 16px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #5fb3ff;
+            }}
+        """)
+        close_btn.clicked.connect(self.close)
+        
+        close_layout.addWidget(close_btn)
+        self.frame_layout.addLayout(close_layout)
+        self.frame_layout.addStretch()
 #-----------------------------------------------------------------------------------------------------------------------------------------------------
 if __name__ == "__main__":
     # Determine which PySide version to use

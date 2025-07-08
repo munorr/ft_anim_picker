@@ -1449,9 +1449,10 @@ class PickerButton(QtWidgets.QWidget):
         self.last_zoom_factor = 0
         self.last_size = None
 
-    def handle_select_mode_click(self, shift_held, ctrl_held, alt_held, canvas):
+    def handle_select_mode_click(self, shift_held, ctrl_held, alt_held, canvas,event):
         """Handle selection logic for different modifier combinations"""
         if not self.selectable:
+            event.ignore()
             return
         # Store this as the last clicked button for active object determination
         canvas.last_clicked_button = self
@@ -4702,7 +4703,7 @@ class PickerButton(QtWidgets.QWidget):
             if active_obj:
                 print(f"Active object: {active_obj.name}, Type: {active_obj.type}")
             
-            if active_obj and active_obj.type == 'ARMATURE':
+            if active_obj and active_obj.type == 'ARMATURE' and current_mode == 'POSE':
                 # Check if we're in pose mode or need to switch
                 
                 object_mode = getattr(active_obj, 'mode', 'OBJECT')
@@ -4905,7 +4906,7 @@ class PickerButton(QtWidgets.QWidget):
                 else:
                     # Select mode behavior - handle all modifier combinations
                     if self.mode == 'select':
-                        self.handle_select_mode_click(shift_held, ctrl_held, alt_held, canvas)
+                        self.handle_select_mode_click(shift_held, ctrl_held, alt_held, canvas,event)
                     elif self.mode == 'script':
                         self.execute_script_command()
                     elif self.mode == 'pose':

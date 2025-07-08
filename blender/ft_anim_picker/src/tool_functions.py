@@ -503,7 +503,6 @@ def mirror_selected_pose(mirror_mode: str = 'auto',
         
         return results
 
-
 def _get_current_namespace():
     """
     Get current namespace from the BlenderAnimPickerWindow.
@@ -531,7 +530,6 @@ def _get_current_namespace():
     
     # Default to None if no namespace found
     return None
-
 
 def _build_object_cache(namespace: Optional[str]) -> Dict[str, Any]:
     """Build optimized object lookup cache with namespace support."""
@@ -581,7 +579,6 @@ def _build_object_cache(namespace: Optional[str]) -> Dict[str, Any]:
                 cache['partial'][part].append(obj)
     
     return cache
-
 
 def _build_mirror_cache(object_cache: Dict[str, Any], namespace: Optional[str]) -> Dict[str, Any]:
     """Build mirror object lookup cache with namespace awareness."""
@@ -642,7 +639,6 @@ def _build_mirror_cache(object_cache: Dict[str, Any], namespace: Optional[str]) 
     
     return mirror_cache
 
-
 def _mirror_selected_objects(mirror_cache: Dict[str, Any], 
                            axis: str, 
                            results: Dict[str, Any],
@@ -690,7 +686,6 @@ def _mirror_selected_objects(mirror_cache: Dict[str, Any],
                 'name': obj.name,
                 'reason': str(e)
             })
-
 
 def _mirror_selected_bones(armature_obj: bpy.types.Object,
                           mirror_cache: Dict[str, Any],
@@ -775,7 +770,6 @@ def _mirror_selected_bones(armature_obj: bpy.types.Object,
             'reason': f"Error processing armature: {str(e)}"
         })
 
-
 def _find_mirrored_object(obj_name: str, mirror_cache: Dict[str, Any]) -> Optional[bpy.types.Object]:
     """Find mirrored object using cache."""
     # Get namespace from picker window
@@ -795,7 +789,6 @@ def _find_mirrored_object(obj_name: str, mirror_cache: Dict[str, Any]) -> Option
                 return mirror_obj
     
     return None
-
 
 def _get_mirrored_bone_name(bone_name: str) -> Optional[str]:
     """Get mirrored bone name using enhanced patterns."""
@@ -831,7 +824,6 @@ def _get_mirrored_bone_name(bone_name: str) -> Optional[str]:
     
     return None
 
-
 def _capture_object_transform(obj: bpy.types.Object) -> Dict[str, Any]:
     """Capture transform data from object."""
     transform_data = {
@@ -849,7 +841,6 @@ def _capture_object_transform(obj: bpy.types.Object) -> Dict[str, Any]:
     
     return transform_data
 
-
 def _capture_bone_transform(bone: bpy.types.PoseBone) -> Dict[str, Any]:
     """Capture transform data from pose bone."""
     transform_data = {
@@ -866,7 +857,6 @@ def _capture_bone_transform(bone: bpy.types.PoseBone) -> Dict[str, Any]:
         transform_data['rotation_euler'] = list(bone.rotation_euler)
     
     return transform_data
-
 
 def _mirror_transform_data(transform_data: Dict[str, Any], axis: str = 'x') -> Dict[str, Any]:
     """Mirror transform data across specified axis."""
@@ -919,7 +909,6 @@ def _mirror_transform_data(transform_data: Dict[str, Any], axis: str = 'x') -> D
     
     return mirrored_data
 
-
 def _apply_object_transform(obj: bpy.types.Object, transform_data: Dict[str, Any]) -> None:
     """Apply transform data to object."""
     if 'location' in transform_data and len(transform_data['location']) == 3:
@@ -936,7 +925,6 @@ def _apply_object_transform(obj: bpy.types.Object, transform_data: Dict[str, Any
     elif 'rotation_euler' in transform_data:
         obj.rotation_euler[:] = transform_data['rotation_euler'][:3]
 
-
 def _apply_bone_transform(bone: bpy.types.PoseBone, transform_data: Dict[str, Any]) -> None:
     """Apply transform data to pose bone."""
     if 'location' in transform_data and len(transform_data['location']) == 3:
@@ -952,7 +940,6 @@ def _apply_bone_transform(bone: bpy.types.PoseBone, transform_data: Dict[str, An
         bone.rotation_axis_angle[:] = transform_data['rotation_axis_angle'][:4]
     elif 'rotation_euler' in transform_data:
         bone.rotation_euler[:] = transform_data['rotation_euler'][:3]
-
 
 def _select_mirrored_items(results: Dict[str, Any], mirror_mode: str) -> None:
     """Select the mirrored objects/bones after mirroring."""
@@ -1346,6 +1333,7 @@ def _persist_appearance_changes(modified_buttons, context, validated_params):
                     "label": button.label,
                     "color": button.color,
                     "opacity": button.opacity,
+                    "selectable": button.selectable,
                     "position": (button.scene_position.x(), button.scene_position.y()),
                     "width": getattr(button, 'width', 80),
                     "height": getattr(button, 'height', 30),

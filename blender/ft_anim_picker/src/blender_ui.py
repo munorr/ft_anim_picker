@@ -212,7 +212,8 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         info_util.addToMenu(f"Manual", self.info, icon=UT.get_icon('manual.png'), position=(1,0))
         info_util.addToMenu(f"Update", self.update_anim_picker, icon=UT.get_icon('update.png'), position=(2,0))
         #-----------------------------------------------------------------------------------------------------------------------------------
-        self.update_anim_picker_button = CB.CustomButton(text='Update Available',icon=UT.get_icon('update.png',size=14), height=16, radius=3,color='#7db305',tooltip='Update Anim Picker')
+        self.update_anim_picker_button = CB.CustomButton(text='Update Available',icon=UT.get_icon('update.png',size=14), height=16, radius=3,color='#7db305',
+        text_size=10,tooltip='Update Anim Picker')
         self.update_anim_picker_button.clicked.connect(self.update_anim_picker)
         #-----------------------------------------------------------------------------------------------------------------------------------
         # Close button
@@ -641,31 +642,32 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         # Force update of the layout
         self.update()
         QtCore.QTimer.singleShot(0, self.update_buttons_for_current_tab)
-    
+    #----------------------------------------------------------------------------------------------------------------------------------------
     def update_anim_picker(self):
         UpdateWidget(self).show()
-    
+
     def update_anim_picker_checker(self):
-        # Store the update widget as a class attribute to avoid creating multiple instances
         if not hasattr(self, '_update_widget'):
             from .update_ui import UpdateWidget
             self._update_widget = UpdateWidget(self)
-            # Hide it since we're just using it for API calls
             self._update_widget.hide()
         
-        latest_release = self._update_widget.get_latest_tag() 
-        current_version = ft_anim_picker.src.__version__.replace(".", "")
+        latest_release = self._update_widget.get_latest_tag()
+        current_version = ft_anim_picker.src.__version__
+        
         print(f'Latest Release: {latest_release}')
         print(f'Current Version: {current_version}')
+        
         try:
-            if latest_release:
-                if latest_release > current_version:
-                    self.update_anim_picker_button.setVisible(True)
-                else:
-                    self.update_anim_picker_button.setVisible(False)
+            if latest_release and UpdateWidget.is_newer_version(self._update_widget,latest_release, current_version):
+                self.update_anim_picker_button.setVisible(True)
+                print(f"Update available: {latest_release} > {current_version}")
+            else:
+                self.update_anim_picker_button.setVisible(False)
+                print(f"No update needed: {latest_release} <= {current_version}")
         except Exception as e:
             print(f"Error checking for updates: {e}")
-        
+            self.update_anim_picker_button.setVisible(False) 
     #----------------------------------------------------------------------------------------------------------------------------------------
     def setup_conditional_stay_on_top(self):
         """Setup conditional stay-on-top using hide/show instead of flag changes"""

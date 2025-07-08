@@ -295,7 +295,7 @@ class CustomButton(QtWidgets.QPushButton):
             position (tuple, optional): (row, column) position in the grid
         """
         if self.context_menu:
-            action = QtGui.QAction(name, self)
+            action = QAction(name, self)
             if icon:
                 if isinstance(icon, QtGui.QPixmap):
                     action.setIcon(QtGui.QIcon(icon))

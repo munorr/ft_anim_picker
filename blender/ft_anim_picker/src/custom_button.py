@@ -1,5 +1,5 @@
 from PySide6 import QtWidgets, QtCore, QtGui
-from PySide6.QtGui import QColor, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QAction
 from PySide6.QtCore import QTimer, QPropertyAnimation, QEasingCurve, Qt, QRect
 from shiboken6 import wrapInstance
 
@@ -288,7 +288,7 @@ class CustomButton(QtWidgets.QPushButton):
             position (tuple, optional): (row, column) position in the grid
         """
         if self.context_menu:
-            action = QtGui.QAction(name, self)
+            action = QAction(name, self)
             if icon:
                 if isinstance(icon, QtGui.QPixmap):
                     action.setIcon(QtGui.QIcon(icon))
@@ -327,7 +327,7 @@ class CustomButton(QtWidgets.QPushButton):
                     self.click_count = 0
                     self.doubleClicked.emit()
         super(CustomButton, self).mouseReleaseEvent(event)
-        #UT.blender_main_window() 
+        UT.blender_main_window() 
         
     def performSingleClick(self):
         if not self.onlyContext:
