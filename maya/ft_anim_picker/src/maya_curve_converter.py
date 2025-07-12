@@ -15,6 +15,7 @@ except ImportError:
 
 from .custom_dialog import CustomDialog
 from .custom_button import CustomButton, CustomRadioButton
+from .utils import undoable
 
 # =============================================================================
 # COORDINATE PLANE CONFIGURATION
@@ -273,6 +274,7 @@ class CoordinatePlaneConfig:
 # Initialize with default plane
 CoordinatePlaneConfig.set_plane('XZ')
 
+@undoable
 def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dialog=False):
     """
     Create picker buttons from selected NURBS curves in Maya scene.
