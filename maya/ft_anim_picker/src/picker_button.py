@@ -1714,12 +1714,14 @@ class PickerButton(QtWidgets.QWidget):
         menu.setStyleSheet('''
             QMenu {
                 background-color: rgba(30, 30, 30, .9);
+                color: #ffffff;
                 border: 1px solid #444444;
                 border-radius: 3px;
                 padding: 5px 7px;
             }
             QMenu::item {
                 background-color: transparent;
+                color: #ffffff;
                 padding: 3px 30px 3px 3px; ;
                 margin: 3px 0px  ;
                 border-radius: 3px;
