@@ -16,9 +16,9 @@ class PickerDataManager:
                 'image_scale': 1.0,
                 'background_value': 20,
                 'namespace': 'None',
-                'show_dots': True,
+                'show_dots': False,
                 'show_axes': True,    
-                'show_grid': False,   
+                'show_grid': True,   
                 'grid_size': 50       
             }
         }),
@@ -223,9 +223,9 @@ class PickerDataManager:
                 'image_scale': 1.0,
                 'background_value': 20,
                 'namespace': 'None',
-                'show_dots': True,
+                'show_dots': False,
                 'show_axes': True,    
-                'show_grid': False,   
+                'show_grid': True,   
                 'grid_size': 50       
             })
             cls.save_data(data)
@@ -249,9 +249,9 @@ class PickerDataManager:
                 'image_scale': 1.0,
                 'background_value': 20,
                 'namespace': 'None',
-                'show_dots': True,
+                'show_dots': False,
                 'show_axes': True,    
-                'show_grid': False,   
+                'show_grid': True,   
                 'grid_size': 50       
             })
             cls.save_data(data, force_immediate=True)
