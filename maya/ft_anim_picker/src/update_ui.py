@@ -517,9 +517,9 @@ class UpdateWidget(QWidget):
             clean_tag = release_tag.replace("_", "")
             
             # Update cache
-            UpdateWidget._latest_tag_cache = clean_tag
+            UpdateWidget._latest_tag_cache = release_tag
             UpdateWidget._last_check_time = current_time
-            print(f"Updated tag cache with: {clean_tag}")
+            print(f"Updated tag cache with: {release_tag}")
             
             return release_tag#clean_tag
             
