@@ -856,7 +856,8 @@ class PickerCanvas(QtWidgets.QWidget):
                 continue
         
         if selected_bones:
-            print(f"Selected bones: {', '.join(selected_bones)}")
+            #print(f"Selected bones: {', '.join(selected_bones)}")
+            pass
         else:
             print("No bones were selected")
     
@@ -974,7 +975,7 @@ class PickerCanvas(QtWidgets.QWidget):
                         bpy.context.view_layer.objects.active = bpy.data.objects[obj_name]
                         active_object_set = True
         
-        print(f"Selected objects: {', '.join(selected_objects)}")
+        #print(f"Selected objects: {', '.join(selected_objects)}")
 
     def _get_current_namespace(self):
         """Get current namespace from main window"""
@@ -1819,7 +1820,7 @@ class PickerCanvas(QtWidgets.QWidget):
             svg_x_offset = svg_bounds.get('x', 0)
             svg_y_offset = svg_bounds.get('y', 0)
             
-            print(f"SVG bounds: {svg_width}x{svg_height}, offset: ({svg_x_offset}, {svg_y_offset})")
+            #print(f"SVG bounds: {svg_width}x{svg_height}, offset: ({svg_x_offset}, {svg_y_offset})")
             
             # STEP 2: Calculate all path bounds in SVG coordinate space
             path_data_list = []
@@ -1860,7 +1861,7 @@ class PickerCanvas(QtWidgets.QWidget):
                 layout_bounds = QtCore.QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
                 layout_center = layout_bounds.center()
                 
-                print(f"Layout bounds: {layout_bounds}, center: {layout_center}")
+                #print(f"Layout bounds: {layout_bounds}, center: {layout_center}")
             else:
                 layout_center = QtCore.QPointF(svg_width/2, svg_height/2)
                 layout_bounds = QtCore.QRectF(0, 0, svg_width, svg_height)
@@ -1874,7 +1875,7 @@ class PickerCanvas(QtWidgets.QWidget):
             # Clamp scale to reasonable range
             layout_scale = max(0.1, min(layout_scale, 10.0))
             
-            print(f"Layout scale: {layout_scale}")
+            #print(f"Layout scale: {layout_scale}")
             
             # Convert drop position to scene coordinates
             scene_drop_pos = self.canvas_to_scene_coords(drop_position)
@@ -1997,7 +1998,7 @@ class PickerCanvas(QtWidgets.QWidget):
                     self.update()
                     self.update_hud_counts()
                     
-                    print(f"Created {len(created_buttons)} buttons with preserved SVG layout")
+                    #print(f"Created {len(created_buttons)} buttons with preserved SVG layout")
                     
         except Exception as e:
             # Show error dialog
@@ -2098,7 +2099,7 @@ class PickerCanvas(QtWidgets.QWidget):
                 self.update()
                 self.update_hud_counts()
                 
-                print("Created combined SVG button successfully")
+                #print("Created combined SVG button successfully")
                 
         except Exception as e:
             self._show_svg_error(str(e))
@@ -2771,7 +2772,7 @@ class PickerCanvas(QtWidgets.QWidget):
                                 counterpart_bone = self._resolve_bone_with_namespace(mirrored_obj_data, current_namespace)
                                 if counterpart_bone:
                                     mirrored_assigned_objects.append(mirrored_obj_data)
-                                    print(f"Mirrored bone: {bone_name} -> {mirrored_bone_name}")
+                                    #print(f"Mirrored bone: {bone_name} -> {mirrored_bone_name}")
                                 else:
                                     # If counterpart doesn't exist, keep original
                                     mirrored_assigned_objects.append(obj_data.copy())
@@ -2793,7 +2794,7 @@ class PickerCanvas(QtWidgets.QWidget):
                                 counterpart_object = self._resolve_object(mirrored_obj_data, current_namespace)
                                 if counterpart_object:
                                     mirrored_assigned_objects.append(mirrored_obj_data)
-                                    print(f"Mirrored object: {obj_name} -> {mirrored_obj_name}")
+                                    #print(f"Mirrored object: {obj_name} -> {mirrored_obj_name}")
                                 else:
                                     # If counterpart doesn't exist, keep original
                                     mirrored_assigned_objects.append(obj_data.copy())
@@ -2833,7 +2834,7 @@ class PickerCanvas(QtWidgets.QWidget):
                 updated_button_data.append(button_data)
                 
                 counterpart_info = " with counterparts" if apply_counterparts else ""
-                print(f"Mirrored button {button.unique_id}: position={button.scene_position.x():.2f}, svg_updated={bool(button.svg_path_data)}{counterpart_info}")
+                #print(f"Mirrored button {button.unique_id}: position={button.scene_position.x():.2f}, svg_updated={bool(button.svg_path_data)}{counterpart_info}")
             
             # CRITICAL FIX: Batch update the database with ALL mirrored buttons at once
             for button_data in updated_button_data:
@@ -2850,7 +2851,7 @@ class PickerCanvas(QtWidgets.QWidget):
             DM.PickerDataManager.update_tab_data(current_tab, tab_data)
             
             action_type = "with counterpart assignment" if apply_counterparts else "position/SVG only"
-            print(f"Horizontally mirrored {len(selected_buttons)} buttons ({action_type}) - All changes saved to database in batch")
+            #print(f"Horizontally mirrored {len(selected_buttons)} buttons ({action_type}) - All changes saved to database in batch")
             
         finally:
             # Restore previous batch mode state
@@ -2930,7 +2931,7 @@ class PickerCanvas(QtWidgets.QWidget):
                 }
                 updated_button_data.append(button_data)
                 
-                print(f"Mirrored button {button.unique_id}: position={button.scene_position.y():.2f}, svg_updated={bool(button.svg_path_data)}")
+                #print(f"Mirrored button {button.unique_id}: position={button.scene_position.y():.2f}, svg_updated={bool(button.svg_path_data)}")
             
             # CRITICAL FIX: Batch update the database with ALL mirrored buttons at once
             for button_data in updated_button_data:
@@ -2946,7 +2947,7 @@ class PickerCanvas(QtWidgets.QWidget):
             # Single database update for all buttons
             DM.PickerDataManager.update_tab_data(current_tab, tab_data)
             
-            print(f"Vertically mirrored {len(selected_buttons)} buttons - All changes saved to database in batch")
+            #print(f"Vertically mirrored {len(selected_buttons)} buttons - All changes saved to database in batch")
             
         finally:
             # Restore previous batch mode state
@@ -3317,7 +3318,7 @@ class PickerCanvas(QtWidgets.QWidget):
                         for button in dragged_buttons:
                             # Force immediate database update for position changes
                             main_window._process_single_button_update(button)
-                            print(f"Canvas: Updated position for button {button.unique_id}: {button.scene_position.x()}, {button.scene_position.y()}")
+                            #print(f"Canvas: Updated position for button {button.unique_id}: {button.scene_position.x()}, {button.scene_position.y()}")
                         
                         # Also update the buttons for the current tab
                         main_window.update_buttons_for_current_tab(force_update=True)

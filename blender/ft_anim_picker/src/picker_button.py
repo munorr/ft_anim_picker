@@ -283,27 +283,30 @@ class PickerButton(QtWidgets.QWidget):
         pose_painter.setRenderHint(QtGui.QPainter.Antialiasing)
         pose_painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
         
-        # Set up font for pose mode
-        pose_painter.setPen(QtGui.QColor('white'))
-        pose_font = pose_painter.font()
-        font_size = (self.width * 0.15) * zoom_factor  # Smaller font based on width
-        pose_font.setPixelSize(int(font_size))
-        pose_painter.setFont(pose_font)
-        
-        # Calculate text area at bottom of button
-        min_text_height = 12  # Minimum height in pixels
-        text_height = max(int(self.height * 0.2), min_text_height)
-        fixed_position_from_top = self.height * 0.75  # Bottom 20% of button
-        
-        text_rect = QtCore.QRectF(
-            0,  # Start at left edge
-            fixed_position_from_top * zoom_factor,  # Fixed position from top
-            self.width * zoom_factor,  # Full width
-            text_height * zoom_factor  # Height scaled with zoom
-        )
-        
-        # Draw text at bottom
-        pose_painter.drawText(text_rect, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignBottom, self.label)
+        # Calculate font size and only render text if it's large enough
+        calculated_font_size = (self.width * 0.15) * zoom_factor
+        if calculated_font_size >= 2:  # Only render text if font would be 2px or larger
+            # Set up font for pose mode
+            pose_painter.setPen(QtGui.QColor('white'))
+            pose_font = pose_painter.font()
+            font_size = max(int(calculated_font_size), 2)  # Ensure minimum readable size
+            pose_font.setPixelSize(font_size)
+            pose_painter.setFont(pose_font)
+            
+            # Calculate text area at bottom of button
+            min_text_height = 12  # Minimum height in pixels
+            text_height = max(int(self.height * 0.2), min_text_height)
+            fixed_position_from_top = self.height * 0.75  # Bottom 20% of button
+            
+            text_rect = QtCore.QRectF(
+                0,  # Start at left edge
+                fixed_position_from_top * zoom_factor,  # Fixed position from top
+                self.width * zoom_factor,  # Full width
+                text_height * zoom_factor  # Height scaled with zoom
+            )
+            
+            # Draw text at bottom
+            pose_painter.drawText(text_rect, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignBottom, self.label)
         
         # Get thumbnail area
         thumbnail_rect = self._calculate_thumbnail_rect(zoom_factor)
@@ -350,7 +353,7 @@ class PickerButton(QtWidgets.QWidget):
             # We have a path but the image didn't load - show "broken" indicator with icon
             
             # Get error icon using the get_icon function
-            error_icon = UT.get_icon("error_01.png",opacity=.5,size=128)
+            error_icon = UT.get_icon("error_01.png", opacity=.5, size=128)
             
             if error_icon and not error_icon.isNull():
                 # Set clipping path for the thumbnail area (same as working thumbnails)
@@ -358,7 +361,7 @@ class PickerButton(QtWidgets.QWidget):
                 
                 # Scale the error icon to fit within the thumbnail area, similar to how thumbnails are handled
                 scaled_error_icon = error_icon.scaled(
-                    int(thumbnail_rect.width() * 0.8),  # Make it 60% of thumbnail size for better visibility
+                    int(thumbnail_rect.width() * 0.8),  # Make it 80% of thumbnail size for better visibility
                     int(thumbnail_rect.height() * 0.8),
                     QtCore.Qt.KeepAspectRatio,
                     QtCore.Qt.SmoothTransformation
@@ -380,76 +383,75 @@ class PickerButton(QtWidgets.QWidget):
                 
             else:
                 # Fallback to text if icon fails to load (same as before)
-                pose_painter.setPen(QtGui.QColor(255, 100, 100, 150))
-                pose_painter.drawText(thumbnail_rect, QtCore.Qt.AlignCenter, "Missing\nThumbnail")
+                # Only render this text if font is large enough
+                if calculated_font_size >= 2:
+                    pose_painter.setPen(QtGui.QColor(255, 100, 100, 150))
+                    pose_painter.drawText(thumbnail_rect, QtCore.Qt.AlignCenter, "Missing\nThumbnail")
 
         else:
-            # Draw placeholder text
-            pose_painter.setPen(QtGui.QColor(255, 255, 255, 120))
-            pose_painter.drawText(thumbnail_rect, QtCore.Qt.AlignCenter, "Thumbnail")
-            pose_painter.setPen(QtGui.QColor('white'))  # Reset pen color
+            # Draw placeholder text - only if font is large enough
+            if calculated_font_size >= 2:
+                pose_painter.setPen(QtGui.QColor(255, 255, 255, 120))
+                pose_painter.drawText(thumbnail_rect, QtCore.Qt.AlignCenter, "Thumbnail")
+                pose_painter.setPen(QtGui.QColor('white'))  # Reset pen color
         
         pose_painter.end()
         return pose_pixmap
-    
+
     def _render_text_pixmap(self, current_size, zoom_factor):
-        """Render the pixmap for regular mode with centered text.
-        
-        Args:
-            current_size (QSize): Current button size
-            zoom_factor (float): Current zoom factor
-        Returns:
-            QPixmap: The rendered text pixmap
-        """
+        """Render the pixmap for regular mode with centered text."""
         text_pixmap = QtGui.QPixmap(current_size)
         text_pixmap.fill(QtCore.Qt.transparent)
 
         # Start with height-based calculation (preserve as priority)
         base_font_size = (self.height * 0.5) * zoom_factor
-        font_size = int(base_font_size)
-        min_font_size = 6  # Set a minimum font size for legibility
-        max_width = current_size.width() * 0.9  # 10% padding
-
-        # Prepare the display text (don't modify self.label)
-        display_text = self.label
         
-        # Only wrap if not already colored
-        if "color:" not in display_text and "font color=" not in display_text:
-            display_text = f"<span style='color: {self.text_color};'>{display_text}</span>"
-        
-        # Use QTextDocument for rich text, but single line only
-        doc = QtGui.QTextDocument()
-        doc.setHtml(display_text)  # Use display_text instead of self.label
+        # Only render text if the calculated font size is large enough
+        if base_font_size >= 2:  # Only render text if font would be 2px or larger
+            font_size = max(int(base_font_size), 2)  # Ensure minimum readable size
+            min_font_size = 2  # Set a minimum font size for legibility
+            max_width = current_size.width() * 0.9  # 10% padding
 
-        # Try to fit the text in one line by reducing font size if needed
-        while font_size >= min_font_size:
+            # Prepare the display text (don't modify self.label)
+            display_text = self.label
+            
+            # Only wrap if not already colored
+            if "color:" not in display_text and "font color=" not in display_text:
+                display_text = f"<span style='color: {self.text_color};'>{display_text}</span>"
+            
+            # Use QTextDocument for rich text, but single line only
+            doc = QtGui.QTextDocument()
+            doc.setHtml(display_text)  # Use display_text instead of self.label
+
+            # Try to fit the text in one line by reducing font size if needed
+            while font_size >= min_font_size:
+                font = QtGui.QFont()
+                font.setPixelSize(font_size)
+                doc.setDefaultFont(font)
+                doc.setTextWidth(-1)  # No wrapping
+                text_width = doc.idealWidth()
+                if text_width <= max_width:
+                    break
+                font_size -= 1
+                
+            # Set final font
             font = QtGui.QFont()
             font.setPixelSize(font_size)
             doc.setDefaultFont(font)
             doc.setTextWidth(-1)  # No wrapping
             text_width = doc.idealWidth()
-            if text_width <= max_width:
-                break
-            font_size -= 1
-            
-        # Set final font
-        font = QtGui.QFont()
-        font.setPixelSize(font_size)
-        doc.setDefaultFont(font)
-        doc.setTextWidth(-1)  # No wrapping
-        text_width = doc.idealWidth()
-        text_height = doc.size().height()
+            text_height = doc.size().height()
 
-        # Center horizontally and vertically
-        x = (current_size.width() - text_width) / 2
-        y = (current_size.height() - text_height) / 2
+            # Center horizontally and vertically
+            x = (current_size.width() - text_width) / 2
+            y = (current_size.height() - text_height) / 2
 
-        text_painter = QtGui.QPainter(text_pixmap)
-        text_painter.setRenderHint(QtGui.QPainter.Antialiasing)
-        text_painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
-        text_painter.translate(x, y)
-        doc.drawContents(text_painter)
-        text_painter.end()
+            text_painter = QtGui.QPainter(text_pixmap)
+            text_painter.setRenderHint(QtGui.QPainter.Antialiasing)
+            text_painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
+            text_painter.translate(x, y)
+            doc.drawContents(text_painter)
+            text_painter.end()
 
         return text_pixmap
     
@@ -3958,7 +3960,7 @@ class PickerButton(QtWidgets.QWidget):
         
         try:
             for pose_key, attr_values in pose_data.items():
-                print(f"Processing pose entry: '{pose_key}'")
+                #print(f"Processing pose entry: '{pose_key}'")
                 
                 if isinstance(attr_values, dict) and attr_values.get('is_armature_pose', False):
                     # Handle armature pose with namespace priority
@@ -4016,7 +4018,7 @@ class PickerButton(QtWidgets.QWidget):
         
         try:
             for pose_key, attr_values in pose_data.items():
-                print(f"Processing mirror pose for: '{pose_key}'")
+                #print(f"Processing mirror pose for: '{pose_key}'")
                 
                 if isinstance(attr_values, dict) and attr_values.get('is_armature_pose', False):
                     # Handle mirrored armature pose with namespace priority
@@ -4042,7 +4044,7 @@ class PickerButton(QtWidgets.QWidget):
                         successfully_posed_objects.append(mirrored_obj)
                         mirrored_attrs = self._mirror_transform_attributes(attr_values)
                         self._apply_object_attributes(mirrored_obj, mirrored_attrs)
-                        print(f"Applied mirrored pose to object '{mirrored_obj.name}'")
+                        #print(f"Applied mirrored pose to object '{mirrored_obj.name}'")
                     else:
                         print(f"Warning: Could not find mirrored object for '{pose_key}'")
             
@@ -5016,7 +5018,7 @@ class PickerButton(QtWidgets.QWidget):
                 object_mode = getattr(active_obj, 'mode', 'OBJECT')
                 context_mode = getattr(bpy.context, 'mode', 'OBJECT')
                 
-                print(f"Object mode: {object_mode}, Context mode: {context_mode}")
+                #print(f"Object mode: {object_mode}, Context mode: {context_mode}")
                 
                 # Try multiple methods to get selected pose bones
                 selected_pose_bones = []
@@ -5026,7 +5028,7 @@ class PickerButton(QtWidgets.QWidget):
                     context_bones = getattr(bpy.context, 'selected_pose_bones', None)
                     if context_bones:
                         selected_pose_bones = list(context_bones)
-                        print(f"Found {len(selected_pose_bones)} bones via context")
+                        #print(f"Found {len(selected_pose_bones)} bones via context")
                 except:
                     pass
                 
@@ -5035,7 +5037,7 @@ class PickerButton(QtWidgets.QWidget):
                     for pose_bone in active_obj.pose.bones:
                         if pose_bone.bone.select:
                             selected_pose_bones.append(pose_bone)
-                    print(f"Found {len(selected_pose_bones)} bones via manual check")
+                    #print(f"Found {len(selected_pose_bones)} bones via manual check")
                 
                 # Method 3: If still no bones and we're not in pose mode, try switching
                 if not selected_pose_bones and object_mode != 'POSE':
@@ -5053,11 +5055,11 @@ class PickerButton(QtWidgets.QWidget):
                         context_bones = getattr(bpy.context, 'selected_pose_bones', None)
                         if context_bones:
                             selected_pose_bones = list(context_bones)
-                            print(f"Found {len(selected_pose_bones)} bones after mode switch")
+                            #print(f"Found {len(selected_pose_bones)} bones after mode switch")
                     except Exception as e:
                         print(f"Error switching to pose mode: {e}")
                 
-                print(f"Final selected pose bones: {[bone.name for bone in selected_pose_bones]}")
+                #print(f"Final selected pose bones: {[bone.name for bone in selected_pose_bones]}")
                 
                 # Process selected bones with namespace priority
                 for bone in selected_pose_bones:
@@ -5101,7 +5103,7 @@ class PickerButton(QtWidgets.QWidget):
             new_unique_objects = [obj for obj in new_objects if self._get_item_id(obj) not in existing_names]
             self.assigned_objects.extend(new_unique_objects)
             
-            print(f"Added {len(new_unique_objects)} new objects to picker")
+            #print(f"Added {len(new_unique_objects)} new objects to picker")
         
         #self.update_tooltip()
         self._tooltip_needs_update = True

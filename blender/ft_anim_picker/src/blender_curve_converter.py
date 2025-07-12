@@ -98,10 +98,10 @@ class CoordinatePlaneConfig:
         """Set the active coordinate plane."""
         if plane_name in cls.PLANES:
             cls._current_plane = plane_name
-            print(f"Coordinate plane set to: {cls.PLANES[plane_name]['name']}")
+            #print(f"Coordinate plane set to: {cls.PLANES[plane_name]['name']}")
         else:
             available = ', '.join(cls.PLANES.keys())
-            print(f"Invalid plane '{plane_name}'. Available planes: {available}")
+            #print(f"Invalid plane '{plane_name}'. Available planes: {available}")
     
     @classmethod
     def get_current_plane(cls):
@@ -186,10 +186,10 @@ class CoordinatePlaneConfig:
         """Show a dialog to select the coordinate plane and optionally spline separation mode."""
         if not QtWidgets:
             # Fallback for when Qt is not available
-            print("Available coordinate planes:")
+            #print("Available coordinate planes:")
             for i, (plane_key, plane_config) in enumerate(cls.PLANES.items()):
                 marker = " (current)" if plane_key == cls._current_plane else ""
-                print(f"  {i+1}. {plane_config['name']}{marker}")
+                #print(f"  {i+1}. {plane_config['name']}{marker}")
             
             try:
                 choice = input("Enter plane number (1-{}): ".format(len(cls.PLANES)))

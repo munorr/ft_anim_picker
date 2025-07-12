@@ -566,15 +566,22 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         """ENHANCED signal connection with proper cleanup"""
         # Disconnect ALL existing connections first
         try:
-            canvas.button_selection_changed.disconnect()
-            canvas.clicked.disconnect()
+            if canvas.button_selection_changed.receivers() > 0:
+                canvas.button_selection_changed.disconnect()
+        except:
+            pass
+        
+        try:
+            if canvas.clicked.receivers() > 0:
+                canvas.clicked.disconnect()
         except:
             pass
         
         # Clear any existing button connections
         for button in canvas.buttons:
             try:
-                button.changed.disconnect()
+                if button.changed.receivers() > 0:
+                    button.changed.disconnect()
             except:
                 pass
         
@@ -584,7 +591,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         
         # Connect button signals
         for button in canvas.buttons:
-            button.changed.connect(self.on_button_changed) 
+            button.changed.connect(self.on_button_changed)
 
     def info(self):
         # Opens link to Manual
@@ -1932,7 +1939,8 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             # Disconnect changed signals temporarily to prevent interference
             for button in buttons_to_update:
                 try:
-                    button.changed.disconnect()
+                    if button.changed.receivers() > 0:
+                        button.changed.disconnect()
                 except:
                     pass
             
@@ -2376,8 +2384,14 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             
             # Disconnect and cleanup canvas
             try:
-                canvas.button_selection_changed.disconnect()
-                canvas.clicked.disconnect()
+                if canvas.button_selection_changed.receivers() > 0:
+                    canvas.button_selection_changed.disconnect()
+            except:
+                pass
+            
+            try:
+                if canvas.clicked.receivers() > 0:
+                    canvas.clicked.disconnect()
             except:
                 pass
             
@@ -3545,7 +3559,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                     timer.deleteLater()
                     setattr(self, timer_attr, None)
                 
-                print(f"Cleaned up timer: {timer_attr}")
+                #print(f"Cleaned up timer: {timer_attr}")
 
     def _cleanup_tabs_and_canvases(self):
         """Properly cleanup all tabs, canvases and buttons"""
@@ -3565,8 +3579,14 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                     
                     # Disconnect canvas signals
                     try:
-                        canvas.button_selection_changed.disconnect()
-                        canvas.clicked.disconnect()
+                        if canvas.button_selection_changed.receivers() > 0:
+                            canvas.button_selection_changed.disconnect()
+                    except:
+                        pass
+                    
+                    try:
+                        if canvas.clicked.receivers() > 0:
+                            canvas.clicked.disconnect()
                     except:
                         pass
                     
@@ -3582,7 +3602,11 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         try:
             # Disconnect button signals
             if hasattr(button, 'changed'):
-                button.changed.disconnect()
+                try:
+                    if button.changed.receivers() > 0:
+                        button.changed.disconnect()
+                except:
+                    pass
             
             # Clear pixmap cache
             if hasattr(button, 'text_pixmap'):

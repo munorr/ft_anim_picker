@@ -620,7 +620,7 @@ class PickerCanvas(QtWidgets.QWidget):
                     resolved_names.append(sel_name)
                 
                 selection_type = "counterparts" if alt_held else "objects"
-                print(f"Selecting {selection_type}: {', '.join(resolved_names)}")
+                #print(f"Selecting {selection_type}: {', '.join(resolved_names)}")
                 
                 if resolved_selection:
                     cmds.select(resolved_selection, add=True)
@@ -841,7 +841,7 @@ class PickerCanvas(QtWidgets.QWidget):
             sel_name = sel.split(':')[-1].split('|')[-1]
             resolved_names.append(sel_name)
         
-        print(f"Selecting: {', '.join(resolved_names)}")
+        #print(f"Selecting: {', '.join(resolved_names)}")
         cmds.select(resolved_selection, add=True)
         
         # Make last node active
@@ -1749,7 +1749,7 @@ class PickerCanvas(QtWidgets.QWidget):
             svg_x_offset = svg_bounds.get('x', 0)
             svg_y_offset = svg_bounds.get('y', 0)
             
-            print(f"SVG bounds: {svg_width}x{svg_height}, offset: ({svg_x_offset}, {svg_y_offset})")
+            #print(f"SVG bounds: {svg_width}x{svg_height}, offset: ({svg_x_offset}, {svg_y_offset})")
             
             # STEP 2: Calculate all path bounds in SVG coordinate space
             path_data_list = []
@@ -1790,7 +1790,7 @@ class PickerCanvas(QtWidgets.QWidget):
                 layout_bounds = QtCore.QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
                 layout_center = layout_bounds.center()
                 
-                print(f"Layout bounds: {layout_bounds}, center: {layout_center}")
+                #print(f"Layout bounds: {layout_bounds}, center: {layout_center}")
             else:
                 layout_center = QtCore.QPointF(svg_width/2, svg_height/2)
                 layout_bounds = QtCore.QRectF(0, 0, svg_width, svg_height)
@@ -1804,7 +1804,7 @@ class PickerCanvas(QtWidgets.QWidget):
             # Clamp scale to reasonable range
             layout_scale = max(0.1, min(layout_scale, 10.0))
             
-            print(f"Layout scale: {layout_scale}")
+            #print(f"Layout scale: {layout_scale}")
             
             # Convert drop position to scene coordinates
             scene_drop_pos = self.canvas_to_scene_coords(drop_position)
@@ -1927,7 +1927,7 @@ class PickerCanvas(QtWidgets.QWidget):
                     self.update()
                     self.update_hud_counts()
                     
-                    print(f"Created {len(created_buttons)} buttons with preserved SVG layout")
+                    #print(f"Created {len(created_buttons)} buttons with preserved SVG layout")
                     
         except Exception as e:
             # Show error dialog
@@ -2028,7 +2028,7 @@ class PickerCanvas(QtWidgets.QWidget):
                 self.update()
                 self.update_hud_counts()
                 
-                print("Created combined SVG button successfully")
+                #print("Created combined SVG button successfully")
                 
         except Exception as e:
             self._show_svg_error(str(e))

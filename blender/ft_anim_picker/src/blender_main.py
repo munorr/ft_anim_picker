@@ -60,16 +60,16 @@ class PickerVisibilityManager:
             
             # CRITICAL FIX: Stop the timer if no pickers remain
             if len(self._registered_pickers) == 0:
-                print("No pickers remaining after unregister, stopping timer")
+                #print("No pickers remaining after unregister, stopping timer")
                 self._stop_visibility_timer()
                 # Reset state
                 self._should_be_visible = True
                 self._state_lock = False
         else:
             # Even if not in list, check if we should stop timer
-            print(f"Picker not found in registered list, checking if timer should stop")
+            #print(f"Picker not found in registered list, checking if timer should stop")
             if len(self._registered_pickers) == 0:
-                print("No pickers remaining, stopping timer")
+                #print("No pickers remaining, stopping timer")
                 self._stop_visibility_timer()
                 self._should_be_visible = True
                 self._state_lock = False
@@ -80,7 +80,7 @@ class PickerVisibilityManager:
             self._registered_child_widgets[parent_picker] = []
         if child_widget not in self._registered_child_widgets[parent_picker]:
             self._registered_child_widgets[parent_picker].append(child_widget)
-            print(f"Registered child widget {type(child_widget).__name__} to picker")
+            #print(f"Registered child widget {type(child_widget).__name__} to picker")
     
     def unregister_child_widget(self, parent_picker, child_widget):
         """Unregister a child widget"""
@@ -102,12 +102,12 @@ class PickerVisibilityManager:
     def _stop_visibility_timer(self):
         """ENHANCED: Stop the centralized visibility timer with proper cleanup"""
         if self._visibility_timer:
-            print("Stopping visibility timer...")
+            #print("Stopping visibility timer...")
             self._visibility_timer.stop()
             self._visibility_timer.timeout.disconnect()  # Disconnect signal
             self._visibility_timer.deleteLater()
             self._visibility_timer = None
-            print("Visibility timer stopped and cleaned up")
+            #print("Visibility timer stopped and cleaned up")
         
         # Reset state when stopping
         self._state_lock = False
@@ -178,7 +178,7 @@ class PickerVisibilityManager:
             
             # CRITICAL FIX: Stop timer if no valid pickers remain
             if not self._registered_pickers:
-                print("No valid pickers remaining, stopping visibility timer")
+                #print("No valid pickers remaining, stopping visibility timer")
                 self._stop_visibility_timer()
                 return
             
