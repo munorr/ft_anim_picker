@@ -220,7 +220,9 @@ class TransformGuides(QtWidgets.QWidget):
         
         for handle_name in self.handles:
             handle_rect = self.get_handle_rect(handle_name)
-            if handle_rect.contains(pos_f):
+            # Expand handle rect slightly for easier clicking (same as the old mask expansion)
+            expanded_rect = handle_rect.adjusted(-2, -2, 2, 2)
+            if expanded_rect.contains(pos_f):
                 return handle_name
         return None
 
@@ -464,10 +466,12 @@ class TransformGuides(QtWidgets.QWidget):
             self.transform_started.emit()
             event.accept()
         else:
-            event.ignore()
+            # Clicked outside handle areas - consume the event to prevent canvas drag selection
+            # but don't start any transform operation
+            event.accept()
         
         UT.blender_main_window()
-
+        
     def mouseMoveEvent(self, event):
         """Handle mouse move for active transforms and cursor updates - FIXED VERSION"""
         if event.buttons() & QtCore.Qt.MiddleButton:

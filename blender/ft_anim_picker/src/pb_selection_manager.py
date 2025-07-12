@@ -26,7 +26,19 @@ class SelectionManagerWidget(QtWidgets.QWidget):
         super(SelectionManagerWidget, self).__init__(parent)
         self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+
+        # Track visibility state
+        self._was_visible = True
         
+        # Find and store reference to parent picker window
+        self.parent_picker = self._find_parent_picker()
+        
+        # Register with visibility manager
+        if self.parent_picker:
+            from . import blender_main
+            visibility_manager = blender_main.PickerVisibilityManager.get_instance()
+            visibility_manager.register_child_widget(self.parent_picker, self)
+        #-------------------------------------------------------------------------------------------------------------------
         # Setup main layout
         self.main_layout = QtWidgets.QVBoxLayout(self)
         self.main_layout.setContentsMargins(4, 4, 4, 4)
@@ -169,7 +181,16 @@ class SelectionManagerWidget(QtWidgets.QWidget):
         self.picker_button = button
         self.refresh_list()
         self.position_window()
-        
+    
+    def _find_parent_picker(self):
+        """Find the parent BlenderAnimPickerWindow"""
+        parent = self.parent()
+        while parent:
+            if parent.__class__.__name__ == 'BlenderAnimPickerWindow':
+                return parent
+            parent = parent.parent()
+        return None
+
     def position_window(self):
         if self.picker_button:
             button_geometry = self.picker_button.geometry()
@@ -300,5 +321,11 @@ class SelectionManagerWidget(QtWidgets.QWidget):
             self.dragging = False
 
     def closeEvent(self, event):
+        # Unregister from visibility manager
+        if self.parent_picker:
+            from . import blender_main
+            visibility_manager = blender_main.PickerVisibilityManager.get_instance()
+            visibility_manager.unregister_child_widget(self.parent_picker, self)
+        
         super().closeEvent(event)
         UT.blender_main_window() 

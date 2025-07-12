@@ -63,6 +63,7 @@ class TransformGuides(QtWidgets.QWidget):
         self.visual_layer.setVisible(False)
         self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
         
+        
         # Connect to canvas selection changes
         if hasattr(canvas, 'button_selection_changed'):
             canvas.button_selection_changed.connect(self.update_selection)
@@ -152,7 +153,7 @@ class TransformGuides(QtWidgets.QWidget):
         
         # Set the mask - only these areas will receive mouse events
         self.setMask(region)
-    
+        
     def update_position(self):
         """Update the widget position and size to match the bounding rect"""
         if self.bounding_rect.isEmpty() or not self.selected_buttons:
@@ -225,7 +226,9 @@ class TransformGuides(QtWidgets.QWidget):
         
         for handle_name in self.handles:
             handle_rect = self.get_handle_rect(handle_name)
-            if handle_rect.contains(pos_f):
+            # Expand handle rect slightly for easier clicking (same as the old mask expansion)
+            expanded_rect = handle_rect.adjusted(-2, -2, 2, 2)
+            if expanded_rect.contains(pos_f):
                 return handle_name
         return None
 
@@ -402,9 +405,10 @@ class TransformGuides(QtWidgets.QWidget):
     def update_button_data(self):
         """Update button data in the main window after transform"""
         main_window = self.canvas.window()
-        if hasattr(main_window, 'update_button_data'):
-            for button in self.selected_buttons:
-                main_window.update_button_data(button)
+        if hasattr(main_window, 'batch_update_buttons_to_database'):
+            main_window.batch_update_buttons_to_database(self.selected_buttons)
+            #for button in self.selected_buttons:
+            #    main_window.update_button_data(button)
     
     def update_edit_widgets(self):
         """FIXED: Trigger edit widget updates after transform completion"""
@@ -468,7 +472,9 @@ class TransformGuides(QtWidgets.QWidget):
             self.transform_started.emit()
             event.accept()
         else:
-            event.ignore()
+            # Clicked outside handle areas - consume the event to prevent canvas drag selection
+            # but don't start any transform operation
+            event.accept()
         
         UT.maya_main_window().activateWindow()
 
@@ -606,4 +612,5 @@ class TransformGuidesVisual(QtWidgets.QWidget):
         painter.setPen(pen)
         painter.setBrush(QtCore.Qt.NoBrush)
         painter.drawRect(widget_rect)
+ 
  

@@ -191,16 +191,16 @@ class AnimPickerWindow(QtWidgets.QWidget):
         edit_util.addToMenu("Toggle Minimal Mode", self.fade_manager.toggle_minimal_mode, icon='eye.png', position=(2,0))
         edit_util.addToMenu("Toggle Fade Away", self.fade_manager.toggle_fade_away, icon='eye.png', position=(3,0))
 
-        info_util = CB.CustomButton(text='Info', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
+        self.info_util = CB.CustomButton(text='Info', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
                                     cmColor='#333333',tooltip='Help', flat=True)
         
         
-        info_util.addMenuLabel(f"Anim Picker{anim_picker_version}",position=(0,0))
-        info_util.addToMenu(f"Manual", self.info, icon=UT.get_icon('manual.png'), position=(1,0))
-        info_util.addToMenu(f"Update", self.update_anim_picker, icon=UT.get_icon('update.png'), position=(2,0))
+        self.info_util.addMenuLabel(f"Anim Picker{anim_picker_version}",position=(0,0))
+        self.info_util.addToMenu(f"Manual", self.info, icon=UT.get_icon('manual.png'), position=(1,0))
+        self.info_util.addToMenu(f"Update", self.update_anim_picker, icon=UT.get_icon('update.png'), position=(2,0))
         #-----------------------------------------------------------------------------------------------------------------------------------
-        self.update_anim_picker_button = CB.CustomButton(text='Update Available',icon=UT.get_icon('update.png',size=14), height=16, radius=3,color='#7db305'
-        ,text_size=10,tooltip='Update Anim Picker')
+        self.update_anim_picker_button = CB.CustomButton(text='Update Available',icon=UT.get_icon('update.png',size=14,opacity=.7), height=16, radius=8,color='#555555',
+        text_size=10,tooltip='Update Anim Picker', textColor='#eeeeee')
         self.update_anim_picker_button.clicked.connect(self.update_anim_picker)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         #-Close button
@@ -209,7 +209,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
 
         self.util_frame_col.addWidget(file_util)
         self.util_frame_col.addWidget(edit_util)
-        self.util_frame_col.addWidget(info_util)
+        self.util_frame_col.addWidget(self.info_util)
         self.util_frame_col.addStretch(1)
         self.util_frame_col.addWidget(self.update_anim_picker_button)
         self.util_frame_col.addSpacing(4)
@@ -625,6 +625,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
 
         # Force update of the layout
         self.update()
+        self.update_edit_widgets_delayed()
         QtCore.QTimer.singleShot(0, self.update_buttons_for_current_tab)
     #----------------------------------------------------------------------------------------------------------------------------------------
     def update_anim_picker(self):
@@ -636,22 +637,27 @@ class AnimPickerWindow(QtWidgets.QWidget):
             self._update_widget = UpdateWidget(self)
             self._update_widget.hide()
         
-        latest_release = self._update_widget.get_latest_tag()
-        current_version = ft_anim_picker.src.__version__
+        latest_release = self._update_widget.parse_version(self._update_widget.get_latest_tag())
+        current_version = self._update_widget.parse_version(ft_anim_picker.src.__version__)
         
         print(f'Latest Release: {latest_release}')
         print(f'Current Version: {current_version}')
         
         try:
-            if latest_release and UpdateWidget.is_newer_version(self._update_widget,latest_release, current_version):
+            if latest_release and self._update_widget.is_newer_version(latest_release, current_version):
                 self.update_anim_picker_button.setVisible(True)
+                self.info_util.set_notification(state=True)
+                self.info_util.set_menu_item_notification("Update", state=True)
                 print(f"Update available: {latest_release} > {current_version}")
             else:
                 self.update_anim_picker_button.setVisible(False)
+                self.info_util.set_notification(state=False)
+                self.info_util.set_menu_item_notification("Update", state=False)
                 print(f"No update needed: {latest_release} <= {current_version}")
         except Exception as e:
             print(f"Error checking for updates: {e}")
             self.update_anim_picker_button.setVisible(False) 
+    
     #----------------------------------------------------------------------------------------------------------------------------------------
     # [External Data Management]  
     #----------------------------------------------------------------------------------------------------------------------------------------
@@ -890,7 +896,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         super().resizeEvent(event)
         # Only update buttons if this is not from our manual resize operation
         # This prevents double updates during manual resizing
-        if not self.resize_state['active']:
+        if not self.resize_state.get('active', False):
             self.update_buttons_for_current_tab()
 
     def mousePressEvent(self, event):
@@ -1116,7 +1122,17 @@ class AnimPickerWindow(QtWidgets.QWidget):
     
     def closeEvent(self, event):
         """Enhanced close event with comprehensive cleanup"""
-        print("AnimPickerWindow closeEvent triggered")
+        #print("AnimPickerWindow closeEvent triggered")
+        
+        # Exit rename mode for any button in rename mode in the active canvas
+        if hasattr(self, 'tab_system') and self.tab_system and self.tab_system.current_tab:
+            canvas = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
+            for button in getattr(canvas, 'buttons', []):
+                if getattr(button, 'rename_mode', False):
+                    button.commit_rename()
+                    button.exit_rename_mode()
+
+        self.edit_mode = False
         
         # Stop any pending timers immediately
         timer_list = ['batch_update_timer', 'widget_update_timer', 'resize_timer']
@@ -1136,6 +1152,8 @@ class AnimPickerWindow(QtWidgets.QWidget):
         except Exception as e:
             print(f"Error processing pending updates during close: {e}")
         
+        
+
         if hasattr(self, 'update_checker_timer') and self.update_checker_timer:
             self.update_checker_timer.stop()
             self.update_checker_timer.deleteLater()
@@ -1724,7 +1742,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
                     force_immediate=True
                 )
                 
-                print(f"Batch updated {buttons_updated} buttons in database (fields: {fields_to_update})")
+                #print(f"Batch updated {buttons_updated} buttons in database (fields: {fields_to_update})")
             
             # Reconnect signals properly
             for button in buttons_to_update:
@@ -2776,7 +2794,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
     #----------------------------------------------------------------------------------------------------------------------------------------
     def cleanup_resources(self):
         """Comprehensive cleanup of all resources to prevent memory leaks"""
-        print("Starting AnimPickerWindow cleanup...")
+        #print("Starting AnimPickerWindow cleanup...")
         
         # 1. Stop and cleanup all timers
         timer_list = [
@@ -2864,7 +2882,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         import gc
         gc.collect()
         
-        print("AnimPickerWindow cleanup completed")
+        #print("AnimPickerWindow cleanup completed")
 
     def __del__(self):
         """Destructor to ensure cleanup even if closeEvent wasn't called"""

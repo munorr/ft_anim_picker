@@ -39,7 +39,6 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         # Track our visibility state for centralized management
         self.should_be_visible = True
         self.stored_geometry = None
-        #self.setup_conditional_stay_on_top()
 
         # Enable drag and drop for the window
         self.setAcceptDrops(True)
@@ -47,6 +46,8 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         
         self.edit_mode = False
         self.fade_manager = FadeAway(self)
+        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.fade_manager.show_frame_context_menu)
         
         # Resize optimization variables with advanced caching
         self.resize_state = {
@@ -206,14 +207,14 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         edit_util.addToMenu("Toggle Fade Away", self.fade_manager.toggle_fade_away, icon=UT.get_icon('visible.png'), position=(3,0))
         #-----------------------------------------------------------------------------------------------------------------------------------
         #Info Util
-        info_util = CB.CustomButton(text='Info', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
-                                    cmColor='#333333',tooltip='Info Utilities', flat=True)
-        info_util.addMenuLabel(f"Anim Picker{anim_picker_version}",position=(0,0))
-        info_util.addToMenu(f"Manual", self.info, icon=UT.get_icon('manual.png'), position=(1,0))
-        info_util.addToMenu(f"Update", self.update_anim_picker, icon=UT.get_icon('update.png'), position=(2,0))
+        self.info_util = CB.CustomButton(text='Info', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
+                                    cmColor='#333333',tooltip='Info Utilities', flat=True, notification=True)
+        self.info_util.addMenuLabel(f"Anim Picker{anim_picker_version}",position=(0,0))
+        self.info_util.addToMenu(f"Manual", self.info, icon=UT.get_icon('manual.png'), position=(1,0))
+        self.info_util.addToMenu(f"Update", self.update_anim_picker, icon=UT.get_icon('update.png'), position=(2,0))
         #-----------------------------------------------------------------------------------------------------------------------------------
-        self.update_anim_picker_button = CB.CustomButton(text='Update Available',icon=UT.get_icon('update.png',size=14), height=16, radius=3,color='#7db305',
-        text_size=10,tooltip='Update Anim Picker')
+        self.update_anim_picker_button = CB.CustomButton(text='Update Available',icon=UT.get_icon('update.png',size=14,opacity=.7), height=16, radius=8,color='#555555',
+        text_size=10,tooltip='Update Anim Picker', textColor='#eeeeee')
         self.update_anim_picker_button.clicked.connect(self.update_anim_picker)
         #-----------------------------------------------------------------------------------------------------------------------------------
         # Close button
@@ -225,7 +226,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.util_frame_layout.addWidget(self.icon_image)
         self.util_frame_layout.addWidget(file_util)
         self.util_frame_layout.addWidget(edit_util)
-        self.util_frame_layout.addWidget(info_util)
+        self.util_frame_layout.addWidget(self.info_util)
         self.util_frame_layout.addStretch(1)
         self.util_frame_layout.addWidget(self.update_anim_picker_button)
         self.util_frame_layout.addSpacing(4)
@@ -641,6 +642,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
 
         # Force update of the layout
         self.update()
+        self.update_edit_widgets_delayed()
         QtCore.QTimer.singleShot(0, self.update_buttons_for_current_tab)
     #----------------------------------------------------------------------------------------------------------------------------------------
     def update_anim_picker(self):
@@ -652,48 +654,27 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             self._update_widget = UpdateWidget(self)
             self._update_widget.hide()
         
-        latest_release = self._update_widget.get_latest_tag()
-        current_version = ft_anim_picker.src.__version__
+        latest_release = self._update_widget.parse_version(self._update_widget.get_latest_tag())
+        current_version = self._update_widget.parse_version(ft_anim_picker.src.__version__)
         
         print(f'Latest Release: {latest_release}')
         print(f'Current Version: {current_version}')
         
         try:
-            if latest_release and UpdateWidget.is_newer_version(self._update_widget,latest_release, current_version):
+            if latest_release and self._update_widget.is_newer_version(latest_release, current_version):
                 self.update_anim_picker_button.setVisible(True)
+                self.info_util.set_notification(state=True)
+                self.info_util.set_menu_item_notification("Update", state=True)
                 print(f"Update available: {latest_release} > {current_version}")
             else:
                 self.update_anim_picker_button.setVisible(False)
+                self.info_util.set_notification(state=False)
+                self.info_util.set_menu_item_notification("Update", state=False)
                 print(f"No update needed: {latest_release} <= {current_version}")
         except Exception as e:
             print(f"Error checking for updates: {e}")
             self.update_anim_picker_button.setVisible(False) 
     #----------------------------------------------------------------------------------------------------------------------------------------
-    def setup_conditional_stay_on_top(self):
-        """Setup conditional stay-on-top using hide/show instead of flag changes"""
-        self.stay_on_top_timer = QTimer(self)
-        self.stay_on_top_timer.timeout.connect(self.check_window_visibility)
-        self.stay_on_top_timer.start(100)  # Check every 10ms
-        
-        # Track our visibility state
-        self.should_be_visible = True
-        self.last_visibility_state = True
-        
-        # Store geometry when hiding to restore later
-        self.stored_geometry = None
-
-    def setup_conditional_stay_on_top(self):
-        """Setup conditional stay-on-top using hide/show instead of flag changes"""
-        self.stay_on_top_timer = QTimer(self)
-        self.stay_on_top_timer.timeout.connect(self.check_window_visibility)
-        self.stay_on_top_timer.start(100)  # Check every 10ms
-        
-        # Track our visibility state
-        self.should_be_visible = True
-        self.last_visibility_state = True
-        
-        # Store geometry when hiding to restore later
-        self.stored_geometry = None
 
     def _is_task_switcher_active(self):
         """Check if Windows task switcher is currently active"""
@@ -732,7 +713,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         """Ensure window is visible - show if hidden (called by centralized manager)"""
         if not self.should_be_visible:
             self.should_be_visible = True
-            print(f"Showing window {id(self)}")
+            #print(f"Showing window {id(self)}")
             
             # Restore geometry if we stored it
             if self.stored_geometry:
@@ -749,7 +730,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         """Ensure window is hidden when not needed (called by centralized manager)"""
         if self.should_be_visible:
             self.should_be_visible = False
-            print(f"Hiding window {id(self)}")
+            #print(f"Hiding window {id(self)}")
             
             # Store current geometry before hiding
             if self.isVisible():
@@ -1534,7 +1515,17 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
 
     def closeEvent(self, event):
         """Enhanced close event to ensure all data is saved and timers are cleaned up"""
-        print(f"Closing picker window {id(self)}")
+        #print(f"Closing picker window {id(self)}")
+        
+         # Exit rename mode for any button in rename mode in the active canvas
+        if hasattr(self, 'tab_system') and self.tab_system and self.tab_system.current_tab:
+            canvas = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
+            for button in getattr(canvas, 'buttons', []):
+                if getattr(button, 'rename_mode', False):
+                    button.commit_rename()
+                    button.exit_rename_mode()
+        
+        self.edit_mode = False
         
         # Process any pending updates before closing
         if hasattr(self, 'pending_button_updates') and self.pending_button_updates:
@@ -1574,7 +1565,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         if app:
             app.processEvents()
         
-        print(f"Picker window {id(self)} close event complete")
+        #print(f"Picker window {id(self)} close event complete")
         
         # Call parent close event
         super().closeEvent(event)
@@ -3519,7 +3510,13 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
     #----------------------------------------------------------------------------------------------------------------------------------------
     def cleanup_resources(self):
         """Comprehensive resource cleanup - call this when closing or resetting"""
-        print("Starting comprehensive resource cleanup...")
+        #print("Starting comprehensive resource cleanup...")
+        
+        # Clean up any open script managers
+        if hasattr(self, '_open_script_managers'):
+            for script_manager in self._open_script_managers:
+                script_manager.close()
+            self._open_script_managers.clear()
         
         # 1. Stop and cleanup all timers
         self._cleanup_timers()
@@ -3536,7 +3533,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         # 5. Force garbage collection
         self._force_garbage_collection()
         
-        print("Resource cleanup complete")
+        #print("Resource cleanup complete")
 
     def _cleanup_timers(self):
         """Stop and delete all timers"""
@@ -3575,7 +3572,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                     
                     canvas.setParent(None)
                     canvas.deleteLater()
-                    print(f"Cleaned up canvas for tab: {tab_name}")
+                    #print(f"Cleaned up canvas for tab: {tab_name}")
             
             # Clear tab system
             self.tab_system.tabs.clear()
@@ -3619,7 +3616,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         if hasattr(self, 'resize_state'):
             self.resize_state.clear()
         
-        print("Cleared data structure caches")
+        #print("Cleared data structure caches")
 
     def _cleanup_signal_connections(self):
         """Disconnect remaining signal connections"""
@@ -3635,7 +3632,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                     widget = getattr(self, widget_name)
                     widget.blockSignals(True)
             
-            print("Disconnected signal connections")
+            #print("Disconnected signal connections")
             
         except Exception as e:
             print(f"Error disconnecting signals: {e}")
@@ -3650,7 +3647,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         
         # Force garbage collection
         collected = gc.collect()
-        print(f"Garbage collection freed {collected} objects")
+        #print(f"Garbage collection freed {collected} objects")
         
         # Print memory usage if available
         try:
@@ -3658,7 +3655,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             import os
             process = psutil.Process(os.getpid())
             memory_mb = process.memory_info().rss / 1024 / 1024
-            print(f"Current memory usage: {memory_mb:.1f} MB")
+            #print(f"Current memory usage: {memory_mb:.1f} MB")
         except ImportError:
             pass
     
@@ -3674,11 +3671,11 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             self.cleanup_timer.stop()
             self.cleanup_timer.deleteLater()
             del self.cleanup_timer
-            print("Periodic cleanup Ended.")
+            #print("Periodic cleanup Ended.")
 
     def periodic_cleanup(self):
         """Periodic maintenance cleanup"""
-        print("Running periodic cleanup...")
+        #print("Running periodic cleanup...")
         
         # Clear unused ID references
         if hasattr(self, 'available_ids'):
@@ -3693,6 +3690,6 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         # Light garbage collection
         import gc
         collected = gc.collect(generation=0)  # Only generation 0
-        if collected > 0:
-            print(f"Periodic cleanup collected {collected} objects")
+        #if collected > 0:
+            #print(f"Periodic cleanup collected {collected} objects")
     

@@ -30,10 +30,11 @@ class PickerVisibilityManager:
     """FIXED: Centralized visibility manager for all picker instances"""
     _instance = None
     _registered_pickers = []
+    _registered_child_widgets = {} 
     _visibility_timer = None
     _should_be_visible = True
     _last_check_time = 0
-    _state_lock = False  # Prevent rapid state changes
+    _state_lock = False
     
     @classmethod
     def get_instance(cls):
@@ -73,6 +74,22 @@ class PickerVisibilityManager:
                 self._should_be_visible = True
                 self._state_lock = False
     
+    def register_child_widget(self, parent_picker, child_widget):
+        """Register a child widget (like ScriptManagerWidget) to a parent picker"""
+        if parent_picker not in self._registered_child_widgets:
+            self._registered_child_widgets[parent_picker] = []
+        if child_widget not in self._registered_child_widgets[parent_picker]:
+            self._registered_child_widgets[parent_picker].append(child_widget)
+            print(f"Registered child widget {type(child_widget).__name__} to picker")
+    
+    def unregister_child_widget(self, parent_picker, child_widget):
+        """Unregister a child widget"""
+        if parent_picker in self._registered_child_widgets:
+            if child_widget in self._registered_child_widgets[parent_picker]:
+                self._registered_child_widgets[parent_picker].remove(child_widget)
+                if not self._registered_child_widgets[parent_picker]:
+                    del self._registered_child_widgets[parent_picker]
+
     def _start_visibility_timer(self):
         """Start the centralized visibility timer"""
         if self._visibility_timer is None:
@@ -224,7 +241,12 @@ class PickerVisibilityManager:
         # Check if any child widgets are active (dialogs, etc.)
         active_window = QApplication.activeWindow()
         if active_window:
-            # CRITICAL FIX: Check if the active window belongs to ANY picker instance
+            # Check if it's a registered child widget (like ScriptManagerWidget)
+            for picker, child_widgets in self._registered_child_widgets.items():
+                if active_window in child_widgets:
+                    return True
+            
+            # Check parent hierarchy for picker relationships
             for picker in self._registered_pickers:
                 # Direct parent relationship
                 if active_window == picker:
@@ -237,23 +259,10 @@ class PickerVisibilityManager:
                         return True
                     parent = parent.parent()
                 
-                # Check for modal dialogs
-                if (hasattr(active_window, 'parent') and 
-                    active_window.parent() == picker):
-                    return True
-                    
-                # Check transient parent relationships for popup windows
-                if (active_window.windowModality() != Qt.NonModal and
-                    hasattr(active_window, 'transientParent') and 
-                    active_window.transientParent() == picker):
-                    return True
-                
-                # ADDITIONAL FIX: Check if active window is owned by same application
-                # and is a Qt window (could be our picker child)
+                # Additional check for window title patterns
                 if (hasattr(active_window, 'windowTitle') and 
                     active_window.windowTitle() and
-                    ('picker' in active_window.windowTitle().lower() or
-                     'animation' in active_window.windowTitle().lower())):
+                    isinstance(active_window, (ScriptManagerWidget, SelectionManagerWidget))):
                     return True
         
         return False
@@ -473,7 +482,7 @@ class PickerVisibilityManager:
     
     def _apply_visibility_to_all(self, should_be_visible):
         """ENHANCED: Apply visibility state to all registered picker windows with safety checks"""
-        print(f"Applying visibility {should_be_visible} to {len(self._registered_pickers)} windows")
+        #print(f"Applying visibility {should_be_visible} to {len(self._registered_pickers)} windows")
         
         successful_updates = 0
         for picker in self._registered_pickers[:]:  # Use copy to avoid modification during iteration
@@ -495,6 +504,22 @@ class PickerVisibilityManager:
                     picker._ensure_window_hidden()
                     
                 successful_updates += 1
+
+                if picker in self._registered_child_widgets:
+                    for child_widget in self._registered_child_widgets[picker][:]:
+                        try:
+                            if should_be_visible:
+                                # Only show if it was previously visible
+                                if hasattr(child_widget, '_was_visible') and child_widget._was_visible:
+                                    child_widget.show()
+                            else:
+                                # Store visibility state before hiding
+                                child_widget._was_visible = child_widget.isVisible()
+                                child_widget.hide()
+                        except Exception as e:
+                            print(f"Error updating child widget visibility: {e}")
+                            # Remove invalid child widget
+                            self._registered_child_widgets[picker].remove(child_widget)
                 
             except Exception as e:
                 print(f"Error applying visibility to picker {id(picker)}: {e}")
@@ -504,7 +529,7 @@ class PickerVisibilityManager:
                 except ValueError:
                     pass
         
-        print(f"Successfully updated visibility for {successful_updates}/{len(self._registered_pickers)} windows")
+        #print(f"Successfully updated visibility for {successful_updates}/{len(self._registered_pickers)} windows")
                        
 class PickerWindowManager:
     _instance = None

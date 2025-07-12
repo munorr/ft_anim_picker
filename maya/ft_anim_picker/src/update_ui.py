@@ -462,47 +462,19 @@ class UpdateWidget(QWidget):
     
     def parse_version(self, version_string):
         """Parse version string into comparable tuple of integers"""
-        # Remove common prefixes and clean the version
-        version = version_string.strip()
-        if version.startswith('v'):
-            version = version[1:]
+        import re
+        # Convert to string and clean
+        version = str(version_string).strip().lstrip('v')
         
-        # Handle underscore separators
-        version = version.replace('_', '.')
+        # Extract all numbers from the version string
+        numbers = re.findall(r'\d+', version)
         
-        # Split by dots and convert to integers
-        try:
-            parts = []
-            for part in version.split('.'):
-                # Extract numeric part only
-                numeric_part = ''.join(filter(str.isdigit, part))
-                if numeric_part:
-                    parts.append(int(numeric_part))
-                else:
-                    parts.append(0)
-            return tuple(parts)
-        except (ValueError, AttributeError):
-            # Fallback: try to extract just numbers
-            numeric_only = ''.join(filter(str.isdigit, version_string))
-            if numeric_only:
-                return tuple(int(d) for d in numeric_only)
-            return (0,)
+        # Convert to integers, default to (0,) if no numbers found
+        return tuple(map(int, numbers)) if numbers else (0,)
 
     def is_newer_version(self, latest, current):
         """Compare two version strings and return True if latest is newer"""
-        try:
-            latest_tuple = self.parse_version(latest)
-            current_tuple = self.parse_version(current)
-            
-            # Pad tuples to same length
-            max_len = max(len(latest_tuple), len(current_tuple))
-            latest_padded = latest_tuple + (0,) * (max_len - len(latest_tuple))
-            current_padded = current_tuple + (0,) * (max_len - len(current_tuple))
-            
-            return latest_padded > current_padded
-        except Exception as e:
-            print(f"Version comparison error: {e}")
-            return False
+        return self.parse_version(latest) > self.parse_version(current)
             
     def get_latest_tag(self):
         """Get the latest release tag from the GitHub repository with caching"""
@@ -510,10 +482,10 @@ class UpdateWidget(QWidget):
         
         # Check if we have a cached result that's still valid
         current_time = time.time()
-        if (UpdateWidget._latest_tag_cache is not None and 
-            current_time - UpdateWidget._last_check_time < UpdateWidget._cache_duration):
+        if (self._latest_tag_cache is not None and 
+            current_time - self._last_check_time < self._cache_duration):
             print("Using cached tag result")
-            return UpdateWidget._latest_tag_cache
+            return self._latest_tag_cache
         
         try:
             # Parse repository URL
@@ -549,7 +521,7 @@ class UpdateWidget(QWidget):
             UpdateWidget._last_check_time = current_time
             print(f"Updated tag cache with: {clean_tag}")
             
-            return clean_tag
+            return release_tag#clean_tag
             
         except Exception as e:
             print(f"Error getting latest tag: {str(e)}")

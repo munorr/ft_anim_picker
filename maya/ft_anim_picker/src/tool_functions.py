@@ -1723,7 +1723,10 @@ def _persist_appearance_changes(modified_buttons, context, validated_params):
                     "mode": getattr(button, 'mode', 'select'),
                     "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
                     "pose_data": getattr(button, 'pose_data', {}),
-                    "thumbnail_path": getattr(button, 'thumbnail_path', '')
+                    "thumbnail_path": getattr(button, 'thumbnail_path', ''),
+                    "shape_type": getattr(button, 'shape_type', 'rect'),
+                    "svg_path_data": getattr(button, 'svg_path_data', None),
+                    "svg_file_path": getattr(button, 'svg_file_path', None)
                 }
                 
                 # Update existing button data or add new one
@@ -1771,7 +1774,7 @@ def _persist_appearance_changes(modified_buttons, context, validated_params):
     # print(f"Updated {len(modified_buttons)} button(s) in widget '{widget_name}': {', '.join(changes)}")
     # print("Changes have been saved to the database.")
 #---------------------------------------------------------------------------------------------------------------
-def tool_tip(tooltip_text=""):
+def tool_tip(tooltip_header="", tooltip_text=""):
     """
     Sets a custom tooltip for a button in the animation picker.
     

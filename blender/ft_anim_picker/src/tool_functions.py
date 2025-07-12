@@ -1343,6 +1343,9 @@ def _persist_appearance_changes(modified_buttons, context, validated_params):
                     "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
                     "pose_data": getattr(button, 'pose_data', {}),
                     "thumbnail_path": getattr(button, 'thumbnail_path', ''),
+                    "shape_type": getattr(button, 'shape_type', 'rect'),
+                    "svg_path_data": getattr(button, 'svg_path_data', None),
+                    "svg_file_path": getattr(button, 'svg_file_path', None)
                 }
                 
                 # Update existing button data or add new one
@@ -1390,7 +1393,7 @@ def _persist_appearance_changes(modified_buttons, context, validated_params):
     # print(f"Updated {len(modified_buttons)} button(s) in widget '{widget_name}': {', '.join(changes)}")
     # print("Changes have been saved to the database.")
 #---------------------------------------------------------------------------------------------------------------
-def tool_tip(tooltip_text=""):
+def tool_tip(tooltip_header="", tooltip_text=""):
     """
     Sets a custom tooltip for a button in the animation picker.
     
@@ -1401,6 +1404,7 @@ def tool_tip(tooltip_text=""):
     @TF.tool_tip("My custom tooltip")
     
     Args:
+        tooltip_header (str): The custom tooltip header to display when hovering over the button.
         tooltip_text (str): The custom tooltip text to display when hovering over the button.
         
     Returns:

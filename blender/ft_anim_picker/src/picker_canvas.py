@@ -233,6 +233,14 @@ class PickerCanvas(QtWidgets.QWidget):
         self.minimal_mode = False
         self.last_selected_button = None
 
+        # Custom tooltip management
+        self._tooltip_widget = None
+        self._tooltip_timer = QtCore.QTimer(self)
+        self._tooltip_timer.setSingleShot(True)
+        self._tooltip_timer.timeout.connect(self._show_button_tooltip)
+        self._current_hover_button = None
+        self._tooltip_position = QtCore.QPoint()
+
         # Transform guides for edit mode (add after HUD initialization)
         self.transform_guides = TG.TransformGuides(self, self)
         self.transform_guides.transform_finished.connect(self.on_transform_finished)
@@ -456,6 +464,75 @@ class PickerCanvas(QtWidgets.QWidget):
             )
             return scene_rect.intersects(button_rect)
     #------------------------------------------------------------------------------
+    def _show_button_tooltip(self):
+        """Show tooltip for the currently hovered button"""
+        if not self._current_hover_button:
+            return
+        
+        # Rebuild tooltip content if needed
+        if self._current_hover_button._tooltip_needs_update:
+            self._current_hover_button._rebuild_tooltip_content()
+        
+        # Get or create tooltip widget
+        if not self._tooltip_widget:
+            self._tooltip_widget = self._current_hover_button.tooltip_widget
+        else:
+            # Reuse existing widget but update content
+            self._tooltip_widget = self._current_hover_button.tooltip_widget
+        
+        # Position tooltip with screen boundary checking
+        screen = QtWidgets.QApplication.screenAt(self._tooltip_position)
+        if screen:
+            screen_rect = screen.availableGeometry()
+            tooltip_pos = self._tooltip_position + QtCore.QPoint(10, 10)
+            
+            # Adjust if tooltip would go off screen
+            if tooltip_pos.x() + self._tooltip_widget.width() > screen_rect.right():
+                tooltip_pos.setX(self._tooltip_position.x() - self._tooltip_widget.width() - 10)
+            if tooltip_pos.y() + self._tooltip_widget.height() > screen_rect.bottom():
+                tooltip_pos.setY(self._tooltip_position.y() - self._tooltip_widget.height() - 10)
+                
+            self._tooltip_widget.move(tooltip_pos)
+        else:
+            self._tooltip_widget.move(self._tooltip_position + QtCore.QPoint(10, 10))
+        
+        self._tooltip_widget.show()
+
+    def _hide_button_tooltip(self):
+        """Hide the current button tooltip"""
+        self._tooltip_timer.stop()
+        try:
+            if self._tooltip_widget and self._tooltip_widget.isVisible():
+                self._tooltip_widget.hide()
+        except:
+            pass
+        self._current_hover_button = None
+
+    def _update_hover_button(self, pos):
+        """Update which button is being hovered over"""
+        # Get button at position
+        button = self._get_button_at_position(pos)
+        
+        if button != self._current_hover_button:
+            # Hide current tooltip
+            self._hide_button_tooltip()
+            
+            # Update hover state
+            if self._current_hover_button:
+                self._current_hover_button.is_hovered = False
+                self._current_hover_button.update()
+            
+            self._current_hover_button = button
+            
+            if button:
+                # Show new button as hovered
+                button.is_hovered = True
+                button.update()
+                
+                # Start tooltip timer
+                self._tooltip_position = QtGui.QCursor.pos()
+                self._tooltip_timer.start(800)  # 800ms delay
+    #------------------------------------------------------------------------------
     # SELECTION LOGIC
     #------------------------------------------------------------------------------
     def apply_final_selection(self, add_to_selection=False, ctrl_held=False):
@@ -507,6 +584,9 @@ class PickerCanvas(QtWidgets.QWidget):
         
         # Handle UI updates
         self._handle_post_selection_updates(missing_objects)
+        import bpy
+        with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+            bpy.ops.ed.undo_push(message="Select Object")
 
     def _get_ordered_selections(self, add_to_selection):
         """Build ordered list of buttons to select based on drag operation"""
@@ -2891,6 +2971,10 @@ class PickerCanvas(QtWidgets.QWidget):
             del self.selection_manager
     #------------------------------------------------------------------------------
     def wheelEvent(self, event):
+
+        # Hide tooltip during zoom
+        self._hide_button_tooltip()
+        
         # Get the wheel delta value - positive for wheel up, negative for wheel down
         delta_y = event.angleDelta().y()
         
@@ -2936,6 +3020,9 @@ class PickerCanvas(QtWidgets.QWidget):
         if hasattr(self, 'transform_guides') and self.transform_guides.isVisible():
             self.transform_guides.update_position()
         
+        # Update hover after zoom
+        QtCore.QTimer.singleShot(100, lambda: self._update_hover_button(self.mapFromGlobal(QtGui.QCursor.pos())))
+        
         # Ensure Maya window stays active
         #UT.blender_main_window() 
         
@@ -2954,6 +3041,9 @@ class PickerCanvas(QtWidgets.QWidget):
 
     def mousePressEvent(self, event):
         """Enhanced mouse press handler to track last clicked button"""
+        # Hide tooltip immediately
+        self._hide_button_tooltip()
+        
         if (hasattr(self, 'transform_guides') and self.transform_guides.isVisible() and event.button() == QtCore.Qt.LeftButton):
             # Convert to transform guides coordinates
             guides_pos = self.transform_guides.mapFromParent(event.pos())
@@ -3054,7 +3144,9 @@ class PickerCanvas(QtWidgets.QWidget):
     
     def mouseMoveEvent(self, event):
         """Handle mouse move events"""
-        
+        # Update button hover state and tooltip
+        self._update_hover_button(event.pos())
+
         # Check for Alt+Left drag panning
         alt_pressed = bool(event.modifiers() & QtCore.Qt.AltModifier)
         
@@ -3082,6 +3174,9 @@ class PickerCanvas(QtWidgets.QWidget):
             
         elif ((event.buttons() == QtCore.Qt.LeftButton and alt_pressed) or 
             event.buttons() == QtCore.Qt.MiddleButton) and self.last_pan_pos:
+            # Hide tooltip during zoom
+            self._hide_button_tooltip()
+            
             # Handle panning (Alt+Left drag or Middle mouse drag)
             self.setUpdatesEnabled(False)
             try:
@@ -3102,6 +3197,15 @@ class PickerCanvas(QtWidgets.QWidget):
             super().mouseMoveEvent(event)
         event.accept()
 
+    def leaveEvent(self, event):
+        """Handle mouse leaving the canvas"""
+        self._hide_button_tooltip()
+        if self._current_hover_button:
+            self._current_hover_button.is_hovered = False
+            self._current_hover_button.update()
+            self._current_hover_button = None
+        super().leaveEvent(event)
+    
     def mouseReleaseEvent(self, event):
         """Enhanced mouse release handler to properly handle last selected button"""
         
@@ -3340,4 +3444,17 @@ class PickerCanvas(QtWidgets.QWidget):
                 self.border_radius
             )
 
+    def cleanup(self):
+        """Clean up resources when canvas is destroyed"""
+        self._hide_button_tooltip()
+        if self._tooltip_widget:
+            self._tooltip_widget.deleteLater()
+            self._tooltip_widget = None
+        
+        # Clean up other resources...
+        if hasattr(self, 'transform_guides'):
+            self.transform_guides.deleteLater()
+        
+        if hasattr(self, 'hud'):
+            self.hud.deleteLater()
             

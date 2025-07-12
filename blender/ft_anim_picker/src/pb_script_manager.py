@@ -4,7 +4,9 @@ import os
 
 from PySide6 import QtWidgets, QtCore, QtGui
 from PySide6.QtGui import QColor
-from PySide6.QtCore import QTimer, QPropertyAnimation, QEasingCurve, Signal
+from PySide6.QtCore import QTimer, QPropertyAnimation, QEasingCurve, Signal, QPoint
+from PySide6.QtWidgets import QLabel, QToolTip
+from PySide6.QtCore import Qt
 
 import re
 
@@ -65,7 +67,7 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
         self.python_keywords = [
             'def', 'class', 'if', 'else', 'elif', 'for', 'while', 'return', 'import', 'from', 'as', 'pass', 'break',
             'continue', 'try', 'except', 'finally', 'with', 'lambda', 'yield', 'global', 'nonlocal', 'assert', 'del',
-            'raise', 'and', 'or', 'not', 'in', 'is', 'True', 'False', 'None'
+            'raise', 'and', 'or', 'not', 'in', 'is', 'True', 'False', 'None', 'bpy'
         ]
         self.keyword_pattern = r'\\b(' + '|'.join(self.python_keywords) + r')\\b'
 
@@ -96,12 +98,15 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
                     return True
             return False
         
-        # Highlight quoted text (both single and double quotes) first
+        # Store quoted text positions but don't apply formatting yet
+        # We'll apply quoted text formatting after variable highlighting
+        quoted_text_matches = []
+        
         for match in re.finditer(double_quote_pattern, text):
-            self.setFormat(match.start(), len(match.group()), self.quoted_text_format)
+            quoted_text_matches.append((match.start(), len(match.group())))
 
         for match in re.finditer(single_quote_pattern, text):
-            self.setFormat(match.start(), len(match.group()), self.quoted_text_format)
+            quoted_text_matches.append((match.start(), len(match.group())))
         #--------------------------------------------------------------------------------------------------------
         # Apply highlighting for @TF.functionName pattern (without brackets) Only highlight if the function exists in tool_functions
         tool_functions = ['tool_tip','button_appearance','reset_move','reset_scale','reset_rotate','reset_all']
@@ -144,11 +149,75 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
                 # Apply bright green to the function name
                 self.setFormat(match.start(1), len(match.group(1)), self.special_format)
         #--------------------------------------------------------------------------------------------------------
+        # Apply highlighting for other special patterns
+        for pattern in special_patterns:
+            for match in re.finditer(pattern, text):
+                self.setFormat(match.start(), len(match.group()), self.special_format)
+        
+        # Highlight Python keywords
+        for match in re.finditer(r'\b(' + '|'.join(self.python_keywords) + r')\b', text):
+            self.setFormat(match.start(), len(match.group()), self.keyword_format)
+
+        # Highlight (), {}, [] in yellow
+        for match in re.finditer(r'[\(\)\{\}\[\]]', text):
+            self.setFormat(match.start(), 1, self.bracket_format)
+        #--------------------------------------------------------------------------------------------------------
+        # FIXED: Highlight variable assignments - consolidated and improved logic
+        
+        # 1. Handle line-start variable assignments (including multiple assignments)
+        line_assignment_pattern = r'^\s*([a-zA-Z_][a-zA-Z0-9_]*(?:\s*,\s*[a-zA-Z_][a-zA-Z0-9_]*)*)\s*=(?!=)'
+        processed_assignments = set()  # Track processed assignments to avoid duplicates
+        
+        for match in re.finditer(line_assignment_pattern, text, re.MULTILINE):
+            var_section = match.group(1)
+            var_start_offset = match.start(1)
+            
+            # Don't highlight if inside a quoted string
+            if not is_in_quoted_string(var_start_offset):
+                # Extract individual variable names from the comma-separated list
+                individual_vars = re.finditer(r'[a-zA-Z_][a-zA-Z0-9_]*', var_section)
+                for var_match in individual_vars:
+                    var_start = var_start_offset + var_match.start()
+                    var_length = len(var_match.group())
+                    
+                    # Double-check each variable position
+                    if not is_in_quoted_string(var_start):
+                        self.setFormat(var_start, var_length, self.variable_format)
+                        processed_assignments.add(var_start)  # Mark as processed
+        
+        # 2. Handle function parameters and keyword arguments (but not line-start assignments)
+        param_pattern = r'([a-zA-Z_][a-zA-Z0-9_]*)\s*=(?!=)'
+        for match in re.finditer(param_pattern, text):
+            param_start = match.start(1)
+            param_length = len(match.group(1))
+            
+            # Skip if already processed as a line-start assignment
+            if param_start in processed_assignments:
+                continue
+            
+            # Don't highlight if inside a quoted string
+            if not is_in_quoted_string(param_start):
+                # Check if this is NOT a line-start assignment
+                line_start = text.rfind('\n', 0, param_start) + 1
+                text_before_param = text[line_start:param_start].strip()
+                
+                # Only highlight if there's something before it on the same line
+                # (indicating it's a function parameter, not a variable assignment)
+                if text_before_param:
+                    self.setFormat(param_start, param_length, self.variable_format)
+        
+        #--------------------------------------------------------------------------------------------------------
+        # Apply quoted text formatting AFTER most highlighting but BEFORE @ns patterns
+        # This ensures strings get their formatting, but special patterns can override
+        for start_pos, length in quoted_text_matches:
+            self.setFormat(start_pos, length, self.quoted_text_format)
+        
+        #--------------------------------------------------------------------------------------------------------
+        # Re-apply @ns patterns AFTER quoted text to ensure they override string formatting
         # Apply highlighting for @ns.qualifier pattern (handles both direct and quoted contexts)
-        # This comes AFTER quoted text highlighting so it can override the quote formatting
         ns_pattern = r'(@ns\.)([a-zA-Z0-9_-]+)'
         for match in re.finditer(ns_pattern, text, re.IGNORECASE):
-            # Apply special_format_02 to @ns.
+            # Apply special_format to @ns. (always, even inside quotes)
             self.setFormat(match.start(1), len(match.group(1)), self.special_format)
             # Apply tf_function_format to the qualifier
             #self.setFormat(match.start(2), len(match.group(2)), self.tf_function_format)
@@ -165,64 +234,7 @@ class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
             
             if is_standalone:
                 self.setFormat(match.start(), len(match.group()), self.special_format)
-        #--------------------------------------------------------------------------------------------------------
-        # Apply highlighting for other special patterns
-        for pattern in special_patterns:
-            for match in re.finditer(pattern, text):
-                self.setFormat(match.start(), len(match.group()), self.special_format)
         
-        # Highlight Python keywords
-        for match in re.finditer(r'\b(' + '|'.join(self.python_keywords) + r')\b', text):
-            self.setFormat(match.start(), len(match.group()), self.keyword_format)
-
-        # Highlight (), {}, [] in yellow
-        for match in re.finditer(r'[\(\)\{\}\[\]]', text):
-            self.setFormat(match.start(), 1, self.bracket_format)
-        #--------------------------------------------------------------------------------------------------------
-        # Highlight variable assignments (variable names on the left side of =)
-        # Pattern matches: variable_name = (with optional whitespace)
-        variable_pattern = r'^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*='
-        for match in re.finditer(variable_pattern, text, re.MULTILINE):
-            var_name = match.group(1)
-            var_start = match.start(1)
-            var_length = len(var_name)
-            # Don't highlight if it's inside a quoted string or comment
-            if not is_in_quoted_string(var_start):
-                self.setFormat(var_start, var_length, self.variable_format)
-        
-        # Also highlight variables in multiple assignment: a, b, c = values
-        multi_var_pattern = r'^\s*([a-zA-Z_][a-zA-Z0-9_]*(?:\s*,\s*[a-zA-Z_][a-zA-Z0-9_]*)*)\s*='
-        for match in re.finditer(multi_var_pattern, text, re.MULTILINE):
-            var_section = match.group(1)
-            var_start_offset = match.start(1)
-            
-            # Extract individual variable names from the comma-separated list
-            individual_vars = re.finditer(r'[a-zA-Z_][a-zA-Z0-9_]*', var_section)
-            for var_match in individual_vars:
-                var_start = var_start_offset + var_match.start()
-                var_length = len(var_match.group())
-                if not is_in_quoted_string(var_start):
-                    self.setFormat(var_start, var_length, self.variable_format)
-        
-        # Highlight parameter names in function calls: function(param_name = value)
-        # This pattern looks for parameter names inside function calls
-        param_pattern = r'([a-zA-Z_][a-zA-Z0-9_]*)\s*='
-        for match in re.finditer(param_pattern, text):
-            param_name = match.group(1)
-            param_start = match.start(1)
-            param_length = len(param_name)
-            
-            # Don't highlight if it's inside a quoted string or comment
-            if not is_in_quoted_string(param_start):
-                # Additional check: make sure this isn't a line-start variable assignment
-                # (which we already handled above)
-                line_start = text.rfind('\n', 0, param_start) + 1
-                text_before_param = text[line_start:param_start].strip()
-                
-                # If there's something before the parameter name on the same line,
-                # it's likely a function parameter, not a variable assignment
-                if text_before_param:
-                    self.setFormat(param_start, param_length, self.variable_format)
         #--------------------------------------------------------------------------------------------------------
         # Highlight comments (lines starting with #) but only if not inside strings
         # Comments should override quoted text formatting when the # is not inside a string
@@ -265,7 +277,31 @@ class CodeEditor(QtWidgets.QPlainTextEdit):
         # Enable context menu
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
-    
+        #----------------------------------------------------------------------------------------------
+        # Enable mouse tracking for tooltips
+        self.setMouseTracking(True)
+        
+        # Tooltip delay timer
+        self._tooltip_timer = QtCore.QTimer(self)
+        self._tooltip_timer.setSingleShot(True)
+        self._tooltip_timer.timeout.connect(self._show_delayed_tooltip)
+        self._pending_tooltip = None
+
+        self.installEventFilter(self)
+        # Tooltip definitions for highlighted tokens
+        self.tooltip_definitions = {
+            '@ba': 'Control button appearance properties<br><font color="#555555">t=text, c=color, o=opacity, s=selectable, tb=target_buttons</font>',
+            '@pb': 'Gives access to picker button properties<br><font color="#555555">.color  .text  .opacity  .selectable</font>',
+            '@tt': 'Adds custom tooltips for script buttons<br><font color="#555555">@tt("header text", "body text")</font>',
+            '@reset_all': 'Reset all transforms (move, scale, rotate)',
+            '@reset_move': 'Reset object translation/position',
+            '@reset_scale': 'Reset object scale',
+            '@reset_rotate': 'Reset object rotation',
+            '@ns.': 'Reference to object namespace for selection operations',
+            '@ns': 'Reference to object namespace for selection operations'
+        }
+        #----------------------------------------------------------------------------------------------
+
     def show_context_menu(self, position):
         """Show custom context menu at the given position"""
         context_menu = QtWidgets.QMenu(self)
@@ -392,7 +428,7 @@ class CodeEditor(QtWidgets.QPlainTextEdit):
             extra_selections.append(selection)
         
         self.setExtraSelections(extra_selections)
-    
+    #---------------------------------------------------------------------------------------------
     def keyPressEvent(self, event):
         # Explicitly check for Shift+Tab and handle it first
         if event.key() == QtCore.Qt.Key_Backtab:
@@ -595,14 +631,260 @@ class CodeEditor(QtWidgets.QPlainTextEdit):
                 cursor.setPosition(end_pos - len(text_after_cursor))
                 cursor.setPosition(end_pos, QtGui.QTextCursor.KeepAnchor)
                 cursor.removeSelectedText()
-            else:
-                # Position cursor after the indentation on the new line
-                cursor.movePosition(QtGui.QTextCursor.StartOfLine)
                 cursor.movePosition(QtGui.QTextCursor.Right, QtGui.QTextCursor.MoveAnchor, len(indent))
         
         cursor.endEditBlock()
         self.setTextCursor(cursor)
         return True
+    #---------------------------------------------------------------------------------------------
+    def get_token_at_position(self, position):
+        """Get the highlighted token at the given text position"""
+        # Get the current document
+        document = self.document()
+        
+        # Find the block containing this position
+        block = document.findBlock(position)
+        if not block.isValid():
+            return None
+        
+        # Get the text of the block and position within block
+        block_text = block.text()
+        position_in_block = position - block.position()
+        
+        # Define patterns for tokens we want to detect
+        import re
+        token_patterns = [
+            # @TF.function patterns
+            (r'(@TF\.[a-zA-Z_][a-zA-Z0-9_]*)', r'@TF\.\w+'),
+            # Function call patterns with parentheses
+            (r'(@ba)\s*\([^)]*\)', r'@ba'),
+            (r'(@button_appearance)\s*\([^)]*\)', r'@button_appearance'),
+            (r'(@pb)\s*\([^)]*\)', r'@pb'),
+            (r'(@picker_button)\s*\([^)]*\)', r'@picker_button'),
+            (r'(@tt)\s*\([^)]*\)', r'@tt'),
+            (r'(@tool_tip)\s*\([^)]*\)', r'@tool_tip'),
+            # Standalone function patterns
+            (r'(@reset_all)\b', r'@reset_all'),
+            (r'(@reset_move)\b', r'@reset_move'),
+            (r'(@reset_scale)\b', r'@reset_scale'),
+            (r'(@reset_rotate)\b', r'@reset_rotate'),
+            # Namespace patterns - detect both @ns and @ns.
+            (r'(@ns\.)([a-zA-Z0-9_-]*)', r'@ns\.'),
+            (r'(@ns)\b', r'@ns'),
+        ]
+        
+        # Check each pattern to see if the position falls within a match
+        for full_pattern, token_pattern in token_patterns:
+            for match in re.finditer(full_pattern, block_text, re.IGNORECASE):
+                if match.start() <= position_in_block < match.end():
+                    # Extract the specific token part
+                    token_match = re.search(token_pattern, match.group(), re.IGNORECASE)
+                    if token_match:
+                        token = token_match.group()
+                        # Handle @TF.function case
+                        if token.startswith('@TF.'):
+                            return token
+                        # Handle @ns. and @ns case
+                        elif token == '@ns.' or token == '@ns':
+                            return token
+                        # Handle other cases
+                        else:
+                            return token
+        
+        return None
+    
+    def show_custom_tooltip(self, global_pos, text=None, content=None, widget=None):
+        """Show a custom tooltip without width restrictions
+        
+        Args:
+            global_pos: Global position for the tooltip
+            text: Simple text to display (legacy mode)
+            content: Function to build tooltip content
+            widget: Pre-built tooltip widget
+        """
+        # Hide any existing tooltip first
+        self.hide_custom_tooltip()
+        
+        # Use pre-built widget if provided
+        if widget:
+            tooltip_widget = widget
+        else:
+            # Create the custom tooltip widget
+            tooltip_widget = CB.CustomTooltipWidget(bg_color="#1f1f1f", border_color="#333333")
+            
+            if content and callable(content):
+                # Use content function to build the tooltip
+                content(tooltip_widget)
+            elif text:
+                # Simple text mode for backward compatibility
+                tooltip_widget.add_text(text)
+            else:
+                # Default tooltip content
+                tooltip_widget.add_text("")
+        
+        # Finalize the tooltip (resize it)
+        tooltip_widget.finalize()
+        
+        # Position tooltip with screen boundary checking
+        screen = QtWidgets.QApplication.screenAt(global_pos)
+        if screen:
+            screen_rect = screen.availableGeometry()
+            tooltip_pos = global_pos + QPoint(10, 10)
+            
+            # Adjust if tooltip would go off screen
+            if tooltip_pos.x() + tooltip_widget.width() > screen_rect.right():
+                tooltip_pos.setX(global_pos.x() - tooltip_widget.width() - 10)
+            if tooltip_pos.y() + tooltip_widget.height() > screen_rect.bottom():
+                tooltip_pos.setY(global_pos.y() - tooltip_widget.height() - 10)
+                
+            tooltip_widget.move(tooltip_pos)
+        else:
+            tooltip_widget.move(global_pos + QPoint(10, 10))
+        
+        tooltip_widget.show()
+        
+        # Store reference to prevent garbage collection
+        self._custom_tooltip = tooltip_widget
+        
+        # Auto-hide after 10 seconds as a safety measure
+        if hasattr(self, '_tooltip_hide_timer'):
+            self._tooltip_hide_timer.stop()
+        else:
+            self._tooltip_hide_timer = QtCore.QTimer(self)
+            self._tooltip_hide_timer.setSingleShot(True)
+            self._tooltip_hide_timer.timeout.connect(self.hide_custom_tooltip)
+        
+        self._tooltip_hide_timer.start(10000)  # 10 second auto-hide
+    
+    def _show_delayed_tooltip(self):
+        """Show the tooltip after the delay has elapsed"""
+        if self._pending_tooltip:
+            # Create a custom tooltip with enhanced styling
+            tooltip_widget = CB.CustomTooltipWidget(bg_color="#1f1f1f", border_color="#333333")
+            
+            # Get token information
+            token = self._pending_tooltip.get('token', '')
+            tooltip_text = self._pending_tooltip.get('text', '')
+            
+            # Create header with token name
+            header_layout = QtWidgets.QHBoxLayout()
+            
+            # Add colored indicator based on token type
+            color = "#91CB08"  # Default green for most tokens
+            token_name = ""
+            if token.startswith('@ba') or token.startswith('@button_appearance'):
+                token_name = "Button Appearance"
+            elif token.startswith('@tt') or token.startswith('@tool_tip'):
+                token_name = "Tooltip"
+            elif token.startswith('@pb') or token.startswith('@picker_button'):
+                token_name = "Picker Button"
+            elif token.startswith('@reset'):
+                token_name = "Reset Function"
+            elif token.startswith('@ns.') or token.startswith('@ns'):
+                token_name = "Namespace"
+            
+            # Add token name
+            token_label = QtWidgets.QLabel(f"<b>{token} <font color=#aaaaaa>({token_name})</font></b> ")
+            token_label.setStyleSheet(f"color: {color}; font-size: 12px;")
+            header_layout.addWidget(token_label)
+            header_layout.addStretch()
+            
+            # Add the header to the tooltip
+            tooltip_widget.add_layout(header_layout)
+            
+            # Text frame
+            text_frame = QtWidgets.QFrame()
+            text_frame.setStyleSheet("background-color: #1b1b1b; border: 1px solid #333333; border-radius: 3px; padding: 2px;")
+
+            text_layout = QtWidgets.QVBoxLayout(text_frame)
+            text_layout.setContentsMargins(2, 2, 2, 2)
+            text_layout.setSpacing(2)
+            
+            # Add description text
+            tooltip_label = QtWidgets.QLabel(tooltip_text)
+            tooltip_label.setStyleSheet("color: #ffffff; font-size: 12px; border: none; background-color: transparent;")
+            text_layout.addWidget(tooltip_label)
+            
+            # Add the text frame to the tooltip
+            tooltip_widget.add_widget(text_frame)
+            
+            # Show the tooltip at the pending position
+            self.show_custom_tooltip(
+                self._pending_tooltip['position'],
+                widget=tooltip_widget
+            )
+    
+    def hide_custom_tooltip(self):
+        """Hide the custom tooltip"""
+        if hasattr(self, '_custom_tooltip') and self._custom_tooltip:
+            self._custom_tooltip.hide()
+            self._custom_tooltip.deleteLater()
+            self._custom_tooltip = None
+            
+        if hasattr(self, '_tooltip_hide_timer'):
+            self._tooltip_hide_timer.stop()
+            
+        # Also hide Qt's default tooltip as backup
+        QToolTip.hideText()
+    #---------------------------------------------------------------------------------------------
+    def mouseMoveEvent(self, event):
+        """Handle mouse move events to show tooltips for highlighted tokens"""
+        # Get the cursor position at the mouse location
+        cursor = self.cursorForPosition(event.pos())
+        position = cursor.position()
+        
+        # Get the token at this position
+        token = self.get_token_at_position(position)
+        
+        if token and token in self.tooltip_definitions:
+            # Only set new tooltip if it's different from current
+            new_tooltip = {
+                'position': event.globalPos(),
+                'text': self.tooltip_definitions[token],
+                'token': token
+            }
+            
+            # Check if this is a different tooltip or position has changed significantly
+            if (not self._pending_tooltip or 
+                self._pending_tooltip.get('token') != new_tooltip['token'] or
+                (self._pending_tooltip.get('position') - new_tooltip['position']).manhattanLength() > 5):
+                
+                self._pending_tooltip = new_tooltip
+                self._tooltip_timer.stop()  # Stop any existing timer
+                self._tooltip_timer.start(500)  # Reduced delay for better responsiveness
+        else:
+            # Immediately clear when not over a token
+            self._tooltip_timer.stop()
+            self._pending_tooltip = None
+            self.hide_custom_tooltip()
+        
+        super().mouseMoveEvent(event)
+        
+    def leaveEvent(self, event):
+        """Hide tooltip when mouse leaves the editor"""
+        self._tooltip_timer.stop()
+        self._pending_tooltip = None
+        self.hide_custom_tooltip()
+        super().leaveEvent(event)
+
+    def enterEvent(self, event):
+        """Handle mouse entering the editor"""
+        super().enterEvent(event)
+
+    def eventFilter(self, obj, event):
+        """Event filter to handle various tooltip-related events"""
+        if obj == self:
+            if event.type() == QtCore.QEvent.FocusOut:
+                # Hide tooltip when editor loses focus
+                self.hide_custom_tooltip()
+            elif event.type() == QtCore.QEvent.WindowDeactivate:
+                # Hide tooltip when window is deactivated
+                self.hide_custom_tooltip()
+            elif event.type() == QtCore.QEvent.KeyPress:
+                # Hide tooltip when user starts typing
+                self.hide_custom_tooltip()
+        
+        return super().eventFilter(obj, event)
 
 class ScriptManagerWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -624,6 +906,16 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         # Set minimum size
         self.setGeometry(0,0,500,300)
         self.setMinimumSize(305, 300)
+
+        # Track our visibility state
+        self._was_visible = True
+        
+        # Store reference to parent picker window and register with visibility manager
+        self.parent_picker = self._find_parent_picker()
+        if self.parent_picker:
+            from . import blender_main
+            visibility_manager = blender_main.PickerVisibilityManager.get_instance()
+            visibility_manager.register_child_widget(self.parent_picker, self)
         #--------------------------------------------------------------------------------------------------------------------------
         # Setup main layout
         self.main_layout = QtWidgets.QVBoxLayout(self)
@@ -638,6 +930,13 @@ class ScriptManagerWidget(QtWidgets.QWidget):
                 background-color: rgba(36, 36, 36, .95);
                 border: 1px solid #444444;
                 border-radius: {self.br}px;
+            }}
+            QToolTip {{
+                background-color: #1b1b1b;
+                color: #ffffff;
+                border: 1px solid #555555;
+                border-radius: 0px;
+                padding: 4px;
             }}""")
         self.frame_layout = QtWidgets.QVBoxLayout(self.frame)
         self.frame_layout.setContentsMargins(6, 6, 6, 6)
@@ -862,6 +1161,10 @@ class ScriptManagerWidget(QtWidgets.QWidget):
                     formatted_ids += row_str + "\n"
                 formatted_ids += "]"
                 preset_code = formatted_ids
+
+            elif len(button_ids) == 1:
+                preset_code = f"'{button_ids[0]}'"
+
             else:
                 # Use single line format for 5 or fewer items
                 preset_code = f'''{button_ids}'''
@@ -893,6 +1196,15 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.button_id_label.setText(f"[{self.picker_button.unique_id}]")
         self.position_window()
 
+    def _find_parent_picker(self):
+        """Find the parent BlenderAnimPickerWindow"""
+        parent = self.parent()
+        while parent:
+            if parent.__class__.__name__ == 'BlenderAnimPickerWindow':
+                return parent
+            parent = parent.parent()
+        return None
+
     def position_window(self):
         if self.picker_button:
             button_geometry = self.picker_button.geometry()
@@ -915,16 +1227,18 @@ class ScriptManagerWidget(QtWidgets.QWidget):
             current_code = self.code_editor.toPlainText()
             
             # Extract tooltip from the code if present
+            custom_tooltip_header = None
             custom_tooltip = None
             tooltip_patterns = [
-                r'@TF\.tool_tip\s*\(\s*["\'](.+?)["\']s*\)',
-                r'@tool_tip\s*\(\s*["\'](.+?)["\']s*\)',
-                r'@tt\s*\(\s*["\'](.+?)["\']s*\)',
+                r'@TF\.tool_tip\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
+                r'@tool_tip\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
+                r'@tt\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
             ]
             for pattern in tooltip_patterns:
                 tooltip_match = re.search(pattern, current_code, flags=re.IGNORECASE)
                 if tooltip_match:
-                    custom_tooltip = tooltip_match.group(1)
+                    custom_tooltip_header = tooltip_match.group(1)
+                    custom_tooltip = tooltip_match.group(2) if tooltip_match.lastindex >= 2 else None
                     break
             
             # Create script data
@@ -935,6 +1249,8 @@ class ScriptManagerWidget(QtWidgets.QWidget):
             }
             
             # Add custom tooltip to script data if found
+            if custom_tooltip_header:
+                script_data['custom_tooltip_header'] = custom_tooltip_header
             if custom_tooltip:
                 script_data['custom_tooltip'] = custom_tooltip
             
@@ -948,7 +1264,6 @@ class ScriptManagerWidget(QtWidgets.QWidget):
             self.picker_button.changed.emit(self.picker_button)
             self.close()
     #---------------------------------------------------------------------------------------
-    # Window resizing and dragging event handlers (keeping existing implementation)
     def eventFilter(self, obj, event):
         if obj == self.frame:
             if event.type() == QtCore.QEvent.MouseMove:
@@ -1029,8 +1344,14 @@ class ScriptManagerWidget(QtWidgets.QWidget):
             self.dragging = False
 
     def closeEvent(self, event):
+        # Unregister from visibility manager
+        if self.parent_picker:
+            from . import blender_main
+            visibility_manager = blender_main.PickerVisibilityManager.get_instance()
+            visibility_manager.unregister_child_widget(self.parent_picker, self)
+        
         super().closeEvent(event)
-        UT.blender_main_window() 
+        UT.blender_main_window()
 
     def is_in_resize_range(self, pos):
         width = self.width()
@@ -1081,3 +1402,4 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         
         self.setCursor(cursor)
     #---------------------------------------------------------------------------------------
+

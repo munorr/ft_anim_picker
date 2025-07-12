@@ -140,6 +140,7 @@ class PickerButton(QtWidgets.QWidget):
         self.radius = [3, 3, 3, 3]  # [top_left, top_right, bottom_right, bottom_left]
         self.is_selected = False
         self.selectable = selectable  # Whether the button can be selected in select mode (not edit mode)
+        self.text_color = "#ffffff"
         
         self.shape_type = shape_type  # 'rounded_rect' or 'custom_path'
         self.svg_path_data = svg_path_data  # Store the SVG path string
@@ -155,8 +156,10 @@ class PickerButton(QtWidgets.QWidget):
         self.rotation = 0
     
         self.setStyleSheet(f"QToolTip {{background-color: {UT.rgba_value(color,.7,alpha=1)}; color: #eeeeee ; border: 1px solid rgba(255,255,255,.2); padding: 0px;}}")
-        # Set tool tip to have translucent background and remove shadow
-        
+        # Create tooltip widget once and reuse it
+        self.tooltip_widget = CB.CustomTooltipWidget(parent=self)
+        self._tooltip_populated = False
+        self._tooltip_needs_update = True 
        
         self.edit_mode = False
         self.update_cursor()
@@ -165,6 +168,11 @@ class PickerButton(QtWidgets.QWidget):
         self.mode = 'select'  # 'select', 'script', or 'pose'
         self.script_data = {}  # Store script data
         self.pose_data = {}  # Store pose data
+
+        # Rename mode properties
+        self.rename_mode = False
+        self.rename_edit = None
+
         
         # Thumbnail image for pose mode
         self.thumbnail_path = ''  # Path to the thumbnail image
@@ -181,6 +189,10 @@ class PickerButton(QtWidgets.QWidget):
         self.last_text = None      # Track text to know when to regenerate the pixmap
 
         self.is_hovered = False
+        
+
+        self.installEventFilter(self)
+        #self._tooltip_needs_update = True
         self.update_tooltip()
         
     @property
@@ -386,33 +398,59 @@ class PickerButton(QtWidgets.QWidget):
         Args:
             current_size (QSize): Current button size
             zoom_factor (float): Current zoom factor
-            
         Returns:
             QPixmap: The rendered text pixmap
         """
         text_pixmap = QtGui.QPixmap(current_size)
         text_pixmap.fill(QtCore.Qt.transparent)
+
+        # Start with height-based calculation (preserve as priority)
+        base_font_size = (self.height * 0.5) * zoom_factor
+        font_size = int(base_font_size)
+        min_font_size = 6  # Set a minimum font size for legibility
+        max_width = current_size.width() * 0.9  # 10% padding
+
+        # Prepare the display text (don't modify self.label)
+        display_text = self.label
         
+        # Only wrap if not already colored
+        if "color:" not in display_text and "font color=" not in display_text:
+            display_text = f"<span style='color: {self.text_color};'>{display_text}</span>"
+        
+        # Use QTextDocument for rich text, but single line only
+        doc = QtGui.QTextDocument()
+        doc.setHtml(display_text)  # Use display_text instead of self.label
+
+        # Try to fit the text in one line by reducing font size if needed
+        while font_size >= min_font_size:
+            font = QtGui.QFont()
+            font.setPixelSize(font_size)
+            doc.setDefaultFont(font)
+            doc.setTextWidth(-1)  # No wrapping
+            text_width = doc.idealWidth()
+            if text_width <= max_width:
+                break
+            font_size -= 1
+            
+        # Set final font
+        font = QtGui.QFont()
+        font.setPixelSize(font_size)
+        doc.setDefaultFont(font)
+        doc.setTextWidth(-1)  # No wrapping
+        text_width = doc.idealWidth()
+        text_height = doc.size().height()
+
+        # Center horizontally and vertically
+        x = (current_size.width() - text_width) / 2
+        y = (current_size.height() - text_height) / 2
+
         text_painter = QtGui.QPainter(text_pixmap)
         text_painter.setRenderHint(QtGui.QPainter.Antialiasing)
         text_painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
-        
-        # Set up font
-        text_painter.setPen(QtGui.QColor('white'))
-        font = text_painter.font()
-        font_size = (self.height * 0.5) * zoom_factor
-        font.setPixelSize(int(font_size))
-        text_painter.setFont(font)
-        
-        # Calculate text rect with padding
-        text_rect = self.rect()
-        bottom_padding = (self.height * 0.1) * zoom_factor
-        text_rect.adjust(0, 0, 0, -int(bottom_padding))
-        
-        # Draw text centered
-        text_painter.drawText(text_rect, QtCore.Qt.AlignCenter, self.label)
+        text_painter.translate(x, y)
+        doc.drawContents(text_painter)
         text_painter.end()
-        
+
         return text_pixmap
     
     def _should_update_pixmaps(self, zoom_factor, current_size, current_radius, current_text):
@@ -1324,34 +1362,168 @@ class PickerButton(QtWidgets.QWidget):
             self.setCursor(QtCore.Qt.OpenHandCursor)
         else:
             self.setCursor(QtCore.Qt.ArrowCursor)
+    
+    def update(self):
+        super().update()
+        self.update_tooltip()
+    #---------------------------------------------------------------------------------------
+    def toolTip(self):
+        """Override to return our custom tooltip text"""
+        if hasattr(self, '_tooltip_text'):
+            return self._tooltip_text
+        return super().toolTip()
 
     def update_tooltip(self):
-        """Update the tooltip with button information"""
+        """Update the tooltip with button information using direct widget building"""
+        # Just mark that tooltip needs update, don't rebuild here
+        self._tooltip_needs_update = True
+        self._tooltip_populated = False
+
+    def _rebuild_tooltip_content(self):
+        """Actually rebuild the tooltip content when needed"""
+        if not self._tooltip_needs_update:
+            return
+            
+        # Clear existing content
+        if hasattr(self.tooltip_widget, 'clear_content'):
+            self.tooltip_widget.clear_content()
+        else:
+            # Fallback: recreate the widget if clear_content doesn't exist
+            self.tooltip_widget = CB.CustomTooltipWidget(parent=self)
         
+        # Create the tooltip content
+        color = self.color
+        color_box = QtWidgets.QFrame()
+        color_box.setStyleSheet(f"background-color: {color}; border:none; border-radius: 4px; border: 1px solid {UT.rgba_value(color, 1.2)};")
+        color_box.setFixedSize(12, 12)
+
         # Check if the button has a custom tooltip from script
-        if self.mode == 'script' and self.script_data and 'custom_tooltip' in self.script_data:
-            # Use the custom tooltip from script
-            custom_tooltip = self.script_data['custom_tooltip']
-            tooltip = f"{custom_tooltip}"
-            tooltip += f"<i><div style='text-align: left; font-size: 9px; color: rgba(255, 255, 255, 0.7); '>ID: [{self.unique_id}]</div></i>"
-            tooltip += f"<div style='text-align: center; font-size: 9px; color: rgba(255, 255, 255, 0.5); '>({self.mode.capitalize()} mode)</div>"
-            self.setToolTip(tooltip)
+        if self.mode == 'script':
+            # Header with button name and object count
+            header_layout = QtWidgets.QHBoxLayout()
+
+            header_layout.addWidget(color_box)
+
+            if self.script_data and 'custom_tooltip_header' in self.script_data:
+                # Use the custom tooltip from script
+                custom_tooltip = self.script_data['custom_tooltip_header']
+                title_label = QtWidgets.QLabel(custom_tooltip)
+                title_label.setStyleSheet("color: #ffffff; border: none; background-color: transparent;")
+                header_layout.addWidget(title_label)
+            else:
+                title_label = QtWidgets.QLabel(f"<b>{self.label}</b>")
+                title_label.setStyleSheet("color: #ffffff; font-size: 12px; border:none;background-color: transparent;")
+                header_layout.addWidget(title_label)
+
+            
+            header_layout.addStretch()
+
+            mode_icon = QtWidgets.QLabel()
+            icon_pixmap = UT.get_icon('code.png', size=16)
+
+            if icon_pixmap:
+                mode_icon.setPixmap(icon_pixmap)
+
+            header_layout.addWidget(mode_icon)
+            self.tooltip_widget.add_layout(header_layout)
+            #--------------------------------------------------------------------------------------------------------------------------------
+            custom_tooltip_frame = QtWidgets.QFrame()
+            custom_tooltip_frame.setFrameStyle(QtWidgets.QFrame.Box)
+            custom_tooltip_frame.setStyleSheet("""
+                QFrame {
+                    background-color: rgba(0, 0, 0, 0.2);
+                    border: 1px solid rgba(255, 255, 255, 0.1);
+                    border-radius: 3px;
+                    padding: 2px;
+                }
+            """)
+            
+            custom_tooltip_layout = QtWidgets.QVBoxLayout(custom_tooltip_frame)
+            custom_tooltip_layout.setContentsMargins(2, 2, 2, 2)
+            custom_tooltip_layout.setSpacing(2)
+
+            if self.script_data and 'custom_tooltip' in self.script_data:
+                
+                # Use the custom tooltip from script
+                custom_tooltip = self.script_data['custom_tooltip']
+                custom_tooltip_label = QtWidgets.QLabel(custom_tooltip)
+                custom_tooltip_label.setStyleSheet("color: #ffffff; border: none; background-color: transparent;")
+            else:
+                custom_tooltip_label = QtWidgets.QLabel("No custom tooltip available")
+                custom_tooltip_label.setStyleSheet("color: #333333; border: none; background-color: transparent;")
+
+            custom_tooltip_layout.addWidget(custom_tooltip_label)
+            
+            self.tooltip_widget.add_widget(custom_tooltip_frame)
+            #--------------------------------------------------------------------------------------------------------------------------------
+            # Info section with horizontal layout
+            info_layout = QtWidgets.QHBoxLayout()
+            
+            # Button ID
+            id_label = QtWidgets.QLabel(f"ID: {self.unique_id}")
+            id_label.setStyleSheet("color: rgba(255, 255, 255, 0.4); font-size: 10px; border:none;background-color: transparent;")
+            info_layout.addWidget(id_label)
+            
+            info_layout.addStretch()
+            
+            self.tooltip_widget.add_layout(info_layout)
+            
+            self._tooltip_needs_update = False
+            self._tooltip_populated = True
             return
-        elif self.mode == 'script':
-            tooltip = f"<b><span style='font-size: 12px;'>Script Button</span></b>"
-            tooltip += f"<i><div style='text-align: left; font-size: 9px; color: rgba(255, 255, 255, 0.7); '>ID: [{self.unique_id}]</div></i>"
-            tooltip += f"<div style='text-align: center; font-size: 9px; color: rgba(255, 255, 255, 0.5); '>({self.mode.capitalize()} mode)</div>"
-            self.setToolTip(tooltip)
-            return
+        #--------------------------------------------------------------------------------------------------------------------------------
+        # Header with button name and object count
+        header_layout = QtWidgets.QHBoxLayout()
         
-        # Default tooltip behavior
-        tooltip = f"<b><span style='font-size: 12px;'>Assigned Objects <span style='color: rgba(255, 255, 255, 0.6);'>({len(self.assigned_objects)})</span>:</b></span>"
+        header_layout.addWidget(color_box)
         
-        # Frame
+        title_label = QtWidgets.QLabel(f"<b><font color='#333333'>NA</font></b>" if not self.label.strip() else f"<b>{self.label}</b>")
+        title_label.setStyleSheet("color: #ffffff; font-size: 12px; border:none;background-color: transparent;")
+        header_layout.addWidget(title_label)
         
-        
-        tooltip += f"<div style='background-color: rgba(0, 0, 0, 0.1);'>"
         if self.assigned_objects:
+            count_label = QtWidgets.QLabel(f"<span style='color: rgba(255, 255, 255, 0.6);'>({len(self.assigned_objects)})</span>")
+            count_label.setStyleSheet("font-size: 12px; border:none;background-color: transparent;")
+            header_layout.addWidget(count_label)
+        
+        header_layout.addStretch()
+
+        mode_icon = QtWidgets.QLabel()
+        if self.mode == 'select':
+            icon_pixmap = UT.get_icon('select.png', size=16)
+        elif self.mode == 'script':
+            icon_pixmap = UT.get_icon('code.png', size=16)
+        elif self.mode == 'pose':
+            icon_pixmap = UT.get_icon('pose_01.png', size=16)
+
+        if icon_pixmap:
+            mode_icon.setPixmap(icon_pixmap)
+
+        header_layout.addWidget(mode_icon)
+
+        self.tooltip_widget.add_layout(header_layout)
+        #--------------------------------------------------------------------------------------------------------------------------------
+        # Objects section with frame
+        objects_frame = QtWidgets.QFrame()
+        objects_frame.setFrameStyle(QtWidgets.QFrame.Box)
+        objects_frame.setStyleSheet("""
+            QFrame {
+                background-color: rgba(0, 0, 0, 0.2);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 3px;
+                padding: 2px;
+            }
+        """)
+        
+        objects_layout = QtWidgets.QVBoxLayout(objects_frame)
+        objects_layout.setContentsMargins(2, 2, 2, 2)
+        objects_layout.setSpacing(2)
+        
+        if self.assigned_objects:
+            objects_title = QtWidgets.QLabel("<b>Assigned Objects:</b>" if self.mode == 'select' else "<b>Pose Objects:</b>")
+            objects_title.setStyleSheet("color: #ffffff; font-size: 11px; border:none;background-color: transparent;")
+            objects_layout.addWidget(objects_title)
+            
             object_names = []
             
             # Handle both bones and objects in the tooltip
@@ -1368,33 +1540,59 @@ class PickerButton(QtWidgets.QWidget):
                     # Strip namespace for display if needed
                     short_name = obj_name.split('_')[-1] if '_' in obj_name else obj_name
                     object_names.append(short_name)
-                
+            
             if object_names:
                 # Limit to first 10 objects and indicate if there are more
-                if len(object_names) > 10:
-                    displayed_objects = object_names[:10]
-                    remaining_count = len(object_names) - 10
-                    objects_str = "- " + "<br>- ".join(displayed_objects)
-                    objects_str += f"<br><span style='color: rgba(255, 255, 255, 0.5); font-size: 9px;'><i>...and {remaining_count} more object{'s' if remaining_count > 1 else ''}</i></span>"
-                else:
-                    objects_str = "- " + "<br>- ".join(object_names)
-                tooltip += objects_str
+                displayed_objects = object_names[:5]
+                
+                for obj_name in displayed_objects:
+                    obj_label = QtWidgets.QLabel(f"• {obj_name}")
+                    obj_label.setStyleSheet("color: rgba(255, 255, 255, 0.9); font-size: 10px; margin-left: 8px; border:none;background-color: transparent;")
+                    objects_layout.addWidget(obj_label)
+                
+                if len(object_names) > 5:
+                    remaining_count = len(object_names) - 5
+                    more_label = QtWidgets.QLabel(f"<i>...and {remaining_count} more object{'s' if remaining_count > 1 else ''}</i>")
+                    more_label.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 9px; margin-left: 8px; border:none;background-color: transparent;")
+                    objects_layout.addWidget(more_label)
             else:
-                tooltip += "(No valid objects found)"
+                no_objects_label = QtWidgets.QLabel("(No valid objects found)")
+                no_objects_label.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 9px; font-style: italic; border:none;background-color: transparent;")
+                objects_layout.addWidget(no_objects_label)
         else:
-            tooltip += f"<i><span style='font-size: 9px; color: rgba(255, 255, 255, 0.6);'>No objects assigned</span></i>"
+            no_assigned_label = QtWidgets.QLabel("<i>No objects assigned</i>")
+            no_assigned_label.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 9px; border:none;background-color: transparent;")
+            objects_layout.addWidget(no_assigned_label)
         
+        self.tooltip_widget.add_widget(objects_frame)
+        #--------------------------------------------------------------------------------------------------------------------------------
+        # Info section with horizontal layout
+        info_layout = QtWidgets.QHBoxLayout()
         
-        tooltip += "</div>"
-        tooltip += f"<i><div style='text-align: left; font-size: 10px; color: rgba(255, 255, 255, 0.8); '>ID: [{self.unique_id}]</div></i>"
-        if self.thumbnail_path:
-            tooltip += f"<br><span style='font-size: 10px; color: rgba(255, 255, 255, 0.6);'>[{os.path.basename(self.thumbnail_path).split('.')[0]}]</span>"
-        else:
-            tooltip += f"<br><i><span style='font-size: 9px; color: rgba(255, 255, 255, 0.6);'>No thumbnail</span></i>"
-        # Button ID and mode
-        tooltip += f"<b><div style='text-align: center; font-size: 10px; color: rgba(255, 255, 255, 0.7); '>({self.mode.capitalize()} mode)</div></b>"
+        # Button ID
+        id_label = QtWidgets.QLabel(f"ID: {self.unique_id}")
+        id_label.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 10px; border:none;background-color: transparent;")
+        info_layout.addWidget(id_label)
         
-        self.setToolTip(tooltip)
+        info_layout.addStretch()
+        
+        # Thumbnail info for pose mode
+        if self.mode == 'pose':
+            if self.thumbnail_path:
+                thumb_label = QtWidgets.QLabel(f"[{os.path.basename(self.thumbnail_path).split('.')[0]}]")
+                thumb_label.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 10px; border:none;background-color: transparent;")
+                info_layout.addWidget(thumb_label)
+            else:
+                no_thumb_label = QtWidgets.QLabel("<i>No thumbnail</i>")
+                no_thumb_label.setStyleSheet("color: rgba(255, 255, 255, 0.4); font-size: 9px; border:none;background-color: transparent;")
+                info_layout.addWidget(no_thumb_label)
+        
+        self.tooltip_widget.add_layout(info_layout)
+        #--------------------------------------------------------------------------------------------------------------------------------
+        
+        # Mark as updated
+        self._tooltip_needs_update = False
+        self._tooltip_populated = True
     #---------------------------------------------------------------------------------------
     def set_mode(self, mode):
         canvas = self.parent()
@@ -1790,6 +1988,16 @@ class PickerButton(QtWidgets.QWidget):
                 menu.addAction(selectable_action)
             else:
                 menu.addAction(unselectable_action)
+            
+            if self.mode == 'select':
+                selection_manager_action = menu.addAction(QtGui.QIcon(UT.get_icon('select.png')),"Selection Manager")
+                selection_manager_action.triggered.connect(self.show_selection_manager)
+                selection_manager_action.setEnabled(
+                    len(self.parent().get_selected_buttons()) == 1
+                )
+            elif self.mode == 'script':
+                script_manager_action = menu.addAction(QtGui.QIcon(UT.get_icon('code.png')),"Script Manager")
+                script_manager_action.triggered.connect(self.show_script_manager)
             #---------------------------------------------------------------------------------------
         else:
             # Selection 
@@ -1849,8 +2057,13 @@ class PickerButton(QtWidgets.QWidget):
         menu.exec_(self.mapToGlobal(pos))
         
     def show_selection_manager(self):
+        # Find the parent picker window
+        canvas = self.parent() if hasattr(self, 'parent') else None
+        picker_window = canvas.window() if canvas else self.window()
+        
         if not hasattr(self, 'selection_manager'):
-            self.selection_manager = SelectionManagerWidget()
+            from . import pb_selection_manager
+            self.selection_manager = pb_selection_manager.SelectionManagerWidget(picker_window)
         
         self.selection_manager.set_picker_button(self)
         
@@ -1860,8 +2073,16 @@ class PickerButton(QtWidgets.QWidget):
         self.selection_manager.show()
 
     def show_script_manager(self):
-        if not hasattr(self, 'script_manager'):
-            self.script_manager = ScriptManagerWidget()
+        """Show the script manager widget for this button"""
+        # Find the parent picker window
+        canvas = self.parent()
+        picker_window = canvas.window() if canvas else None
+        
+        # Check if a script manager already exists
+        if not hasattr(self, 'script_manager') or not self.script_manager:
+            from . import pb_script_manager
+            # Pass the picker window as parent for proper tracking
+            self.script_manager = pb_script_manager.ScriptManagerWidget(picker_window)
         
         self.script_manager.set_picker_button(self)
         self.script_manager.show()
@@ -2435,7 +2656,8 @@ class PickerButton(QtWidgets.QWidget):
     def set_script_data(self, data):
         self.script_data = data
         self.changed.emit(self)
-        self.update_tooltip()
+        self._tooltip_needs_update = True
+        #self.update_tooltip()
     #---------------------------------------------------------------------------------------    
     # POSE MANAGEMENT
     #---------------------------------------------------------------------------------------
@@ -2684,7 +2906,8 @@ class PickerButton(QtWidgets.QWidget):
     def _save_pose_data(self, pose_data):
         """Save the captured pose data"""
         self.pose_data = {"default": pose_data}
-        self.update_tooltip()
+        #self.update_tooltip()
+        self._tooltip_needs_update = True
         self.changed.emit(self)
 
     def _show_success_dialog(self):
@@ -2714,7 +2937,8 @@ class PickerButton(QtWidgets.QWidget):
         self.assigned_objects = []
         
         # Update the tooltip to reflect the changes
-        self.update_tooltip()
+        #self.update_tooltip()
+        self._tooltip_needs_update = True
         
         # Emit the changed signal
         self.changed.emit(self)
@@ -4586,11 +4810,93 @@ class PickerButton(QtWidgets.QWidget):
     def rename_button(self, new_label):
         #if new_label and new_label != self.label:
         self.label = new_label
-        self.setToolTip(f"Label: {self.label}\nSelect Set\nID: {self.unique_id}")
         # Force regeneration of text pixmap
         self.text_pixmap = None
         self.update()
         self.changed.emit(self)
+    
+    def enter_rename_mode(self):
+        """Enter rename mode by creating a QLineEdit overlay"""
+        if self.rename_mode:
+            return
+        canvas = self.parent()
+        self.rename_mode = True
+        zoom_factor = canvas.zoom_factor if canvas else 1.0
+
+        # Create QLineEdit for renaming
+        self.rename_edit = QtWidgets.QLineEdit(self)
+        font = self.rename_edit.font()
+        font.setPixelSize(int((self.height * 0.5) * zoom_factor))
+        self.rename_edit.setFont(font)
+
+        self.rename_edit.setText(self.label)
+        self.rename_edit.setGeometry(self.rect())
+        self.rename_edit.setToolTip("")
+        self.rename_edit.setAlignment(QtCore.Qt.AlignCenter)
+        self.rename_edit.setStyleSheet(f"""
+            background-color: {self.color};
+            color: #ffffff;
+            border: 0px solid rgba(255,255,255,.8);
+            border-radius: {self.border_radius}px;
+            padding: 0px;
+        """)
+        
+        def label_changed(new_label):
+            for button in canvas.get_selected_buttons():
+                button.label = new_label
+                button.update()
+
+        self.rename_edit.textChanged.connect(label_changed)
+        self.rename_edit.returnPressed.connect(self.commit_rename)
+        self.rename_edit.editingFinished.connect(self.commit_rename)
+        
+        # Show and focus
+        self.rename_edit.show()
+        self.rename_edit.selectAll()
+        self.rename_edit.setFocus()
+    
+    def _update_rename_edit_geometry(self):
+        if self.rename_mode and self.rename_edit:
+            zoom_factor = self.parent().zoom_factor if self.parent() else 1.0
+            self.rename_edit.setGeometry(self.rect())
+            # Set font size using QFont
+            font = self.rename_edit.font()
+            font.setPixelSize(int((self.height * 0.5) * zoom_factor))
+            self.rename_edit.setFont(font)
+            # You can still use the stylesheet for color/background
+            self.rename_edit.setStyleSheet(f"""
+                background-color: {self.color};
+                color: #ffffff;
+                border: 0px solid rgba(255,255,255,.8);
+                border-radius: {self.border_radius}px;
+                padding: 0px;
+            """)
+
+    def exit_rename_mode(self):
+        """Exit rename mode by removing the QLineEdit overlay"""
+        if not self.rename_mode:
+            return
+            
+        self.rename_mode = False
+        
+        if self.rename_edit:
+            self.rename_edit.deleteLater()
+            self.rename_edit = None
+        
+        self.update()
+    
+    def commit_rename(self):
+        """Commit the rename changes and exit rename mode"""
+        if not self.rename_mode or not self.rename_edit:
+            return
+            
+        # Get the new label
+        new_label = self.rename_edit.text().strip()
+        
+        self.rename_selected_buttons(new_label)
+            
+        # Exit rename mode
+        self.exit_rename_mode()
     
     def delete_button(self):
         self.deleted.emit(self)
@@ -4607,6 +4913,7 @@ class PickerButton(QtWidgets.QWidget):
             main_window = canvas.window()
             if isinstance(main_window, UI.BlenderAnimPickerWindow):
                 main_window.update_buttons_for_current_tab()
+        self.update_tooltip()
         
     def change_color_for_selected_buttons(self, new_color):
         canvas = self.parent()
@@ -4796,7 +5103,8 @@ class PickerButton(QtWidgets.QWidget):
             
             print(f"Added {len(new_unique_objects)} new objects to picker")
         
-        self.update_tooltip()
+        #self.update_tooltip()
+        self._tooltip_needs_update = True
         self.changed.emit(self)
     
     def _get_item_id(self, obj_data):
@@ -4848,7 +5156,8 @@ class PickerButton(QtWidgets.QWidget):
 
     def remove_all_objects(self):
         self.assigned_objects = []
-        self.update_tooltip()
+        #self.update_tooltip()
+        self._tooltip_needs_update = True
         self.changed.emit(self)  # Notify about the change to update data
     
     def remove_all_objects_for_selected_buttons(self):
@@ -4862,8 +5171,10 @@ class PickerButton(QtWidgets.QWidget):
     #---------------------------------------------------------------------------------------
     def mousePressEvent(self, event):
         """Enhanced button mouse press with proper modifier handling"""
+        
         if event.button() == QtCore.Qt.LeftButton:
             canvas = self.parent()
+            canvas._hide_button_tooltip()
             if canvas:
                 # Get modifier states
                 shift_held = event.modifiers() & QtCore.Qt.ShiftModifier
@@ -4934,7 +5245,37 @@ class PickerButton(QtWidgets.QWidget):
         else:
             super().mousePressEvent(event)
         
-        UT.blender_main_window()
+        double_click = event.type() == QtCore.QEvent.MouseButtonDblClick
+        if not double_click:
+            UT.blender_main_window()
+
+    def mouseDoubleClickEvent(self, event):
+        """Handle double-click events for renaming buttons in edit mode"""
+        if not self.edit_mode:
+            # Only handle double-clicks in edit mode
+            super().mouseDoubleClickEvent(event)
+            return
+            
+        # Start rename mode for all selected buttons
+        canvas = self.parent()
+        if canvas:
+            selected_buttons = canvas.get_selected_buttons()
+            
+            # If this button is not selected, select it first
+            if not self.is_selected:
+                canvas.clear_selection()
+                self.is_selected = True
+                self.selected.emit(self, True)
+                canvas.last_selected_button = self
+                canvas.button_selection_changed.emit()
+                self.update()
+                selected_buttons = [self]
+                
+            # Enter rename mode for all selected buttons
+            '''for button in selected_buttons:
+                button.enter_rename_mode()'''
+            self.enter_rename_mode()
+        event.accept()
 
     def mouseMoveEvent(self, event):
         """Enhanced mouse move with duplication support and optimized dragging"""
@@ -4944,6 +5285,7 @@ class PickerButton(QtWidgets.QWidget):
             event.accept()
         elif self.dragging and event.buttons() & QtCore.Qt.LeftButton:
             canvas = self.parent()
+            canvas._hide_button_tooltip()
             if not canvas:
                 return
 
@@ -5021,7 +5363,15 @@ class PickerButton(QtWidgets.QWidget):
         else:
             super().mouseReleaseEvent(event)
         
-        UT.blender_main_window()
+        #UT.blender_main_window()
+    
+    def event(self, event):
+        """Override event to handle key events."""
+        if event.type() == QtCore.QEvent.KeyPress:
+            if event.key() == QtCore.Qt.Key_Escape:
+                self.exit_rename_mode()
+                return True
+        return super().event(event)
     
     def enterEvent(self, event):
         """Called when mouse enters the button area."""
@@ -5035,3 +5385,7 @@ class PickerButton(QtWidgets.QWidget):
         self.update()  # Trigger repaint
         super().leaveEvent(event)
     
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_rename_edit_geometry()
+

@@ -65,6 +65,38 @@ class TwoColumnMenu(QtWidgets.QMenu):
         button = QtWidgets.QPushButton(action.text())
         if action.icon():
             button.setIcon(action.icon())
+            
+        # Handle notification indicator for menu items
+        if action.data() and isinstance(action.data(), dict):
+            action_data = action.data()
+            if action_data.get("notification", False):
+                original_paintEvent = button.paintEvent
+                
+                def custom_paintEvent(event):
+                    # Call original paintEvent
+                    original_paintEvent(event)
+                    
+                    # Draw notification indicator
+                    painter = QPainter(button)
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    
+                    # Calculate size and position
+                    icon_size = min(8, button.height() // 3)  # Slightly smaller for menu items
+                    margin = 2
+                    
+                    x = button.width() - icon_size - margin
+                    y = button.height() - icon_size - margin
+                    rect = QtCore.QRectF(x, y, icon_size, icon_size)
+                    
+                    # Set color from notification_color property
+                    painter.setBrush(QColor(action_data.get("notification_color", "#7db305")))
+                    painter.setPen(Qt.NoPen)
+                    
+                    # Draw the circle
+                    painter.drawEllipse(rect)
+                
+                # Replace the paintEvent method
+                button.paintEvent = custom_paintEvent
         
         def button_clicked():
             self.close()
@@ -148,7 +180,7 @@ class CustomButton(QtWidgets.QPushButton):
     rightClicked = QtCore.Signal(QtCore.QPoint)
 
     def __init__(self, text='', icon=None, color='#4d4d4d', tooltip='', flat=False, size=None, width=None, height=None, parent=None, radius=3, ContextMenu=False, 
-                 cmColor='#00749a', cmHeight = 20, onlyContext=False, alpha=1,textColor='white', text_size=12):
+                 cmColor='#00749a', cmHeight = 20, onlyContext=False, alpha=1,textColor='white', text_size=12, notification=False, notification_color='#7db305'):
         super().__init__(parent)
         self.setFlat(flat)
         self.base_color = color
@@ -160,6 +192,8 @@ class CustomButton(QtWidgets.QPushButton):
         self.textColor = textColor
         self.menu_actions = []  # Store menu actions
         self.cmHeight = cmHeight
+        self.notification = notification
+        self.notification_color = notification_color
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.setStyleSheet(self.get_style_sheet(color, flat, radius))
         
@@ -278,7 +312,7 @@ class CustomButton(QtWidgets.QPushButton):
             self.menu_actions.append((text, position))
             self.context_menu.rebuild_grid(self.menu_actions)
 
-    def addToMenu(self, name, function, icon=None, position=None, rowSpan=1, colSpan=1):
+    def addToMenu(self, name, function, icon=None, position=None, rowSpan=1, colSpan=1, notification=False, notification_color='#7db305'):
         """
         Add an item to the context menu.
         Args:
@@ -289,6 +323,8 @@ class CustomButton(QtWidgets.QPushButton):
         """
         if self.context_menu:
             action = QAction(name, self)
+            # Store notification state in action's data
+            action.setData({"notification": notification, "notification_color": notification_color})
             if icon:
                 if isinstance(icon, QtGui.QPixmap):
                     action.setIcon(QtGui.QIcon(icon))
@@ -342,6 +378,46 @@ class CustomButton(QtWidgets.QPushButton):
     def reset_button_state(self):
         self.setStyleSheet(self.get_style_sheet(self.base_color, self.isFlat(), self.radius))
         self.update()
+        
+    def paintEvent(self, event):
+        # First, let the QPushButton draw itself normally
+        super(CustomButton, self).paintEvent(event)
+
+        # If notification is enabled, draw a small circle indicator at bottom right
+        if self.notification == True:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            
+            # Calculate the size and position of the circle
+            icon_size = min(10, self.height() // 2.5)  # Size proportional to button height, max 10px
+            margin = 2  # Margin from the bottom-right edge
+            
+            x = self.width() - icon_size - margin
+            y = self.height() - icon_size - margin
+            rect = QtCore.QRectF(x, y, icon_size, icon_size)
+            
+            # Set color from notification_color property
+            painter.setBrush(QColor(self.notification_color))
+            painter.setPen(Qt.NoPen)  # No border
+            
+            # Draw the circle
+            painter.drawEllipse(rect)
+        
+    def set_notification(self, state=True, color="#7db305"):
+        """Set notification state and color for the button"""
+        self.notification = state
+        self.notification_color = color
+        self.update()
+        
+    def set_menu_item_notification(self, action_name, state=True, color="#7db305"):
+        """Set notification state and color for a menu item by name"""
+        for item in self.menu_actions:
+            if isinstance(item, tuple) and len(item) >= 4 and isinstance(item[0], QAction):
+                action = item[0]
+                if action.text() == action_name:
+                    action.setData({"notification": state, "notification_color": color})
+                    self.context_menu.rebuild_grid(self.menu_actions)
+                    break
 
 class CustomRadioButton(QtWidgets.QRadioButton):
     def __init__(self, text, color="#5285a6", fill=False, group=False, parent=None, border_radius=3, width=None, height=None):
@@ -453,43 +529,119 @@ class CustomRadioButton(QtWidgets.QRadioButton):
             CustomRadioButton.groups[group_name].addButton(self)
             self.setAutoExclusive(True)  # Enable auto-exclusive for grouped buttons
 
-class CustomToolTip(QtWidgets.QWidget):
-    def __init__(self, parent=None, color='#444444'):
-        super().__init__(parent, QtCore.Qt.ToolTip | QtCore.Qt.FramelessWindowHint)
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        self.color = color
-        self.text = ""
-        self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+class CustomTooltipWidget(QtWidgets.QWidget):
+    def __init__(self, parent=None, bg_color="#1b1b1b", border_color="#333333"):
+        super().__init__(parent)
+        self.setWindowFlags(QtCore.Qt.ToolTip | QtCore.Qt.FramelessWindowHint)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.setAttribute(QtCore.Qt.WA_ShowWithoutActivating, True)
+        self.bg_color = bg_color
+        self.border_color = border_color
+        
+        # Create main layout with padding
+        self.main_layout = QtWidgets.QVBoxLayout(self)
+        self.main_layout.setContentsMargins(6, 8, 6, 8)
+        self.main_layout.setSpacing(4)
+        
 
+        # Track if we need to auto-size
+        self._auto_resize = True
+        
+    def add_text(self, text, rich_text=True):
+        """Add a text label to the tooltip"""
+        label = QtWidgets.QLabel(text)
+        label.setTextFormat(QtCore.Qt.RichText if rich_text else QtCore.Qt.PlainText)
+        label.setWordWrap(True)
+        label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        label.setStyleSheet("""
+            QLabel {
+                background-color: transparent;
+                color: #ffffff;
+                font-size: 11px;
+                border: none;
+                padding: 0px;
+                margin: 0px;
+            }
+        """)
+        label.setMaximumWidth(400)
+        self.main_layout.addWidget(label)
+        return label
+    
+    def add_widget(self, widget):
+        """Add a custom widget to the tooltip"""
+        self.main_layout.addWidget(widget)
+        return widget
+    
+    def add_layout(self, layout):
+        """Add a layout to the tooltip"""
+        self.main_layout.addLayout(layout)
+        return layout
+    
+    def add_separator(self):
+        """Add a horizontal separator line"""
+        line = QtWidgets.QFrame()
+        line.setFrameShape(QtWidgets.QFrame.HLine)
+        line.setStyleSheet("""
+            QFrame {
+                color: #444444;
+                background-color: #444444;
+                border: none;
+                max-height: 1px;
+            }
+        """)
+        self.main_layout.addWidget(line)
+        return line
+    
+    def add_spacing(self, size):
+        """Add vertical spacing"""
+        self.main_layout.addSpacing(size)
+    
+    def set_max_width(self, width):
+        """Set maximum width for the tooltip"""
+        self.setMaximumWidth(width + 24)  # Add padding
+        
+    def finalize(self):
+        """Call this after adding all content to resize the tooltip"""
+        if self._auto_resize:
+            self.adjustSize()
+            # Add some extra padding to the widget size
+            current_size = self.size()
+            self.setFixedSize(current_size.width() + 4, current_size.height() + 4)
+    
+    def clear_content(self):
+        """Clear all content from the tooltip widget"""
+        # Clear the layout
+        while self.layout().count():
+            item = self.layout().takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                self._clear_layout(item.layout())
+        
+    def _clear_layout(self, layout):
+        """Recursively clear a layout"""
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                self._clear_layout(item.layout())
+    
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
         
+        # Draw rounded rectangle background
+        rect = self.rect()
         path = QtGui.QPainterPath()
-        rect = QtCore.QRect(0, 0, self.width(), self.height())
-        path.addRoundedRect(rect, 4, 4)
+        path.addRoundedRect(QtCore.QRectF(rect), 4, 4)
         
-        painter.fillPath(path, QtGui.QColor(self.color))
-        painter.setPen(QtGui.QColor(255, 255, 255))  # White border
+        # Fill background
+        painter.fillPath(path, QtGui.QColor(self.bg_color))
+        
+        # Draw border
+        painter.setPen(QtGui.QPen(QtGui.QColor(self.border_color), 1))
         painter.drawPath(path)
 
-        # Draw text
-        painter.setPen(QtGui.QColor(255, 255, 255))  # White text
-        painter.drawText(rect, QtCore.Qt.AlignCenter, self.text)
 
-    def show_tooltip(self, parent, text, pos):
-        self.text = text
-        self.adjustSize()
-        global_pos = parent.mapToGlobal(pos)
-        self.move(global_pos + QtCore.QPoint(10, 10))
-        self.show()
-
-    def hideEvent(self, event):
-        self.text = ""
-        super().hideEvent(event)
-
-    def sizeHint(self):
-        fm = self.fontMetrics()
-        width = fm.horizontalAdvance(self.text) + 20
-        height = fm.height() + 10
-        return QtCore.QSize(width, height)
+        
