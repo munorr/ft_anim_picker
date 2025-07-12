@@ -50,7 +50,7 @@ def handle_tab_conflict(tab_name, existing_data):
     manager = MAIN.PickerWindowManager.get_instance()
     # Get the first active picker window if available, or None if no windows exist
     parent_widget = manager._picker_widgets[0] if manager._picker_widgets else None
-    dialog = CD.CustomDialog(parent_widget, title=f"Tab Conflict", size=(260, 80))
+    dialog = CD.CustomDialog(parent_widget, title=f"Tab Conflict", size=(260, 105))
     
     # Add message label
     message_label = QtWidgets.QLabel(f"Tab <b><font color='#00ade6'>{tab_name}</font></b> already exists.")

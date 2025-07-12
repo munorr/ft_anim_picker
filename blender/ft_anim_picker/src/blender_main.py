@@ -262,9 +262,9 @@ class PickerVisibilityManager:
                 # Additional check for window title patterns
                 if (hasattr(active_window, 'windowTitle') and 
                     active_window.windowTitle() and
-                    isinstance(active_window, (ScriptManagerWidget, SelectionManagerWidget))):
+                    any(pattern in active_window.windowTitle() for pattern in ['Script Manager', 'Selection Manager'])):
                     return True
-        
+
         return False
     
     def _is_blender_window_active(self):
