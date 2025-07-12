@@ -640,20 +640,20 @@ class AnimPickerWindow(QtWidgets.QWidget):
         latest_release = self._update_widget.parse_version(self._update_widget.get_latest_tag())
         current_version = self._update_widget.parse_version(ft_anim_picker.src.__version__)
         
-        print(f'Latest Release: {latest_release}')
-        print(f'Current Version: {current_version}')
+        #print(f'Latest Release: {latest_release}')
+        #print(f'Current Version: {current_version}')
         
         try:
             if latest_release and self._update_widget.is_newer_version(latest_release, current_version):
                 self.update_anim_picker_button.setVisible(True)
                 self.info_util.set_notification(state=True)
                 self.info_util.set_menu_item_notification("Update", state=True)
-                print(f"Update available: {latest_release} > {current_version}")
+                #print(f"Update available: {latest_release} > {current_version}")
             else:
                 self.update_anim_picker_button.setVisible(False)
                 self.info_util.set_notification(state=False)
                 self.info_util.set_menu_item_notification("Update", state=False)
-                print(f"No update needed: {latest_release} <= {current_version}")
+                #print(f"No update needed: {latest_release} <= {current_version}")
         except Exception as e:
             print(f"Error checking for updates: {e}")
             self.update_anim_picker_button.setVisible(False) 

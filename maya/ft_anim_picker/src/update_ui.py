@@ -484,7 +484,7 @@ class UpdateWidget(QWidget):
         current_time = time.time()
         if (self._latest_tag_cache is not None and 
             current_time - self._last_check_time < self._cache_duration):
-            print("Using cached tag result")
+            #print("Using cached tag result")
             return self._latest_tag_cache
         
         try:
@@ -519,7 +519,7 @@ class UpdateWidget(QWidget):
             # Update cache
             UpdateWidget._latest_tag_cache = release_tag
             UpdateWidget._last_check_time = current_time
-            print(f"Updated tag cache with: {release_tag}")
+            #print(f"Updated tag cache with: {release_tag}")
             
             return release_tag#clean_tag
             
@@ -535,8 +535,8 @@ class UpdateWidget(QWidget):
         release = self.releases[self.releases_combo.currentIndex()]
         
         # Debug information
-        print(f"Selected release: {release['name']} ({release['tag']})")
-        print(f"Assets: {release['assets']}")
+        #print(f"Selected release: {release['name']} ({release['tag']})")
+        #print(f"Assets: {release['assets']}")
         
         if not release['assets']:
             # If no assets, try to download the source code zip directly

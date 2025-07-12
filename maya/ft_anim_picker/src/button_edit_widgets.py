@@ -70,6 +70,8 @@ def create_button_edit_widgets(parent):
             font-size: 12px;
         }
     ''')
+
+    rename_edit.returnPressed.connect(partial(UT.maya_main_window().activateWindow))
     clear_button.clicked.connect(lambda: rename_edit.setText(" "))
 
     rename_layout.addWidget(rename_edit)

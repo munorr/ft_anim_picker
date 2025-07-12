@@ -67,6 +67,9 @@ def create_button_edit_widgets(parent):
             font-size: 12px;
         }
     ''')
+
+    # let pressing return leave focus
+    rename_edit.returnPressed.connect(partial(UT.blender_main_window))
     clear_button.clicked.connect(lambda: rename_edit.setText(" "))
 
     rename_layout.addWidget(rename_edit)

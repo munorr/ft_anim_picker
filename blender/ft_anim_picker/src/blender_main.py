@@ -46,7 +46,7 @@ class PickerVisibilityManager:
         """Register a picker widget for centralized visibility management"""
         if picker_widget not in self._registered_pickers:
             self._registered_pickers.append(picker_widget)
-            print(f"Registered picker widget. Total active: {len(self._registered_pickers)}")
+            #print(f"Registered picker widget. Total active: {len(self._registered_pickers)}")
             
             # Start the timer if this is the first picker
             if len(self._registered_pickers) == 1:
@@ -56,7 +56,7 @@ class PickerVisibilityManager:
         """ENHANCED: Unregister a picker widget with proper cleanup"""
         if picker_widget in self._registered_pickers:
             self._registered_pickers.remove(picker_widget)
-            print(f"Unregistered picker widget. Total active: {len(self._registered_pickers)}")
+            #print(f"Unregistered picker widget. Total active: {len(self._registered_pickers)}")
             
             # CRITICAL FIX: Stop the timer if no pickers remain
             if len(self._registered_pickers) == 0:
@@ -97,7 +97,7 @@ class PickerVisibilityManager:
             self._visibility_timer = QTimer()
             self._visibility_timer.timeout.connect(self._check_all_windows_visibility)
             self._visibility_timer.start(150)  # Slower check - 150ms to reduce conflicts
-            print("Started centralized visibility timer")
+            #print("Started centralized visibility timer")
     
     def _stop_visibility_timer(self):
         """ENHANCED: Stop the centralized visibility timer with proper cleanup"""
