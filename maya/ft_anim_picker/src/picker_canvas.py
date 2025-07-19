@@ -1,10 +1,11 @@
 try:
     from PySide6 import QtWidgets, QtCore, QtGui
-    from PySide6.QtGui import QColor
+    from PySide6.QtGui import QColor, QShortcut
     from PySide6.QtCore import QTimer, QPropertyAnimation, QEasingCurve, Signal
     from shiboken6 import wrapInstance
 except ImportError:
     from PySide2 import QtWidgets, QtCore, QtGui
+    from PySide2.QtWidgets import QShortcut
     from PySide2.QtGui import QColor
     from PySide2.QtCore import QTimer, QPropertyAnimation, QEasingCurve, Signal
     from shiboken2 import wrapInstance
@@ -227,6 +228,63 @@ class PickerCanvas(QtWidgets.QWidget):
         # Transform guides for edit mode (add after HUD initialization)
         self.transform_guides = TG.TransformGuides(self, self)
         self.transform_guides.transform_finished.connect(self.on_transform_finished)
+        self.canvas_shortcuts()
+        
+        # Initialize curve import settings
+        self._separate_curves_mode = True  # Default to separate curves
+    
+    #------------------------------------------------------------------------------
+    # Curve import settings methods
+    #------------------------------------------------------------------------------
+    def get_separate_curves_mode(self):
+        """Get the current curve separation mode"""
+        return getattr(self, '_separate_curves_mode', True)
+    
+    def set_separate_curves_mode(self, separate_curves):
+        """Set the curve separation mode"""
+        self._separate_curves_mode = separate_curves
+        # Show brief feedback
+        mode_text = "Separate" if separate_curves else "Combine"
+        print(f"Curve import mode set to: {mode_text} curves")
+    
+    def get_current_coordinate_plane(self):
+        """Get the current coordinate plane name"""
+        from . import maya_curve_converter as MCC
+        return MCC.CoordinatePlaneConfig.get_current_plane()['name']
+    
+    def set_coordinate_plane(self, plane_name):
+        """Set the coordinate plane and provide feedback"""
+        from . import maya_curve_converter as MCC
+        MCC.CoordinatePlaneConfig.set_plane(plane_name)
+        plane_info = MCC.CoordinatePlaneConfig.get_current_plane()
+        print(f"Coordinate plane set to: {plane_info['name']} ({plane_info['description']})")
+    
+    def get_auto_detect_plane_mode(self):
+        """Get the current auto-detection mode"""
+        return getattr(self, '_auto_detect_plane_mode', True)
+    
+    def set_auto_detect_plane_mode(self, enabled):
+        """Set the auto-detection mode"""
+        self._auto_detect_plane_mode = enabled
+        # Show brief feedback
+        status = "enabled" if enabled else "disabled"
+        print(f"Auto-detection mode {status}")
+    
+    def get_curve_import_settings_summary(self):
+        """Get a summary of current curve import settings"""
+        plane_name = self.get_current_coordinate_plane()
+        mode_text = "Separate" if self.get_separate_curves_mode() else "Combine"
+        auto_detect_text = "Auto" if self.get_auto_detect_plane_mode() else "Manual"
+        return f"Plane: {plane_name} | Mode: {mode_text} | Detection: {auto_detect_text}"
+    
+    def reset_curve_import_settings(self):
+        """Reset curve import settings to defaults"""
+        from . import maya_curve_converter as MCC
+        MCC.CoordinatePlaneConfig.set_plane('XZ')  # Default plane for Maya
+        self.set_separate_curves_mode(True)  # Default to separate curves
+        self.set_auto_detect_plane_mode(True)  # Default to auto-detection
+        print("Curve import settings reset to defaults")
+    
     #------------------------------------------------------------------------------
     def set_edit_mode(self, enabled):
         self.edit_mode = enabled
@@ -243,7 +301,8 @@ class PickerCanvas(QtWidgets.QWidget):
             else:
                 self.transform_guides.setVisible(False)
                 self.transform_guides.visual_layer.setVisible(False)
-                
+                if hasattr(self.transform_guides, 'control_widget'):  
+                    self.transform_guides.control_widget.setVisible(False)
         self.update()
     
     def set_minimal_mode(self, enabled):
@@ -252,6 +311,283 @@ class PickerCanvas(QtWidgets.QWidget):
         # Hide/show the HUD based on minimal mode
         self.hud.setVisible(not enabled)
         self.update()  # Trigger repaint
+    #---------------------------------------------------------------------------------------
+    def canvas_shortcuts(self):
+        """Handle canvas shortcuts"""
+        self.add_button_shortcut = QShortcut(QtGui.QKeySequence("Shift+A"), self)
+        self.add_button_shortcut.activated.connect(lambda: self.add_button_at_position(self.canvas_cursor_position()))
+        
+        self.add_curve_button_shortcut = QShortcut(QtGui.QKeySequence("Shift+C"), self)
+        self.add_curve_button_shortcut.activated.connect(lambda: self.add_curve_button_at_position())
+
+        self.delete_button_shortcut = QShortcut(QtGui.QKeySequence("Delete"), self)
+        self.delete_button_shortcut.activated.connect(lambda: self.delete_selected_buttons())
+        
+        self.copy_button_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+C"), self)
+        self.copy_button_shortcut.activated.connect(lambda: self.copy_selected_buttons())
+
+        self.paste_button_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+V"), self)
+        self.paste_button_shortcut.activated.connect(lambda: self.paste_buttons_at_position(self.canvas_cursor_position()))
+
+        self.paste_button_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Shift+V"), self)
+        self.paste_button_shortcut.activated.connect(lambda: self.paste_buttons_at_position(self.canvas_cursor_position(), mirror=True))
+
+        self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Right"), self)
+        self.align_button_shortcut.activated.connect(lambda: self.align_button_right())
+
+        self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Left"), self)
+        self.align_button_shortcut.activated.connect(lambda: self.align_button_left())
+
+        self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Up"), self)
+        self.align_button_shortcut.activated.connect(lambda: self.align_button_top())
+
+        self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Down"), self)
+        self.align_button_shortcut.activated.connect(lambda: self.align_button_bottom())
+
+        self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Shift+Right"), self)
+        self.align_button_shortcut.activated.connect(lambda: self.evenly_space_horizontal())
+
+        self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Shift+Up"), self)
+        self.align_button_shortcut.activated.connect(lambda: self.evenly_space_vertical())
+
+    def add_curve_button_at_position(self):
+        """Add a curve button at the specified position"""
+        from . import maya_curve_converter as MCC
+        MCC.create_buttons_from_maya_curves(self, self.get_center_position())
+
+    def copy_selected_buttons(self):
+        if self.edit_mode:
+            selected_buttons = self.get_selected_buttons()
+            if selected_buttons:
+                PB.ButtonClipboard.instance().copy_buttons(selected_buttons)
+    
+    def delete_selected_buttons(self):
+        if self.edit_mode:
+            selected_buttons = self.get_selected_buttons()
+            selected_buttons[0].delete_selected_buttons()
+    
+    def align_button_center(self):
+        """Align selected buttons to be centered horizontally"""
+        main_window = self.window()
+        if self.edit_mode:
+            selected_buttons = self.get_selected_buttons()
+            if len(selected_buttons) <= 1:
+                return
+                
+            # Calculate the average x position (center point)
+            avg_x = sum(button.scene_position.x() for button in selected_buttons) / len(selected_buttons)
+            
+            # Move all buttons to have the same x coordinate
+            for button in selected_buttons:
+                current_pos = button.scene_position
+                new_pos = QtCore.QPointF(avg_x, current_pos.y())
+                button.scene_position = new_pos
+                
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            self.update_button_positions()
+            self.update()
+
+    def align_button_left(self):
+        """Align selected buttons to the leftmost button's left edge"""
+        main_window = self.window()
+
+        if self.edit_mode:
+            selected_buttons = self.get_selected_buttons()
+            if len(selected_buttons) <= 1:
+                return
+                
+            # Find the leftmost button's left edge position
+            left_edge = float('inf')
+            for button in selected_buttons:
+                # Calculate the left edge position (center x - half width)
+                button_left = button.scene_position.x() - (button.width / 2)
+                left_edge = min(left_edge, button_left)
+            
+            # Move all buttons to align their left edges
+            for button in selected_buttons:
+                current_pos = button.scene_position
+                # Calculate new center position (left_edge + half width)
+                new_center_x = left_edge + (button.width / 2)
+                new_pos = QtCore.QPointF(new_center_x, current_pos.y())
+                button.scene_position = new_pos
+
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            self.update_button_positions()
+            self.update()
+    
+    def align_button_right(self):
+        """Align selected buttons to the rightmost button's right edge"""
+        main_window = self.window()
+        if self.edit_mode:
+            selected_buttons = self.get_selected_buttons()
+            if len(selected_buttons) <= 1:
+                return
+                
+            # Find the rightmost button's right edge position
+            right_edge = float('-inf')
+            for button in selected_buttons:
+                # Calculate the right edge position (center x + half width)
+                button_right = button.scene_position.x() + (button.width / 2)
+                right_edge = max(right_edge, button_right)
+            
+            # Move all buttons to align their right edges
+            for button in selected_buttons:
+                current_pos = button.scene_position
+                # Calculate new center position (right_edge - half width)
+                new_center_x = right_edge - (button.width / 2)
+                new_pos = QtCore.QPointF(new_center_x, current_pos.y())
+                button.scene_position = new_pos
+            
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            self.update_button_positions()
+            self.update()
+    #---------------------------------------------------------------------------------------
+    def align_button_top(self):
+        """Align selected buttons to the topmost button's top edge"""
+        main_window = self.window()
+        if self.edit_mode:
+            selected_buttons = self.get_selected_buttons()
+            if len(selected_buttons) <= 1:
+                return
+                
+            # Find the topmost button's top edge position (lowest y value in scene coordinates)
+            top_edge = float('inf')
+            for button in selected_buttons:
+                # Calculate the top edge position (center y - half height)
+                button_top = button.scene_position.y() - (button.height / 2)
+                top_edge = min(top_edge, button_top)
+            
+            # Move all buttons to align their top edges
+            for button in selected_buttons:
+                current_pos = button.scene_position
+                # Calculate new center position (top_edge + half height)
+                new_center_y = top_edge + (button.height / 2)
+                new_pos = QtCore.QPointF(current_pos.x(), new_center_y)
+                button.scene_position = new_pos
+            
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            self.update_button_positions()
+            self.update()
+    
+    def align_button_middle(self):
+        """Align selected buttons to be centered vertically"""
+        main_window = self.window()
+        if self.edit_mode:
+            selected_buttons = self.get_selected_buttons()
+            if len(selected_buttons) <= 1:
+                return
+                
+            # Calculate the average y position (middle point)
+            avg_y = sum(button.scene_position.y() for button in selected_buttons) / len(selected_buttons)
+            
+            # Move all buttons to have the same y coordinate
+            for button in selected_buttons:
+                current_pos = button.scene_position
+                new_pos = QtCore.QPointF(current_pos.x(), avg_y)
+                button.scene_position = new_pos
+            
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            self.update_button_positions()
+            self.update()
+    
+    def align_button_bottom(self):
+        """Align selected buttons to the bottommost button's bottom edge"""
+        main_window = self.window()
+        if self.edit_mode:
+            selected_buttons = self.get_selected_buttons()
+            if len(selected_buttons) <= 1:
+                return
+                
+            # Find the bottommost button's bottom edge position (highest y value in scene coordinates)
+            bottom_edge = float('-inf')
+            for button in selected_buttons:
+                # Calculate the bottom edge position (center y + half height)
+                button_bottom = button.scene_position.y() + (button.height / 2)
+                bottom_edge = max(bottom_edge, button_bottom)
+            
+            # Move all buttons to align their bottom edges
+            for button in selected_buttons:
+                current_pos = button.scene_position
+                # Calculate new center position (bottom_edge - half height)
+                new_center_y = bottom_edge - (button.height / 2)
+                new_pos = QtCore.QPointF(current_pos.x(), new_center_y)
+                button.scene_position = new_pos
+            
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            self.update_button_positions()
+            self.update()
+    #---------------------------------------------------------------------------------------       
+    def evenly_space_horizontal(self):
+        """Distribute selected buttons evenly along the horizontal axis"""
+        main_window = self.window()
+        if self.edit_mode:
+            selected_buttons = self.get_selected_buttons()
+            if len(selected_buttons) <= 2:  # Need at least 3 buttons for spacing to make sense
+                return
+                
+            # Sort buttons by x position
+            sorted_buttons = sorted(selected_buttons, key=lambda btn: btn.scene_position.x())
+            
+            # Get leftmost and rightmost positions
+            left_x = sorted_buttons[0].scene_position.x()
+            right_x = sorted_buttons[-1].scene_position.x()
+            
+            # Calculate spacing
+            total_width = right_x - left_x
+            spacing = total_width / (len(sorted_buttons) - 1) if len(sorted_buttons) > 1 else 0
+            
+            # Skip first and last buttons (they define the range)
+            for i, button in enumerate(sorted_buttons[1:-1], 1):
+                # Calculate new x position
+                new_x = left_x + (i * spacing)
+                current_pos = button.scene_position
+                new_pos = QtCore.QPointF(new_x, current_pos.y())
+                button.scene_position = new_pos
+            
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            self.update_button_positions()
+            self.update()
+                
+    def evenly_space_vertical(self):
+        """Distribute selected buttons evenly along the vertical axis"""
+        main_window = self.window()
+        if self.edit_mode:
+            selected_buttons = self.get_selected_buttons()
+            if len(selected_buttons) <= 2:  # Need at least 3 buttons for spacing to make sense
+                return
+                
+            
+            # Sort buttons by y position
+            sorted_buttons = sorted(selected_buttons, key=lambda btn: btn.scene_position.y())
+            
+            # Get topmost and bottommost positions
+            top_y = sorted_buttons[0].scene_position.y()
+            bottom_y = sorted_buttons[-1].scene_position.y()
+            
+            # Calculate spacing
+            total_height = bottom_y - top_y
+            spacing = total_height / (len(sorted_buttons) - 1) if len(sorted_buttons) > 1 else 0
+            
+            # Skip first and last buttons (they define the range)
+            for i, button in enumerate(sorted_buttons[1:-1], 1):
+                # Calculate new y position
+                new_y = top_y + (i * spacing)
+                current_pos = button.scene_position
+                new_pos = QtCore.QPointF(current_pos.x(), new_y)
+                button.scene_position = new_pos
+            
+            if hasattr(main_window, 'batch_update_buttons_to_database'):
+                main_window.batch_update_buttons_to_database(selected_buttons)
+            self.update_button_positions()
+            self.update()
+    
     #------------------------------------------------------------------------------
     # TRANSFORM GUIDES
     #------------------------------------------------------------------------------
@@ -275,6 +611,9 @@ class PickerCanvas(QtWidgets.QWidget):
         if hasattr(self, 'transform_guides'):
             self.transform_guides.setVisible(False)
             self.transform_guides.visual_layer.setVisible(False)
+
+            if hasattr(self.transform_guides, 'controls_widget'):  
+                self.transform_guides.controls_widget.setVisible(False)
     
     def _update_transform_guides_position(self):
         """Helper method to update transform guides position"""
@@ -325,12 +664,12 @@ class PickerCanvas(QtWidgets.QWidget):
                 if remove_from_selection:
                     # Ctrl+Shift: Remove from selection
                     if button.is_selected:
-                        button.set_selected(False)
+                        button.is_selected = False
                         selection_changed = True
                 elif add_to_selection or not button.is_selected:
                     # Shift: Add to selection, or No modifiers: Select if not already selected
                     if not button.is_selected:
-                        button.set_selected(True)
+                        button.is_selected = True
                         selection_changed = True
 
         if selection_changed:
@@ -458,12 +797,23 @@ class PickerCanvas(QtWidgets.QWidget):
     #------------------------------------------------------------------------------
     def _show_button_tooltip(self):
         """Show tooltip for the currently hovered button"""
-        if not self._current_hover_button:
+        # Safety check: ensure the button still exists and is valid
+        try:
+            if not hasattr(self._current_hover_button, 'tooltip_widget'):
+                return
+        except:
+            # Button has been deleted, clear reference
+            self._current_hover_button = None
             return
         
         # Rebuild tooltip content if needed
-        if self._current_hover_button._tooltip_needs_update:
-            self._current_hover_button._rebuild_tooltip_content()
+        try:
+            if self._current_hover_button._tooltip_needs_update:
+                self._current_hover_button._rebuild_tooltip_content()
+        except:
+            # Button is being deleted, clear reference
+            self._current_hover_button = None
+            return
         
         # Get or create tooltip widget
         if not self._tooltip_widget:
@@ -509,21 +859,29 @@ class PickerCanvas(QtWidgets.QWidget):
             # Hide current tooltip
             self._hide_button_tooltip()
             
-            # Update hover state
+            # Update hover state for current button (with safety check)
             if self._current_hover_button:
-                self._current_hover_button.is_hovered = False
-                self._current_hover_button.update()
+                try:
+                    self._current_hover_button.is_hovered = False
+                    self._current_hover_button.update()
+                except:
+                    # Button is being deleted, clear reference
+                    self._current_hover_button = None
             
             self._current_hover_button = button
             
             if button:
                 # Show new button as hovered
-                button.is_hovered = True
-                button.update()
-                
-                # Start tooltip timer
-                self._tooltip_position = QtGui.QCursor.pos()
-                self._tooltip_timer.start(800)  # 800ms delay
+                try:
+                    button.is_hovered = True
+                    button.update()
+                    
+                    # Start tooltip timer
+                    self._tooltip_position = QtGui.QCursor.pos()
+                    self._tooltip_timer.start(800)  # 800ms delay
+                except:
+                    # Button is being deleted, don't set as hover button
+                    self._current_hover_button = None
     #------------------------------------------------------------------------------
     # SELECTION LOGIC
     #------------------------------------------------------------------------------
@@ -1164,7 +1522,7 @@ class PickerCanvas(QtWidgets.QWidget):
         selection_changed = False
         for button in self.buttons:
             if button.is_selected:
-                button.set_selected(False)
+                button.is_selected = False
                 button.selected.emit(button, False)  # Emit the button's selected signal
                 selection_changed = True
         
@@ -1182,7 +1540,7 @@ class PickerCanvas(QtWidgets.QWidget):
     
     def on_button_selected(self, button, is_selected):
         if not is_selected:
-            button.set_selected(False)
+            button.is_selected = False
         
         # Batch UI updates
         if not hasattr(self, '_selection_update_timer'):
@@ -1243,6 +1601,10 @@ class PickerCanvas(QtWidgets.QWidget):
 
     def remove_button(self, button):
         if button in self.buttons:
+            # Clear hover button reference if this button is the current hover button
+            if self._current_hover_button == button:
+                self._hide_button_tooltip()
+            
             self.buttons.remove(button)
             self.update_button_positions()
             main_window = self.window()
@@ -1254,6 +1616,8 @@ class PickerCanvas(QtWidgets.QWidget):
             self._update_guides_after_button_change()
             self.transform_guides.setVisible(False)
             self.transform_guides.visual_layer.setVisible(False)
+            if hasattr(self.transform_guides, 'control_widget'):  
+                self.transform_guides.control_widget.setVisible(False)
 
     def update_button_positions(self):
         """Optimized button position updating with better culling"""
@@ -1360,6 +1724,13 @@ class PickerCanvas(QtWidgets.QWidget):
         center = QtCore.QPointF(self.width() / 2, self.height() / 2)
         self.update()
         return self.canvas_to_scene_coords(center)
+    
+    def canvas_cursor_position(self):
+        """Gets the current cursor position in canvas coordinates and processes it
+        the same way as the context menu does to ensure accurate positioning"""
+        # Get current cursor position relative to this widget
+        cursor_pos = self.mapFromGlobal(QtGui.QCursor.pos())
+        return cursor_pos  # Return raw position to be processed by add_button_at_position
     #------------------------------------------------------------------------------
     def setup_dot_texture(self):
         # Create a higher resolution texture for smoother dots
@@ -1913,14 +2284,15 @@ class PickerCanvas(QtWidgets.QWidget):
                 if new_buttons_data:
                     tab_data = DM.PickerDataManager.get_tab_data(current_tab)
                     tab_data['buttons'].extend(new_buttons_data)
-                    DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                    #DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                    DM.PickerDataManager.batch_update_buttons(current_tab, DM.PickerDataManager.get_tab_data(current_tab)['buttons'])
                     DM.PickerDataManager.save_data(DM.PickerDataManager.get_data(), force_immediate=True)
                 
                 # Select all created buttons
                 if created_buttons:
                     self.clear_selection()
                     for button in created_buttons:
-                        button.toggle_selection()
+                        button.is_selected = True
                     
                     # Update UI
                     self.update_button_positions()
@@ -2017,12 +2389,13 @@ class PickerCanvas(QtWidgets.QWidget):
                 
                 tab_data = DM.PickerDataManager.get_tab_data(current_tab)
                 tab_data['buttons'].append(button_data)
-                DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                #DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                DM.PickerDataManager.batch_update_buttons(current_tab, DM.PickerDataManager.get_tab_data(current_tab)['buttons'])
                 DM.PickerDataManager.save_data(DM.PickerDataManager.get_data(), force_immediate=True)
                 
                 # Select the new button
                 self.clear_selection()
-                new_button.toggle_selection()
+                new_button.is_selected = True
                 
                 self.update_button_positions()
                 self.update()
@@ -2432,8 +2805,32 @@ class PickerCanvas(QtWidgets.QWidget):
             add_button_action.triggered.connect(lambda: self.add_button_at_position(position))
             
             scene_pos = self.get_center_position()  # Use canvas center
+            
+            # Add the main curve creation action
+            from . import maya_curve_converter as MCC
             create_button_from_maya_curve_action = menu.addAction(QtGui.QIcon(UT.get_icon('add.png')), "Create Button from Curve")
-            create_button_from_maya_curve_action.triggered.connect(lambda: create_buttons_from_maya_curves(self, scene_pos, show_options_dialog=True))
+            create_button_from_maya_curve_action.triggered.connect(lambda: MCC.create_buttons_from_maya_curves(self, scene_pos))
+
+            # Add curve import submenu
+            curve_import_submenu = menu.addMenu("Curve Import Options")
+            curve_import_submenu.setStyleSheet(menu.styleSheet())
+            
+            # Create the widget and embed it in the submenu
+            from .curve_import_widget import CurveImportOptionsWidget
+            curve_widget = CurveImportOptionsWidget(canvas=self)
+            curve_widget_action = QtWidgets.QWidgetAction(curve_import_submenu)
+            curve_widget_action.setDefaultWidget(curve_widget)
+            curve_import_submenu.addAction(curve_widget_action)
+            
+            '''# Add utility actions
+            curve_import_submenu.addSeparator()
+            
+            refresh_action = curve_import_submenu.addAction("Refresh")
+            refresh_action.triggered.connect(curve_widget.handle_refresh)
+            
+            reset_action = curve_import_submenu.addAction("Reset to Defaults")
+            reset_action.triggered.connect(curve_widget.reset_settings)'''
+            
             
             # Get clipboard state to determine if paste actions should be enabled
             has_clipboard = bool(PB.ButtonClipboard.instance().get_all_buttons())
@@ -2493,7 +2890,12 @@ class PickerCanvas(QtWidgets.QWidget):
             # Update PickerDataManager
             tab_data = DM.PickerDataManager.get_tab_data(current_tab)
             tab_data['buttons'].append(button_data)
-            DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+            #DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+            DM.PickerDataManager.batch_update_buttons(current_tab, DM.PickerDataManager.get_tab_data(current_tab)['buttons'])
+            
+            self.clear_selection()
+            new_button.is_selected = True
+            new_button.selected.emit(new_button, True)
 
             self.update_button_positions()
             self.update()
@@ -2605,7 +3007,7 @@ class PickerCanvas(QtWidgets.QWidget):
             if new_buttons_widgets:
                 self.clear_selection()
                 for button in new_buttons_widgets:
-                    button.toggle_selection()
+                    button.is_selected = True
             
             # STEP 3: Apply position/SVG/counterpart mirroring if requested using existing function
             if mirror and new_buttons_widgets:
@@ -2630,7 +3032,8 @@ class PickerCanvas(QtWidgets.QWidget):
                 after_count = len(tab_data['buttons'])
                 
                 # Update database once with all new data
-                DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                #DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                DM.PickerDataManager.batch_update_buttons(current_tab, DM.PickerDataManager.get_tab_data(current_tab)['buttons'])
                 
                 # Force immediate save to ensure persistence
                 DM.PickerDataManager.save_data(DM.PickerDataManager.get_data(), force_immediate=True)
@@ -2822,9 +3225,7 @@ class PickerCanvas(QtWidgets.QWidget):
             self.transform_guides.update_position()
 
         self.setCursor(QtCore.Qt.ArrowCursor)
-        # Ensure Maya window stays active
-        #UT.maya_main_window().activateWindow()
-        
+
         # Update hover after zoom
         QtCore.QTimer.singleShot(100, lambda: self._update_hover_button(self.mapFromGlobal(QtGui.QCursor.pos())))
         
@@ -2909,11 +3310,6 @@ class PickerCanvas(QtWidgets.QWidget):
                     self.initial_selection_state = {button: False for button in self.buttons}
                     self.buttons_in_current_drag.clear()
                     
-                    # Hide transform guides immediately
-                    if hasattr(self, 'transform_guides'):
-                        self.transform_guides.setVisible(False)
-                        self.transform_guides.visual_layer.setVisible(False)
-                    
                     self.button_selection_changed.emit()
                     self.update_hud_counts()
                 
@@ -2934,7 +3330,9 @@ class PickerCanvas(QtWidgets.QWidget):
             super().mousePressEvent(event)
             self.setFocus()
         
-        UT.maya_main_window().activateWindow()
+        main_window = self.window()
+        if main_window.edit_mode == False:
+            UT.maya_main_window().activateWindow()
 
     def mouseMoveEvent(self, event):
         # Update button hover state and tooltip
@@ -3024,9 +3422,11 @@ class PickerCanvas(QtWidgets.QWidget):
         
         self.button_selection_changed.emit()
         self.clicked.emit()
-        UT.maya_main_window().activateWindow()
+        main_window = self.window()
+        if main_window.edit_mode == False:
+            UT.maya_main_window().activateWindow()
         event.accept()
-
+    
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.update_button_positions()

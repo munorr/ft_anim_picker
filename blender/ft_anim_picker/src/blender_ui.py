@@ -366,7 +366,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.edit_label = QtWidgets.QLabel("Picker Editor")
         self.edit_label.setAlignment(QtCore.Qt.AlignCenter)        
         self.edit_label.setStyleSheet('QLabel {color: #dddddd; background-color: transparent; font-size: 12px;}')
-        self.edit_layout.addWidget(self.edit_label)
+        #self.edit_layout.addWidget(self.edit_label)
 
         self.toggle_edit_mode_button = CB.CustomButton(text='Exit Edit Mode', height=24, width=efw, radius=4,color='#5e7b19', tooltip='Apply changes')
         self.toggle_edit_mode_button.clicked.connect(self.toggle_edit_mode)
@@ -537,7 +537,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.main_frame_layout.addLayout(self.main_frame_util_layout)
         self.main_frame_layout.addLayout(self.main_frame_body_layout)
         self.main_frame_layout.addLayout(self.main_frame_tool_layout)
-
+        
     def setup_connections(self):
         # Connect close button
         self.close_button.clicked.connect(self.close)
@@ -548,8 +548,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.remove_image.clicked.connect(self.remove_image_from_current_tab)
         self.image_opacity_slider.valueChanged.connect(self.update_image_opacity)
         self.add_picker_button.clicked.connect(self.add_new_picker_button)
-        self.toggle_axes.toggled.connect(self.toggle_axes_visibility)
-        self.toggle_dots.toggled.connect(self.toggle_dots_visibility)
+        
         self.image_scale_factor.valueChanged.connect(self.update_image_scale)
         self.namespace_dropdown.currentTextChanged.connect(self.on_namespace_changed)
         if hasattr(self, 'tab_system') and self.tab_system.current_tab:
@@ -557,11 +556,161 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             current_canvas.clicked.connect(self.clear_line_edit_focus)
             current_canvas.button_selection_changed.connect(self.update_edit_widgets_delayed)
         
+        self.toggle_axes.toggled.connect(self.toggle_axes_visibility)
+        self.toggle_dots.toggled.connect(self.toggle_dots_visibility)
         self.bg_value_slider.valueChanged.connect(self.update_background_value)
         self.toggle_grid.toggled.connect(self.toggle_grid_visibility) 
         self.grid_size.valueChanged.connect(self.update_grid_size)  
-        self.setup_scene_update_timer()
 
+        # Keyboard shortcuts
+        self.undo_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Z"), self)
+        self.undo_shortcut.activated.connect(self.undo_action)
+        
+        self.redo_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Y"), self)
+        self.redo_shortcut.activated.connect(self.redo_action)
+
+        self.redo_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Shift+Z"), self)
+        self.redo_shortcut.activated.connect(self.redo_action)
+
+        self.edit_mode_shortcut = QShortcut(QtGui.QKeySequence("Tab"), self)
+        self.edit_mode_shortcut.activated.connect(self.toggle_edit_mode)
+
+        # Install global event filter for hover-based Tab key handling
+        self.installEventFilter(self)
+        
+
+        
+        # Enable key event handling even when window doesn't have focus
+        self.setFocusPolicy(QtCore.Qt.StrongFocus)
+        
+        # Track Tab key state to prevent multiple triggers
+        self.tab_key_pressed = False
+        
+        # Keep the original Tab shortcut for when window has focus
+        self.tab_key_pressed = False
+
+        self.setup_scene_update_timer()
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    def undo_action(self):
+        """Perform undo operation"""
+        try:
+            result = DM.PickerDataManager.undo()
+            if result[0]:  # operation_name
+                operation_name, selected_button_ids = result
+                # Apply changes without full UI refresh
+                self.apply_undo_redo_changes(selected_button_ids)
+                #print(f"Undid: {operation_name}")
+            else:
+                print("Nothing to undo")
+        except Exception as e:
+            print(f"Undo failed: {e}")
+
+    def redo_action(self):
+        """Perform redo operation"""
+        try:
+            result = DM.PickerDataManager.redo()
+            if result[0]:  # operation_name
+                operation_name, selected_button_ids = result
+                # Apply changes without full UI refresh
+                self.apply_undo_redo_changes(selected_button_ids)
+                #print(f"Redid operation")
+            else:
+                print("Nothing to redo")
+        except Exception as e:
+            print(f"Redo failed: {e}")
+    
+    def apply_undo_redo_changes(self, selected_button_ids=None):
+        """Apply changes after undo/redo without full UI rebuild"""
+        if not self.tab_system.current_tab:
+            return
+            
+        current_tab = self.tab_system.current_tab
+        canvas = self.tab_system.tabs[current_tab]['canvas']
+        
+        if hasattr(canvas, 'transform_guides'):
+            canvas.clear_selection()
+            canvas.transform_guides.setVisible(False)
+            canvas.transform_guides.visual_layer.setVisible(False)
+            canvas.transform_guides.controls_widget.setVisible(False)
+        
+        # Disable updates during refresh
+        self.setUpdatesEnabled(False)
+        
+        try:
+            # Clear current canvas buttons
+            
+            for button in canvas.buttons[:]:
+                button.setParent(None)
+                button.deleteLater()
+            canvas.buttons.clear()
+            
+            # For undo/redo, we only need to recreate buttons, not reset the entire canvas
+            # The canvas view (image, opacity, scale, etc.) should remain unchanged
+            QtCore.QTimer.singleShot(1, lambda: self.create_buttons_and_restore_selection(selected_button_ids))
+            
+            # Update widget displays
+            self.update_edit_widgets_delayed()
+            
+            
+        finally:
+            # Re-enable updates
+            self.setUpdatesEnabled(True)
+            self.update()
+    
+    def create_buttons_and_restore_selection(self, selected_button_ids=None):
+        """Create buttons and restore selection from undo/redo"""
+        # Create buttons first
+        self.create_buttons()
+        
+        # Get the canvas for current tab
+        if not self.tab_system.current_tab:
+            return
+            
+        current_tab = self.tab_system.current_tab
+        canvas = self.tab_system.tabs[current_tab]['canvas']
+        
+        # Use the provided selected button IDs
+        if selected_button_ids is None:
+            # No selected button IDs provided, skip selection restoration
+            return
+        
+        if selected_button_ids:
+            # Find buttons by their IDs and select them
+            buttons_to_select = []
+            for button in canvas.buttons:
+                if hasattr(button, 'unique_id') and button.unique_id in selected_button_ids:
+                    buttons_to_select.append(button)
+            
+            # Select the buttons
+            if buttons_to_select:
+                # Clear current selection first
+                canvas.clear_selection()
+                
+                # Select the restored buttons
+                for button in buttons_to_select:
+                    button.is_selected = True
+                    button.update()
+                
+                # Update canvas selection state
+                if hasattr(canvas, '_cache_valid'):
+                    canvas._cache_valid = False
+                canvas.button_selection_changed.emit()
+                
+                # Show transform guides if buttons are selected
+                if len(buttons_to_select) > 0 and hasattr(canvas, 'transform_guides'):
+                    canvas.transform_guides.setVisible(True)
+                    canvas.transform_guides.visual_layer.setVisible(True)
+                    if hasattr(canvas.transform_guides, 'controls_widget'):
+                        canvas.transform_guides.controls_widget.setVisible(True)
+                    canvas.transform_guides.update_selection()
+    
+    def get_selected_buttons(self):
+        if self.tab_system.current_tab:
+            current_tab = self.tab_system.current_tab
+            canvas = self.tab_system.tabs[current_tab]['canvas']
+            return canvas.get_selected_buttons()
+        return None
+    #---------------------------------------------------------------------------------------------------------------------------------------- 
     def connect_canvas_signals(self, canvas):
         """ENHANCED signal connection with proper cleanup"""
         # Disconnect ALL existing connections first
@@ -614,6 +763,9 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                 new_width,
                 current_geometry.height()
             )
+            # Set active window to self
+            self.activateWindow()
+            self.raise_()
             
         else:
             # Subtract edit panel width
@@ -626,7 +778,6 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                 current_geometry.height()
             )
             
-        
         # Update the canvas for all tabs
         for tab_name, tab_data in self.tab_system.tabs.items():
             canvas = tab_data['canvas']
@@ -675,7 +826,6 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             print(f"Error checking for updates: {e}")
             self.update_anim_picker_button.setVisible(False) 
     #----------------------------------------------------------------------------------------------------------------------------------------
-
     def _is_task_switcher_active(self):
         """Check if Windows task switcher is currently active"""
         if sys.platform == "win32":
@@ -932,7 +1082,6 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         except Exception as e:
             print(f"Error checking Linux Blender state: {e}")
             return False
-    
     #----------------------------------------------------------------------------------------------------------------------------------------
     # [External Data Management]  
     #----------------------------------------------------------------------------------------------------------------------------------------
@@ -1317,292 +1466,6 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             new_height = max(min_size.height(), start_geo.height() + delta.y())
             
         self.setGeometry(new_x, new_y, new_width, new_height)
-    #-----------------------------------------------------------------------------------------------------------------------------------
-    # Events
-    #-----------------------------------------------------------------------------------------------------------------------------------
-    def enterEvent(self, event):
-        """Ensure mouse tracking is active when entering the window"""
-        self.setMouseTracking(True)
-        # Force update of child widgets' mouse tracking
-        for child in self.findChildren(QtWidgets.QWidget):
-            child.setMouseTracking(True)
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        """Reset cursor and hide tooltips when leaving the window"""
-        if not self.resizing:
-            self.setCursor(QtCore.Qt.ArrowCursor)
-        #QtWidgets.QToolTip.hideText()
-        super().leaveEvent(event)
-
-    def mousePressEvent(self, event):
-        if event.button() == QtCore.Qt.LeftButton:
-            # Enhanced interactive widget detection using hierarchy traversal
-            interactive_widget = self._is_interactive_widget(event.pos())
-            
-            if interactive_widget:
-                # For interactive widgets, pass the event to the default handler
-                # and explicitly prevent window dragging by NOT setting oldPos
-                super().mousePressEvent(event)
-                return
-            
-            # Check for resize operation first (before setting oldPos)
-            resize_edge = self.get_resize_edge(event.pos())
-            
-            if resize_edge:
-                self.resizing = True
-                self.resize_edge = resize_edge
-                self.resize_start_pos = event.globalPos()
-                self.resize_start_geometry = self.geometry()
-                self.setCursor(self.get_cursor_for_edge(resize_edge))
-            else:
-                # Only set oldPos for window dragging if we're not on an interactive widget
-                # and not resizing
-                self.oldPos = event.globalPos()
-            
-            UT.blender_main_window()
-
-    def mouseMoveEvent(self, event):
-        # Handle resize operation with highest priority
-        if self.resizing and event.buttons() == QtCore.Qt.LeftButton:
-            self.perform_resize(self.resize_edge, event.globalPos())
-            return
-
-        # If we're dragging with left button, check what we're dragging
-        if event.buttons() == QtCore.Qt.LeftButton:
-            # Check if the original press was on an interactive widget
-            target_widget = self.childAt(event.pos())
-            interactive_widget = False
-            current_widget = target_widget
-            
-            # Walk up the widget hierarchy
-            while current_widget and current_widget != self:
-                if isinstance(current_widget, (PC.PickerCanvas, PB.PickerButton, TS.TabButton, CB.CustomRadioButton)):
-                    interactive_widget = True
-                    break
-                
-                if isinstance(current_widget, (QtWidgets.QPushButton, QtWidgets.QSlider, 
-                                            QtWidgets.QLineEdit, QtWidgets.QComboBox,
-                                            QtWidgets.QScrollBar, QtWidgets.QCheckBox)):
-                    interactive_widget = True
-                    break
-                
-                current_widget = current_widget.parent()
-            
-            if interactive_widget:
-                # Let the interactive widget handle the move
-                super().mouseMoveEvent(event)
-                return
-            
-            # Handle window dragging only if we have a valid oldPos and we're not on an interactive widget
-            if hasattr(self, 'oldPos') and self.oldPos is not None:
-                delta = QtCore.QPoint(event.globalPos() - self.oldPos)
-                self.move(self.x() + delta.x(), self.y() + delta.y())
-                self.oldPos = event.globalPos()
-                return
-        
-        # Update cursor for resize edges when not resizing or dragging
-        if not self.resizing and not (event.buttons() == QtCore.Qt.LeftButton):
-            resize_edge = self.get_resize_edge(event.pos())
-            if resize_edge:
-                self.setCursor(self.get_cursor_for_edge(resize_edge))
-            else:
-                self.setCursor(QtCore.Qt.ArrowCursor)
-        
-        # Pass the event to the parent for any other processing
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        # Handle the end of resize operation first
-        if event.button() == QtCore.Qt.LeftButton and self.resizing:
-            self.resizing = False
-            self.resize_edge = None
-            self.resize_start_pos = None
-            self.resize_start_geometry = None
-            self.setCursor(QtCore.Qt.ArrowCursor)
-            event.accept()
-            return
-        
-        # Always clean up oldPos reference to prevent accidental dragging
-        if hasattr(self, 'oldPos'):
-            self.oldPos = None  # Set to None instead of deleting
-            
-        # Check if this is an interactive widget
-        target_widget = self.childAt(event.pos())
-        interactive_widget = False
-        current_widget = target_widget
-        
-        while current_widget and current_widget != self:
-            if isinstance(current_widget, (PC.PickerCanvas, PB.PickerButton, TS.TabButton, CB.CustomRadioButton)):
-                interactive_widget = True
-                break
-            
-            if isinstance(current_widget, (QtWidgets.QPushButton, QtWidgets.QSlider, 
-                                        QtWidgets.QLineEdit, QtWidgets.QComboBox,
-                                        QtWidgets.QScrollBar, QtWidgets.QCheckBox)):
-                interactive_widget = True
-                break
-            
-            current_widget = current_widget.parent()
-        
-        if interactive_widget:
-            # Let the interactive widget handle the release
-            super().mouseReleaseEvent(event)
-            return
-            
-        # Let the event propagate to handle other cases
-        #UT.blender_main_window()
-        #super().mouseReleaseEvent(event)
-
-    def _is_interactive_widget(self, pos):
-        """
-        Enhanced method to detect if position is over an interactive widget
-        Uses hierarchical traversal like the Blender version
-        """
-        # Get the widget at the event position
-        target_widget = self.childAt(pos)
-        
-        if not target_widget:
-            return False
-        
-        # Walk up the widget hierarchy to check for interactive widgets
-        current_widget = target_widget
-        
-        while current_widget and current_widget != self:
-            # Check for custom interactive widget types
-            if isinstance(current_widget, (PC.PickerCanvas, PB.PickerButton, 
-                                        TS.TabButton, CB.CustomRadioButton)):
-                return True
-            
-            # Check for standard Qt interactive widget types
-            if isinstance(current_widget, (QtWidgets.QPushButton, QtWidgets.QSlider, 
-                                            QtWidgets.QLineEdit, QtWidgets.QComboBox,
-                                            QtWidgets.QScrollBar, QtWidgets.QCheckBox)):
-                return True
-            # Check for specific widgets that should be interactive
-            '''if current_widget is self.canvas_tab_frame_scroll_area:
-                return True
-            # Check for scroll areas and their contents
-            if isinstance(current_widget, (QtWidgets.QScrollArea, QtWidgets.QAbstractScrollArea)):
-                return True'''
-                
-            # Move up to parent widget
-            current_widget = current_widget.parent()
-        
-        return False
-    #-----------------------------------------------------------------------------------------------------------------------------------
-    def leaveEvent(self, event):
-        """Reset cursor when mouse leaves the window"""
-        if not self.resizing:
-            self.setCursor(QtCore.Qt.ArrowCursor)
-        super().leaveEvent(event)
-    
-    def resizeEvent(self, event):
-        """Enhanced resize event with better throttling"""
-        # Call parent implementation first
-        super().resizeEvent(event)
-        
-        # Only update buttons if not in active resize and not during batch operations
-        if not self.resize_state.get('active', False) and not getattr(self, 'batch_update_active', False):
-            # Use a timer to throttle updates during rapid resize events
-            if not hasattr(self, '_resize_update_timer'):
-                self._resize_update_timer = QTimer()
-                self._resize_update_timer.setSingleShot(True)
-                self._resize_update_timer.timeout.connect(lambda: self.update_buttons_for_current_tab(force_update=True))
-            
-            self._resize_update_timer.stop()
-            self._resize_update_timer.start(100)  # 100ms delay
-
-    def closeEvent(self, event):
-        """Enhanced close event to ensure all data is saved and timers are cleaned up"""
-        #print(f"Closing picker window {id(self)}")
-        
-         # Exit rename mode for any button in rename mode in the active canvas
-        if hasattr(self, 'tab_system') and self.tab_system and self.tab_system.current_tab:
-            canvas = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
-            for button in getattr(canvas, 'buttons', []):
-                if getattr(button, 'rename_mode', False):
-                    button.commit_rename()
-                    button.exit_rename_mode()
-        
-        self.edit_mode = False
-        
-        # Process any pending updates before closing
-        if hasattr(self, 'pending_button_updates') and self.pending_button_updates:
-            self._process_batch_updates()
-        
-        if hasattr(self, 'pending_widget_changes') and self.pending_widget_changes:
-            self._apply_widget_changes()
-
-        # Stop the stay-on-top timer first
-        if hasattr(self, 'stay_on_top_timer') and self.stay_on_top_timer:
-            self.stay_on_top_timer.stop()
-            self.stay_on_top_timer.deleteLater()
-            self.stay_on_top_timer = None
-
-        if hasattr(self, 'update_checker_timer') and self.update_checker_timer:
-            self.update_checker_timer.stop()
-            self.update_checker_timer.deleteLater()
-            self.update_checker_timer = None
-        
-        # Unregister from visibility manager BEFORE cleanup
-        try:
-            from . import blender_main
-            visibility_manager = blender_main.PickerVisibilityManager.get_instance()
-            visibility_manager.unregister_picker(self)
-        except Exception as e:
-            print(f"Error unregistering from visibility manager: {e}")
-
-        # Comprehensive cleanup
-        self.cleanup_resources()
-        
-        # Stop periodic cleanup
-        self.end_periodic_cleanup()
-        
-        # Force process events to ensure cleanup
-        from PySide6.QtWidgets import QApplication
-        app = QApplication.instance()
-        if app:
-            app.processEvents()
-        
-        #print(f"Picker window {id(self)} close event complete")
-        
-        # Call parent close event
-        super().closeEvent(event)
-
-    def on_resize_timer_timeout(self):
-        # Timer has timed out, meaning resizing has stopped
-        self.resize_state['active'] = False
-        
-        # Reset cached references
-        cached_canvas = self.resize_state['cached_canvas']
-        self.resize_state['cached_canvas'] = None
-        
-        # Perform full update of the canvas and UI
-        if cached_canvas:
-            # Update button positions with the new canvas size
-            cached_canvas.update_button_positions()
-            cached_canvas.update()
-            
-        # Update all UI elements
-        self.update()
-
-    def eventFilter(self, obj, event):
-        if event.type() == QtCore.QEvent.MouseButtonDblClick and obj == self.main_frame:
-            # Reset window to original size when double-clicked
-            if self.edit_mode:
-                new_width = 350 + self.edit_scroll_area.width()
-                self.resize(new_width, 450)
-                self.update_buttons_for_current_tab()
-                UT.blender_main_window()
-            else:
-                self.resize(350, 450)
-                self.update_buttons_for_current_tab()
-                UT.blender_main_window()
-            return True
-        
-        # Continue with other event handling
-        return super().eventFilter(obj, event)
     #----------------------------------------------------------------------------------------------------------------------------------------
     # [Picker Button] 
     #----------------------------------------------------------------------------------------------------------------------------------------
@@ -1638,6 +1501,11 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             "opacity": new_button.opacity,
             "position": (new_button.scene_position.x(), new_button.scene_position.y())
         }
+        
+        # Select button properly (deselect other buttons first)
+        canvas.clear_selection()
+        new_button.is_selected = True
+        new_button.selected.emit(new_button, True)
         
         # Update the PickerDataManager
         tab_data = DM.PickerDataManager.get_tab_data(current_tab)
@@ -2021,6 +1889,161 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                     # Give a small delay before restarting
                     QtCore.QTimer.singleShot(100, timer.start)
 
+    def _batch_button_operation(self, operation_func, *args, **kwargs):
+        """FIXED: Execute button operations in batch mode with proper deletion handling"""
+        if not self.tab_system.current_tab:
+            return
+        
+        canvas = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
+        selected_buttons = canvas.get_selected_buttons()
+        current_tab = self.tab_system.current_tab
+        tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+        if not selected_buttons:
+            return
+        
+        # Special handling for deletion operations
+        operation_name = getattr(operation_func, '__name__', str(operation_func))
+        is_deletion_operation = 'delete' in operation_name.lower()
+        
+        if is_deletion_operation:
+            # Handle deletions separately - don't use batch update system
+            operation_func(*args, **kwargs)
+            return
+        
+        # Regular batch operations (non-deletion)
+        self.batch_update_active = True
+        self.edit_widgets_update_enabled = False
+        canvas.setUpdatesEnabled(False)
+        
+        try:
+            # Apply operation to all selected buttons
+            for button in selected_buttons:
+                operation_func(button, *args, **kwargs)
+                self.pending_button_updates.add(button.unique_id)  # Use unique_id, not button object
+            
+            # Single update at the end
+            self._flush_pending_updates()
+            
+        finally:
+            # Re-enable updates
+            canvas.setUpdatesEnabled(True)
+            self.edit_widgets_update_enabled = True
+            self.batch_update_active = False
+            
+            canvas.update()
+
+    def _flush_pending_updates(self):
+        """ENHANCED: Flush all pending button updates in one batch - handles both updates and deletions"""
+        if not self.pending_button_updates:
+            return
+        
+        current_tab = self.tab_system.current_tab
+        if not current_tab:
+            self.pending_button_updates.clear()
+            return
+            
+        canvas = self.tab_system.tabs[current_tab]['canvas']
+        
+        # Separate existing buttons from deleted ones
+        existing_button_ids = {button.unique_id for button in canvas.buttons}
+        updates_to_process = []
+        deletions_to_process = []
+        
+        for button_id in self.pending_button_updates:
+            if button_id in existing_button_ids:
+                # Find the actual button object for updates
+                for button in canvas.buttons:
+                    if button.unique_id == button_id:
+                        updates_to_process.append(button)
+                        break
+            else:
+                # Button no longer exists - it was deleted
+                deletions_to_process.append(button_id)
+        
+        #print(f"Processing batch update: {len(updates_to_process)} updates, {len(deletions_to_process)} deletions")
+        
+        # Process deletions first
+        if deletions_to_process:
+            self.initialize_tab_data(current_tab)
+            tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+            original_count = len(tab_data['buttons'])
+            
+            # Remove all deleted buttons from data
+            tab_data['buttons'] = [b for b in tab_data['buttons'] if b['id'] not in deletions_to_process]
+            new_count = len(tab_data['buttons'])
+            
+            if new_count < original_count:
+                # Update data manager
+                DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                
+                # Add deleted IDs to available IDs
+                if current_tab not in self.available_ids:
+                    self.available_ids[current_tab] = set()
+                self.available_ids[current_tab].update(deletions_to_process)
+                
+                #print(f"Removed {original_count - new_count} deleted buttons from database")
+        
+        # Process updates for existing buttons
+        if updates_to_process:
+            self.initialize_tab_data(current_tab)
+            tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+            
+            # Create a mapping of existing button IDs for faster lookup
+            existing_buttons_map = {btn['id']: i for i, btn in enumerate(tab_data['buttons'])}
+            
+            updates_applied = 0
+            for button in updates_to_process:
+                try:
+                    # Create comprehensive button data
+                    button_data = {
+                        "id": button.unique_id,
+                        "selectable": button.selectable,
+                        "label": button.label,
+                        "color": button.color,
+                        "opacity": button.opacity,
+                        "position": (button.scene_position.x(), button.scene_position.y()),
+                        "width": button.width,
+                        "height": button.height,
+                        "radius": button.radius,
+                        "assigned_objects": getattr(button, 'assigned_objects', []),
+                        "mode": getattr(button, 'mode', 'select'),
+                        "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
+                        "pose_data": getattr(button, 'pose_data', {}),
+                        "thumbnail_path": getattr(button, 'thumbnail_path', ''),
+                        "shape_type": button.shape_type,
+                        "svg_path_data": button.svg_path_data,
+                        "svg_file_path": button.svg_file_path
+                    }
+                    
+                    # Update existing button or add new one
+                    if button.unique_id in existing_buttons_map:
+                        # Update existing button
+                        index = existing_buttons_map[button.unique_id]
+                        tab_data['buttons'][index] = button_data
+                    else:
+                        # Add new button
+                        tab_data['buttons'].append(button_data)
+                        existing_buttons_map[button.unique_id] = len(tab_data['buttons']) - 1
+                    
+                    updates_applied += 1
+                    
+                except Exception as e:
+                    print(f"Error updating button {button.unique_id}: {e}")
+                    continue
+            
+            if updates_applied > 0:
+                # Save updated tab data
+                DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                #print(f"Applied {updates_applied} button updates to database")
+        
+        # Update button positions once
+        canvas.update_button_positions()
+        
+        # Clear pending updates
+        self.pending_button_updates.clear()
+        
+        #print("Batch update complete")
+    
     def _process_button_deletion(self, button, current_tab):
         """Process button deletion immediately and update data manager"""
         self.initialize_tab_data(current_tab)
@@ -2264,7 +2287,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             self.initialize_tab_data("Tab 1")
             DM.PickerDataManager.add_tab("Tab 1")
         
-        QtCore.QTimer.singleShot(50, self.create_buttons)
+        QtCore.QTimer.singleShot(10, self.create_buttons)
 
     def clear_canvas(self):
         # Find and clear the current canvas
@@ -2318,7 +2341,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             self.remove_image.setEnabled(has_image)
         
         # Create buttons explicitly for the current tab
-        QtCore.QTimer.singleShot(50, self.create_buttons)
+        QtCore.QTimer.singleShot(10, self.create_buttons)
         # Then update buttons for proper positioning
         #self.update_buttons_for_current_tab(force_update=True)
         
@@ -2435,7 +2458,6 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                 
         # Get the canvas for this tab
         current_canvas = self.tab_system.tabs[tab_name]['canvas']
-        
         # Add the canvas to the stack if it's not already there
         if self.canvas_stack.indexOf(current_canvas) == -1:
             self.canvas_stack.addWidget(current_canvas)
@@ -2478,8 +2500,6 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         # Set other canvas properties (image and opacity)
         image_path = tab_data.get('image_path')
         
-        # IMPORTANT: Get the opacity value BEFORE setting the background image
-        # This ensures the opacity value from the data is used and not reset
         image_opacity = tab_data.get('image_opacity', 1.0)
         self.tab_system.tabs[tab_name]['image_opacity'] = image_opacity
         
@@ -2642,6 +2662,14 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             current_canvas = self.tab_system.tabs[current_tab]['canvas']
             current_canvas.focus_canvas()
     
+
+    
+
+    
+
+    
+
+    
     def clear_line_edit_focus(self):
         if self.add_p_button_label_qline.hasFocus():
             self.add_p_button_label_qline.clearFocus()
@@ -2679,10 +2707,17 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
 
     def change_opacity_for_selected_buttons(self, value):
         """Optimized opacity change with batching"""
+        # Capture selected buttons BEFORE the operation
+        canvas = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
+        selected_buttons = canvas.get_selected_buttons()
+        selected_button_ids = [button.unique_id for button in selected_buttons] if selected_buttons else []
+        
         def opacity_operation(button, opacity_value):
             button.opacity = opacity_value / 100.0
             button.update()
         
+        # Save undo state with the captured button IDs
+        DM.PickerDataManager.save_undo_state("Opacity Change", selected_button_ids)
         self._batch_button_operation(opacity_operation, value)
 
     def set_size_for_selected_buttons(self, transform_data):
@@ -2715,10 +2750,11 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             height_scale = target_height / ref_height
             
             # Apply scaling to all selected buttons
-            def size_operation(button, w_scale, h_scale):
+            #def size_operation(button, w_scale, h_scale):
+            for button in selected_buttons:
                 # Scale each button relative to its own current size
-                new_width = round(button.width * w_scale)
-                new_height = round(button.height * h_scale)
+                new_width = round(button.width * width_scale)
+                new_height = round(button.height * height_scale)
                 
                 # Ensure minimum size
                 new_width = max(1, new_width)
@@ -2739,7 +2775,8 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                 button.update()
             
             # Apply to all selected buttons using batch operation
-            self._batch_button_operation(size_operation, width_scale, height_scale)
+            #self._batch_button_operation(size_operation, width_scale, height_scale)
+            self.batch_update_buttons_to_database(selected_buttons)
         else:
             # Fallback: direct assignment if no valid reference
             for button in selected_buttons:
@@ -2799,13 +2836,13 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                 if button.mode != 'pose':  # Don't override pose button height calculation
                     #button.height = button.width
                     button.width = button.height
+                    self.update_button_data(button)
                 button.update()
                 self.pending_button_updates.add(button.unique_id)
             
             # Update canvas and process changes
             canvas.update_button_positions()
-            self._process_batch_updates()
-            # Update transform widget
+            self.batch_update_buttons_to_database(selected_buttons)
             self.update_edit_widgets_delayed()
     
     def initialize_button_original_sizes(self):
@@ -2821,8 +2858,8 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
 
     def set_radius_for_selected_buttons(self, tl, tr, br, bl):
         """Optimized radius change with batching"""
-        def radius_operation(button, top_left, top_right, bottom_right, bottom_left):
-            button.radius = [top_left, top_right, bottom_right, bottom_left]
+        def radius_operation(button, tl, tr, br, bl):
+            button.set_radius(tl, tr, br, bl)
             button.update()
         
         self._batch_button_operation(radius_operation, tl, tr, br, bl)
@@ -3094,7 +3131,8 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.pending_widget_changes.clear()
         
         # Process database updates
-        self._process_batch_updates()
+        self.batch_update_buttons_to_database(canvas.get_selected_buttons())
+        #self._process_batch_updates()
 
     def _process_batch_updates(self):
         """Simplified batch processing like Maya version"""
@@ -3314,6 +3352,12 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         # Keep thumbnail directory always enabled
         if 'thumbnail_dir_widget' in widgets:
             widgets['thumbnail_dir_widget'].setEnabled(True)
+    
+    def _perform_delayed_widget_update(self):
+        """Perform the actual widget update"""
+        if self.edit_mode and hasattr(self, 'edit_widgets'):
+            self.update_edit_widgets()
+
     #----------------------------------------------------------------------------------------------------------------------------------------
     def _delayed_transform_update(self):
         """Delayed transform update for better performance"""
@@ -3347,164 +3391,305 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             self.change_color_for_selected_buttons(color)
             self._process_batch_updates()
     #----------------------------------------------------------------------------------------------------------------------------------------
-    def _perform_delayed_widget_update(self):
-        """Perform the actual widget update"""
-        if self.edit_mode and hasattr(self, 'edit_widgets'):
-            self.update_edit_widgets()
-
-    def _batch_button_operation(self, operation_func, *args, **kwargs):
-        """FIXED: Execute button operations in batch mode with proper deletion handling"""
-        if not self.tab_system.current_tab:
-            return
-        
-        canvas = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
-        selected_buttons = canvas.get_selected_buttons()
-        
-        if not selected_buttons:
-            return
-        
-        # Special handling for deletion operations
-        operation_name = getattr(operation_func, '__name__', str(operation_func))
-        is_deletion_operation = 'delete' in operation_name.lower()
-        
-        if is_deletion_operation:
-            # Handle deletions separately - don't use batch update system
-            operation_func(*args, **kwargs)
-            return
-        
-        # Regular batch operations (non-deletion)
-        self.batch_update_active = True
-        self.edit_widgets_update_enabled = False
-        canvas.setUpdatesEnabled(False)
-        
-        try:
-            # Apply operation to all selected buttons
-            for button in selected_buttons:
-                operation_func(button, *args, **kwargs)
-                self.pending_button_updates.add(button.unique_id)  # Use unique_id, not button object
-            
-            # Single update at the end
-            self._flush_pending_updates()
-            
-        finally:
-            # Re-enable updates
-            canvas.setUpdatesEnabled(True)
-            self.edit_widgets_update_enabled = True
-            self.batch_update_active = False
-            canvas.update()
-
-    def _flush_pending_updates(self):
-        """ENHANCED: Flush all pending button updates in one batch - handles both updates and deletions"""
-        if not self.pending_button_updates:
-            return
-        
-        current_tab = self.tab_system.current_tab
-        if not current_tab:
-            self.pending_button_updates.clear()
-            return
-            
-        canvas = self.tab_system.tabs[current_tab]['canvas']
-        
-        # Separate existing buttons from deleted ones
-        existing_button_ids = {button.unique_id for button in canvas.buttons}
-        updates_to_process = []
-        deletions_to_process = []
-        
-        for button_id in self.pending_button_updates:
-            if button_id in existing_button_ids:
-                # Find the actual button object for updates
-                for button in canvas.buttons:
-                    if button.unique_id == button_id:
-                        updates_to_process.append(button)
-                        break
-            else:
-                # Button no longer exists - it was deleted
-                deletions_to_process.append(button_id)
-        
-        #print(f"Processing batch update: {len(updates_to_process)} updates, {len(deletions_to_process)} deletions")
-        
-        # Process deletions first
-        if deletions_to_process:
-            self.initialize_tab_data(current_tab)
-            tab_data = DM.PickerDataManager.get_tab_data(current_tab)
-            original_count = len(tab_data['buttons'])
-            
-            # Remove all deleted buttons from data
-            tab_data['buttons'] = [b for b in tab_data['buttons'] if b['id'] not in deletions_to_process]
-            new_count = len(tab_data['buttons'])
-            
-            if new_count < original_count:
-                # Update data manager
-                DM.PickerDataManager.update_tab_data(current_tab, tab_data)
-                
-                # Add deleted IDs to available IDs
-                if current_tab not in self.available_ids:
-                    self.available_ids[current_tab] = set()
-                self.available_ids[current_tab].update(deletions_to_process)
-                
-                #print(f"Removed {original_count - new_count} deleted buttons from database")
-        
-        # Process updates for existing buttons
-        if updates_to_process:
-            self.initialize_tab_data(current_tab)
-            tab_data = DM.PickerDataManager.get_tab_data(current_tab)
-            
-            # Create a mapping of existing button IDs for faster lookup
-            existing_buttons_map = {btn['id']: i for i, btn in enumerate(tab_data['buttons'])}
-            
-            updates_applied = 0
-            for button in updates_to_process:
-                try:
-                    # Create comprehensive button data
-                    button_data = {
-                        "id": button.unique_id,
-                        "selectable": button.selectable,
-                        "label": button.label,
-                        "color": button.color,
-                        "opacity": button.opacity,
-                        "position": (button.scene_position.x(), button.scene_position.y()),
-                        "width": button.width,
-                        "height": button.height,
-                        "radius": button.radius,
-                        "assigned_objects": getattr(button, 'assigned_objects', []),
-                        "mode": getattr(button, 'mode', 'select'),
-                        "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
-                        "pose_data": getattr(button, 'pose_data', {}),
-                        "thumbnail_path": getattr(button, 'thumbnail_path', ''),
-                        "shape_type": button.shape_type,
-                        "svg_path_data": button.svg_path_data,
-                        "svg_file_path": button.svg_file_path
-                    }
-                    
-                    # Update existing button or add new one
-                    if button.unique_id in existing_buttons_map:
-                        # Update existing button
-                        index = existing_buttons_map[button.unique_id]
-                        tab_data['buttons'][index] = button_data
-                    else:
-                        # Add new button
-                        tab_data['buttons'].append(button_data)
-                        existing_buttons_map[button.unique_id] = len(tab_data['buttons']) - 1
-                    
-                    updates_applied += 1
-                    
-                except Exception as e:
-                    print(f"Error updating button {button.unique_id}: {e}")
-                    continue
-            
-            if updates_applied > 0:
-                # Save updated tab data
-                DM.PickerDataManager.update_tab_data(current_tab, tab_data)
-                #print(f"Applied {updates_applied} button updates to database")
-        
-        # Update button positions once
-        canvas.update_button_positions()
-        
-        # Clear pending updates
-        self.pending_button_updates.clear()
-        
-        #print("Batch update complete")
     
+    #-----------------------------------------------------------------------------------------------------------------------------------
+    # Events
+    #-----------------------------------------------------------------------------------------------------------------------------------
+    def enterEvent(self, event):
+        """Ensure mouse tracking is active when entering the window"""
+        self.setMouseTracking(True)
+        # Force update of child widgets' mouse tracking
+        for child in self.findChildren(QtWidgets.QWidget):
+            child.setMouseTracking(True)
+        #if not self.hasFocus():
+        #    self.activateWindow()
+        #    self.raise_()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        """Reset cursor and hide tooltips when leaving the window"""
+        if not self.resizing:
+            self.setCursor(QtCore.Qt.ArrowCursor)
+        #QtWidgets.QToolTip.hideText()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        # Check for Ctrl+Left Click first (highest priority)
+        if event.button() == QtCore.Qt.LeftButton and event.modifiers() & QtCore.Qt.ControlModifier:
+            # Ctrl+Left Click to toggle edit mode
+            self.activateWindow()
+            self.raise_()
+            self.toggle_edit_mode()
+            event.accept()
+            return
+        
+        # Regular left-click handling
+        if event.button() == QtCore.Qt.LeftButton:
+            # Enhanced interactive widget detection using hierarchy traversal
+            interactive_widget = self._is_interactive_widget(event.pos())
+            
+            if interactive_widget:
+                # For interactive widgets, pass the event to the default handler
+                # and explicitly prevent window dragging by NOT setting oldPos
+                super().mousePressEvent(event)
+                return
+            
+            # Check for resize operation first (before setting oldPos)
+            resize_edge = self.get_resize_edge(event.pos())
+            
+            if resize_edge:
+                self.resizing = True
+                self.resize_edge = resize_edge
+                self.resize_start_pos = event.globalPos()
+                self.resize_start_geometry = self.geometry()
+                self.setCursor(self.get_cursor_for_edge(resize_edge))
+            else:
+                # Only set oldPos for window dragging if we're not on an interactive widget
+                # and not resizing
+                self.oldPos = event.globalPos()
+            
+            if self.edit_mode == False:
+                UT.blender_main_window()
+
+    def mouseMoveEvent(self, event):
+        # Handle resize operation with highest priority
+        if self.resizing and event.buttons() == QtCore.Qt.LeftButton:
+            self.perform_resize(self.resize_edge, event.globalPos())
+            return
+
+        # If we're dragging with left button, check what we're dragging
+        if event.buttons() == QtCore.Qt.LeftButton:
+            # Check if the original press was on an interactive widget
+            target_widget = self.childAt(event.pos())
+            interactive_widget = False
+            current_widget = target_widget
+            
+            # Walk up the widget hierarchy
+            while current_widget and current_widget != self:
+                if isinstance(current_widget, (PC.PickerCanvas, PB.PickerButton, TS.TabButton, CB.CustomRadioButton)):
+                    interactive_widget = True
+                    break
+                
+                if isinstance(current_widget, (QtWidgets.QPushButton, QtWidgets.QSlider, 
+                                            QtWidgets.QLineEdit, QtWidgets.QComboBox,
+                                            QtWidgets.QScrollBar, QtWidgets.QCheckBox)):
+                    interactive_widget = True
+                    break
+                
+                current_widget = current_widget.parent()
+            
+            if interactive_widget:
+                # Let the interactive widget handle the move
+                super().mouseMoveEvent(event)
+                return
+            
+            # Handle window dragging only if we have a valid oldPos and we're not on an interactive widget
+            if hasattr(self, 'oldPos') and self.oldPos is not None:
+                delta = QtCore.QPoint(event.globalPos() - self.oldPos)
+                self.move(self.x() + delta.x(), self.y() + delta.y())
+                self.oldPos = event.globalPos()
+                return
+        
+        # Update cursor for resize edges when not resizing or dragging
+        if not self.resizing and not (event.buttons() == QtCore.Qt.LeftButton):
+            resize_edge = self.get_resize_edge(event.pos())
+            if resize_edge:
+                self.setCursor(self.get_cursor_for_edge(resize_edge))
+            else:
+                self.setCursor(QtCore.Qt.ArrowCursor)
+        
+        # Pass the event to the parent for any other processing
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        # Handle the end of resize operation first
+        if event.button() == QtCore.Qt.LeftButton and self.resizing:
+            self.resizing = False
+            self.resize_edge = None
+            self.resize_start_pos = None
+            self.resize_start_geometry = None
+            self.setCursor(QtCore.Qt.ArrowCursor)
+            event.accept()
+            return
+        
+        # Always clean up oldPos reference to prevent accidental dragging
+        if hasattr(self, 'oldPos'):
+            self.oldPos = None  # Set to None instead of deleting
+            
+        # Check if this is an interactive widget
+        target_widget = self.childAt(event.pos())
+        interactive_widget = False
+        current_widget = target_widget
+        
+        while current_widget and current_widget != self:
+            if isinstance(current_widget, (PC.PickerCanvas, PB.PickerButton, TS.TabButton, CB.CustomRadioButton)):
+                interactive_widget = True
+                break
+            
+            if isinstance(current_widget, (QtWidgets.QPushButton, QtWidgets.QSlider, 
+                                        QtWidgets.QLineEdit, QtWidgets.QComboBox,
+                                        QtWidgets.QScrollBar, QtWidgets.QCheckBox)):
+                interactive_widget = True
+                break
+            
+            current_widget = current_widget.parent()
+        
+        if interactive_widget:
+            # Let the interactive widget handle the release
+            super().mouseReleaseEvent(event)
+            return
+            
+    def _is_interactive_widget(self, pos):
+        """
+        Enhanced method to detect if position is over an interactive widget
+        Uses hierarchical traversal like the Blender version
+        """
+        # Get the widget at the event position
+        target_widget = self.childAt(pos)
+        
+        if not target_widget:
+            return False
+        
+        # Walk up the widget hierarchy to check for interactive widgets
+        current_widget = target_widget
+        
+        while current_widget and current_widget != self:
+            # Check for custom interactive widget types
+            if isinstance(current_widget, (PC.PickerCanvas, PB.PickerButton, 
+                                        TS.TabButton, CB.CustomRadioButton)):
+                return True
+            
+            # Check for standard Qt interactive widget types
+            if isinstance(current_widget, (QtWidgets.QPushButton, QtWidgets.QSlider, 
+                                            QtWidgets.QLineEdit, QtWidgets.QComboBox,
+                                            QtWidgets.QScrollBar, QtWidgets.QCheckBox)):
+                return True
+            # Check for specific widgets that should be interactive
+            '''if current_widget is self.canvas_tab_frame_scroll_area:
+                return True
+            # Check for scroll areas and their contents
+            if isinstance(current_widget, (QtWidgets.QScrollArea, QtWidgets.QAbstractScrollArea)):
+                return True'''
+                
+            # Move up to parent widget
+            current_widget = current_widget.parent()
+        
+        return False
+    #-----------------------------------------------------------------------------------------------------------------------------------
+    def leaveEvent(self, event):
+        """Reset cursor when mouse leaves the window"""
+        if not self.resizing:
+            self.setCursor(QtCore.Qt.ArrowCursor)
+        super().leaveEvent(event)
+    
+    def resizeEvent(self, event):
+        """Enhanced resize event with better throttling"""
+        # Call parent implementation first
+        super().resizeEvent(event)
+        
+        # Only update buttons if not in active resize and not during batch operations
+        if not self.resize_state.get('active', False) and not getattr(self, 'batch_update_active', False):
+            # Use a timer to throttle updates during rapid resize events
+            if not hasattr(self, '_resize_update_timer'):
+                self._resize_update_timer = QTimer()
+                self._resize_update_timer.setSingleShot(True)
+                self._resize_update_timer.timeout.connect(lambda: self.update_buttons_for_current_tab(force_update=True))
+            
+            self._resize_update_timer.stop()
+            self._resize_update_timer.start(100)  # 100ms delay
+
+    def closeEvent(self, event):
+        """Enhanced close event to ensure all data is saved and timers are cleaned up"""
+        #print(f"Closing picker window {id(self)}")
+        
+         # Exit rename mode for any button in rename mode in the active canvas
+        if hasattr(self, 'tab_system') and self.tab_system and self.tab_system.current_tab:
+            canvas = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
+            for button in getattr(canvas, 'buttons', []):
+                if getattr(button, 'rename_mode', False):
+                    button.commit_rename()
+                    button.exit_rename_mode()
+        
+        self.edit_mode = False
+        
+        # Process any pending updates before closing
+        if hasattr(self, 'pending_button_updates') and self.pending_button_updates:
+            self._process_batch_updates()
+        
+        if hasattr(self, 'pending_widget_changes') and self.pending_widget_changes:
+            self._apply_widget_changes()
+
+        # Stop the stay-on-top timer first
+        if hasattr(self, 'stay_on_top_timer') and self.stay_on_top_timer:
+            self.stay_on_top_timer.stop()
+            self.stay_on_top_timer.deleteLater()
+            self.stay_on_top_timer = None
+
+        if hasattr(self, 'update_checker_timer') and self.update_checker_timer:
+            self.update_checker_timer.stop()
+            self.update_checker_timer.deleteLater()
+            self.update_checker_timer = None
+        
+        # Unregister from visibility manager BEFORE cleanup
+        try:
+            from . import blender_main
+            visibility_manager = blender_main.PickerVisibilityManager.get_instance()
+            visibility_manager.unregister_picker(self)
+        except Exception as e:
+            print(f"Error unregistering from visibility manager: {e}")
+
+        # Comprehensive cleanup
+        self.cleanup_resources()
+        
+        # Stop periodic cleanup
+        self.end_periodic_cleanup()
+        
+        # Force process events to ensure cleanup
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app:
+            app.processEvents()
+        
+        #print(f"Picker window {id(self)} close event complete")
+        
+        # Call parent close event
+        super().closeEvent(event)
+
+    def on_resize_timer_timeout(self):
+        # Timer has timed out, meaning resizing has stopped
+        self.resize_state['active'] = False
+        
+        # Reset cached references
+        cached_canvas = self.resize_state['cached_canvas']
+        self.resize_state['cached_canvas'] = None
+        
+        # Perform full update of the canvas and UI
+        if cached_canvas:
+            # Update button positions with the new canvas size
+            cached_canvas.update_button_positions()
+            cached_canvas.update()
+            
+        # Update all UI elements
+        self.update()
+
+    def eventFilter(self, obj, event):
+        # Handle double-click on main frame
+        if event.type() == QtCore.QEvent.MouseButtonDblClick and obj == self.main_frame:
+            # Reset window to original size when double-clicked
+            if self.edit_mode:
+                new_width = 350 + self.edit_scroll_area.width()
+                self.resize(new_width, 450)
+                self.update_buttons_for_current_tab()
+            else:
+                self.resize(350, 450)
+                self.update_buttons_for_current_tab()
+                UT.blender_main_window()
+            return True
+        
+
+        
+        # Continue with other event handling
+        return super().eventFilter(obj, event)
     #----------------------------------------------------------------------------------------------------------------------------------------
     #CLEANUP
     #----------------------------------------------------------------------------------------------------------------------------------------
@@ -3546,6 +3731,8 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                     setattr(self, timer_attr, None)
                 
                 #print(f"Cleaned up timer: {timer_attr}")
+        
+
 
     def _cleanup_tabs_and_canvases(self):
         """Properly cleanup all tabs, canvases and buttons"""
@@ -3624,6 +3811,8 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             # Disconnect main frame signals
             if hasattr(self, 'main_frame'):
                 self.main_frame.removeEventFilter(self)
+            
+
             
             # Disconnect other widget signals
             widgets_to_disconnect = ['namespace_dropdown', 'close_button']

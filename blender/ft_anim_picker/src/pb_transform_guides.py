@@ -1,8 +1,12 @@
 from PySide6 import QtWidgets, QtCore, QtGui
-from PySide6.QtCore import QTimer, QPropertyAnimation, QEasingCurve, Signal
+from PySide6.QtCore import QTimer, QPropertyAnimation, QEasingCurve, Signal, QObject
 import math
+from functools import partial
 
 from . import utils as UT
+from . import custom_line_edit as CLE
+from . import custom_color_picker as CCP
+from . import blender_ui as UI
 
 class TransformGuides(QtWidgets.QWidget):
     """Transform guides for scaling and manipulating selected picker buttons"""
@@ -57,6 +61,8 @@ class TransformGuides(QtWidgets.QWidget):
         self.visual_layer.setVisible(False)
         self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
         
+        # Create transform controls widget
+        self.controls_widget = TransformControlsWidget(canvas, parent)
         
         # Connect to canvas selection changes
         if hasattr(canvas, 'button_selection_changed'):
@@ -74,11 +80,16 @@ class TransformGuides(QtWidgets.QWidget):
             self.store_original_states()
             self.setVisible(True)
             self.visual_layer.setVisible(True)
+            self.controls_widget.setVisible(True)  # Add this line
             self.update_position()
+            
+            # Update controls widget with selected buttons
+            self.controls_widget.update_selection(current_selection)  # Add this line
         else:
             self.selected_buttons = []
             self.setVisible(False)
             self.visual_layer.setVisible(False)
+            self.controls_widget.setVisible(False)  # Add this line
             self.original_states.clear()
         
         # Force widget update
@@ -153,6 +164,7 @@ class TransformGuides(QtWidgets.QWidget):
         if self.bounding_rect.isEmpty() or not self.selected_buttons:
             self.setVisible(False)
             self.visual_layer.setVisible(False)
+            self.controls_widget.setVisible(False)
             return
         
         # Convert scene coordinates to canvas coordinates
@@ -172,9 +184,13 @@ class TransformGuides(QtWidgets.QWidget):
         self.create_mouse_mask()
         
         # Ensure proper stacking order
-        #self.visual_layer.lower()  # Visual layer goes below
-        self.visual_layer.raise_()  # Visual layer goes above
-        self.raise_()              # Interactive layer goes above
+        #self.visual_layer.lower()
+        self.visual_layer.raise_() 
+        self.controls_widget.raise_() 
+        self.raise_()              
+        
+        # Update controls widget position
+        self.controls_widget.update_position()
         
         # Force repaint
         self.update()
@@ -470,8 +486,6 @@ class TransformGuides(QtWidgets.QWidget):
             # but don't start any transform operation
             event.accept()
         
-        UT.blender_main_window()
-        
     def mouseMoveEvent(self, event):
         """Handle mouse move for active transforms and cursor updates - FIXED VERSION"""
         if event.buttons() & QtCore.Qt.MiddleButton:
@@ -607,3 +621,202 @@ class TransformGuidesVisual(QtWidgets.QWidget):
         painter.setBrush(QtCore.Qt.NoBrush)
         painter.drawRect(widget_rect)
  
+class TransformControlsWidget(QtWidgets.QWidget):
+    """Widget for controlling button properties that appears above transform guides"""
+    
+    def __init__(self, canvas, parent=None):
+        super().__init__(parent)
+        self.canvas = canvas
+        self.selected_buttons = []
+        
+        # Widget properties
+        self.setFixedHeight(28)
+        self.setup_ui()
+        self.setVisible(False)
+
+        # Use QGraphicsOpacityEffect instead of windowOpacity
+        self.opacity_effect = QtWidgets.QGraphicsOpacityEffect()
+        self.opacity_effect.setOpacity(0.2)
+        self.setGraphicsEffect(self.opacity_effect)
+
+        self.fade_timer = QTimer(self)
+        self.fade_timer.setSingleShot(True)
+        self.fade_timer.timeout.connect(self.start_fade_animation)
+
+        # Animate the opacity effect instead
+        self.fade_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_animation.setDuration(1000)
+        self.fade_animation.setEasingCurve(QEasingCurve.InOutQuad)
+
+        self.installEventFilter(self)
+        
+    def setup_ui(self):
+        """Set up the UI layout"""
+        def set_margin_space(layout,margin,space):
+            layout.setContentsMargins(margin,margin,margin,margin)
+            layout.setSpacing(space)
+        
+        layout = QtWidgets.QHBoxLayout(self)
+        set_margin_space(layout,0,0)
+        layout.addStretch()
+        
+        frame = QtWidgets.QFrame()
+        frame.setStyleSheet("background-color: rgba(40, 40, 40, 0.9); border: 1px solid rgba(80, 80, 80, 0.8); border-radius: 4px;")
+        layout.addWidget(frame)
+        frame_layout = QtWidgets.QHBoxLayout(frame)
+        set_margin_space(frame_layout,4,2)
+        frame_layout.addStretch()
+
+        #---------------------------------------------------------------------------------------------------------------------------------------
+        self.color_palette_btn = CCP.ColorPicker(mode='palette')
+        def handle_color_picker_change(qcolor):
+            main_window = self.window()
+            if hasattr(main_window, "change_color_for_selected_buttons"):
+                main_window.change_color_for_selected_buttons(qcolor)
+        
+        self.color_palette_btn.colorChanged.connect(handle_color_picker_change)
+        #---------------------------------------------------------------------------------------------------------------------------------------
+        # Radius widgets
+        bh = 2000  # button height max
+        self.top_left_radius = CLE.IntegerLineEdit(min_value=0, max_value=bh, increment=1, height=18, width=45, label="R")
+        self.top_right_radius = CLE.IntegerLineEdit(min_value=0, max_value=bh, increment=1, height=18, width=32, label="╮")
+        self.bottom_left_radius = CLE.IntegerLineEdit(min_value=0, max_value=bh, increment=1, height=18, width=32, label="╰")
+        self.bottom_right_radius = CLE.IntegerLineEdit(min_value=0, max_value=bh, increment=1, height=18, width=32, label="╯")
+        
+        def handle_radius_change(tl, tr, bl, br):
+            main_window = self.window()
+            if hasattr(main_window, "set_radius_for_selected_buttons"):
+                main_window.set_radius_for_selected_buttons(tl, tr, br, bl)
+        
+        # Connect final value changes (mouse release) to database save
+        self.top_left_radius.valueChanged.connect(lambda tl: handle_radius_change(tl, tl, tl, tl))
+        
+        # Connect real-time changes (during drag) to visual updates only
+        #self.top_left_radius.valueChangedRealTime.connect(lambda tl: handle_radius_change(tl, tl, tl, tl, save_to_db=False))
+        #self.top_right_radius.valueChanged.connect(lambda tr: handle_radius_change(self.top_left_radius.value(), tr, self.bottom_left_radius.value(), self.bottom_right_radius.value()))
+        #self.bottom_left_radius.valueChanged.connect(lambda bl: handle_radius_change(self.top_left_radius.value(), self.top_right_radius.value(), bl, self.bottom_right_radius.value()))
+        #self.bottom_right_radius.valueChanged.connect(lambda br: handle_radius_change(self.top_left_radius.value(), self.top_right_radius.value(), self.bottom_left_radius.value(), br))
+        
+        frame_layout.addWidget(self.top_left_radius)
+        #frame_layout.addWidget(self.top_right_radius)
+        #frame_layout.addWidget(self.bottom_left_radius)
+        #frame_layout.addWidget(self.bottom_right_radius)
+        frame_layout.addWidget(self.color_palette_btn)
+    #---------------------------------------------------------------------------------------------------------------------------------------
+    def update_selection(self, selected_buttons):
+        """Update the controls based on selected buttons"""
+        self.selected_buttons = selected_buttons
+        
+        if not selected_buttons:
+            self.setVisible(False)
+            return
+        
+        # Show widget if buttons are selected
+        self.setVisible(True)
+        
+        # Get the last selected button as reference for the UI controls
+        # This only updates the UI controls, not the actual button properties
+        reference_button = selected_buttons[-1] if selected_buttons else None
+        
+        # Temporarily disconnect signals to prevent triggering changes
+        # when we're just updating the UI controls
+        self._disconnect_signals()
+        
+        # Update color picker with the color from the reference button
+        if reference_button and hasattr(reference_button, 'color'):
+            current_qcolor = QtGui.QColor(reference_button.color)
+            self.color_palette_btn.current_color = current_qcolor
+            self.color_palette_btn.update_all_from_color()
+        
+        # Update radius widgets with the radius from the reference button
+        if reference_button and hasattr(reference_button, 'radius'):
+            self.top_left_radius.setValue(reference_button.radius[0])
+            self.top_right_radius.setValue(reference_button.radius[1])
+            self.bottom_left_radius.setValue(reference_button.radius[2])
+            self.bottom_right_radius.setValue(reference_button.radius[3])
+        
+        # Reconnect signals after updating UI controls
+        self._reconnect_signals()
+    
+    def update_position(self):
+        """Update position to appear above transform guides"""
+        if not self.isVisible():
+            return
+        
+        # Get transform guides position and size
+        guides = self.canvas.transform_guides
+        if not guides.isVisible():
+            return
+        
+        guides_rect = guides.geometry()
+        
+        # Position above the guides, aligned to the right edge
+        new_x = guides_rect.right() - self.width()  # Align to right edge
+        new_y = guides_rect.top() - self.height() - 5  # 5px spacing above
+        
+        # Ensure it doesn't go off screen
+        canvas_rect = self.canvas.rect()
+        if new_y < 0:
+            new_y = guides_rect.bottom() + 5  # Position below if can't fit above
+        
+        if new_x < 0:
+            new_x = 0  # Don't go past left edge
+        
+        if new_x + self.width() > canvas_rect.width():
+            new_x = canvas_rect.width() - self.width()  # Don't go past right edge
+        
+        self.setGeometry(new_x, new_y, self.width(), self.height())
+    #---------------------------------------------------------------------------------------------------------------------------------------
+    def handle_enter_event(self):
+        self.fade_timer.stop()
+        self.fade_animation.stop()
+        self.fade_animation.setDuration(100)
+        self.fade_animation.setStartValue(self.opacity_effect.opacity())
+        self.fade_animation.setEndValue(1.0)
+        self.fade_animation.start()
+
+    def handle_leave_event(self):
+        self.fade_timer.start(10)
+
+    def start_fade_animation(self):
+        self.fade_animation.setDuration(400)
+        self.fade_animation.setStartValue(self.opacity_effect.opacity())
+        self.fade_animation.setEndValue(0.2)
+        self.fade_animation.start()
+
+    def eventFilter(self, obj, event):
+        if obj == self:
+            if event.type() == QtCore.QEvent.Enter:
+                self.handle_enter_event()
+            elif event.type() == QtCore.QEvent.Leave:
+                self.handle_leave_event()
+        return super().eventFilter(obj, event)
+        
+    def _disconnect_signals(self):
+        """Temporarily disconnect signals to prevent triggering changes when updating UI controls"""
+        try:
+            self.color_palette_btn.colorChanged.disconnect()
+            self.top_left_radius.valueChanged.disconnect()
+        except Exception:
+            # If signals were already disconnected or never connected, ignore errors
+            pass
+            
+    def _reconnect_signals(self):
+        """Reconnect signals after updating UI controls"""
+        # Reconnect color picker signal
+        def handle_color_picker_change(qcolor):
+            main_window = self.window()
+            if hasattr(main_window, "change_color_for_selected_buttons"):
+                main_window.change_color_for_selected_buttons(qcolor.name())
+                
+        self.color_palette_btn.colorChanged.connect(handle_color_picker_change)
+        
+        # Reconnect radius signals
+        def handle_radius_change(tl):
+            main_window = self.window()
+            if hasattr(main_window, "set_radius_for_selected_buttons"):
+                main_window.set_radius_for_selected_buttons(tl, tl, tl, tl)
+                
+        self.top_left_radius.valueChanged.connect(lambda tl: handle_radius_change(tl))
+
+    

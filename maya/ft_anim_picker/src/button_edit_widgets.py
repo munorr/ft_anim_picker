@@ -285,13 +285,9 @@ def create_button_edit_widgets(parent):
     #---------------------------------------------------------------------------------------------------------------------------------------
     color_picker = CCP.ColorPicker(mode='square')
     def handle_color_picker_change(qcolor):
-        """Handle QColor from color picker and convert to hex string"""
-        if isinstance(qcolor, QtGui.QColor):
-            hex_color = qcolor.name()  # Convert QColor to hex string
-            queue_color_change(parent, hex_color)
-        else:
-            # If it's already a string, use it directly
-            queue_color_change(parent, qcolor)
+        main_window = parent.window()
+        if hasattr(main_window, "change_color_for_selected_buttons"):
+            main_window.change_color_for_selected_buttons(qcolor.name())
     
     color_picker.colorChanged.connect(handle_color_picker_change)
     widgets['color_picker'] = color_picker
@@ -451,74 +447,45 @@ def get_selected_picker_buttons(main_window):
     if canvas and hasattr(canvas, 'get_selected_buttons'):
         return canvas.get_selected_buttons()
     return []
-
+#---------------------------------------------------------------------------------------------------------------------------------------
 def move_selected_buttons_behind(main_window):
-    for button in get_selected_picker_buttons(main_window):
-        if hasattr(button, 'move_button_behind'):
-            button.move_button_behind()
+    get_selected_picker_buttons(main_window)[-1].move_button_behind()
 
 def bring_selected_buttons_forward(main_window):
-    for button in get_selected_picker_buttons(main_window):
-        if hasattr(button, 'bring_button_forward'):
-            button.bring_button_forward()
-
+    get_selected_picker_buttons(main_window)[-1].bring_button_forward()
+#---------------------------------------------------------------------------------------------------------------------------------------
 def horizontal_mirror_selected_buttons(main_window):
-    for button in get_selected_picker_buttons(main_window):
-        if hasattr(button.parent(), 'horizontal_mirror_button_positions'):
-            button.parent().horizontal_mirror_button_positions()
-            break
+    get_selected_picker_buttons(main_window)[-1].parent().horizontal_mirror_button_positions()
 
 def horizontal_mirror_selected_buttons_wc(main_window):
-    for button in get_selected_picker_buttons(main_window):
-        if hasattr(button.parent(), 'horizontal_mirror_button_positions'):
-            button.parent().horizontal_mirror_button_positions(apply_counterparts=True)
-            break
+    get_selected_picker_buttons(main_window)[-1].parent().horizontal_mirror_button_positions(apply_counterparts=True)
 
 def vertical_mirror_selected_buttons(main_window):
-    for button in get_selected_picker_buttons(main_window):
-        if hasattr(button.parent(), 'vertical_mirror_button_positions'):
-            button.parent().vertical_mirror_button_positions()
-            break
-
+    get_selected_picker_buttons(main_window)[-1].parent().vertical_mirror_button_positions()
+#---------------------------------------------------------------------------------------------------------------------------------------
 def align_selected_buttons_left(main_window):
-    for button in get_selected_picker_buttons(main_window):
-        if hasattr(button, 'align_button_left'):
-            button.align_button_left()
+    get_selected_picker_buttons(main_window)[-1].align_button_left()
 
 def align_selected_buttons_vcenter(main_window):
-    for button in get_selected_picker_buttons(main_window):
-        if hasattr(button, 'align_button_center'):
-            button.align_button_center()
+    get_selected_picker_buttons(main_window)[-1].align_button_center()
 
 def align_selected_buttons_right(main_window):
-    for button in get_selected_picker_buttons(main_window):
-        if hasattr(button, 'align_button_right'):
-            button.align_button_right()
+    get_selected_picker_buttons(main_window)[-1].align_button_right()
 
 def align_selected_buttons_top(main_window):
-    for button in get_selected_picker_buttons(main_window):
-        if hasattr(button, 'align_button_top'):
-            button.align_button_top()
+    get_selected_picker_buttons(main_window)[-1].align_button_top()
 
 def align_selected_buttons_hcenter(main_window):
-    for button in get_selected_picker_buttons(main_window):
-        if hasattr(button, 'align_button_middle'):
-            button.align_button_middle()
+    get_selected_picker_buttons(main_window)[-1].align_button_middle()
 
 def align_selected_buttons_bottom(main_window):
-    for button in get_selected_picker_buttons(main_window):
-        if hasattr(button, 'align_button_bottom'):
-            button.align_button_bottom()
+    get_selected_picker_buttons(main_window)[-1].align_button_bottom()
 
 def evenly_space_selected_buttons_horizontal(main_window):
-    for button in get_selected_picker_buttons(main_window):
-        if hasattr(button, 'evenly_space_horizontal'):
-            button.evenly_space_horizontal()
+    get_selected_picker_buttons(main_window)[-1].evenly_space_horizontal()
 
 def evenly_space_selected_buttons_vertical(main_window):
-    for button in get_selected_picker_buttons(main_window):
-        if hasattr(button, 'evenly_space_vertical'):
-            button.evenly_space_vertical()
+    get_selected_picker_buttons(main_window)[-1].evenly_space_vertical()
 
 def get_current_selected_button_color(main_window):
     buttons = get_selected_picker_buttons(main_window)

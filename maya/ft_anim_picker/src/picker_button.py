@@ -384,60 +384,52 @@ class PickerButton(QtWidgets.QWidget):
         return pose_pixmap
 
     def _render_text_pixmap(self, current_size, zoom_factor):
-        """Render the pixmap for regular mode with centered text."""
+        """Render the pixmap for regular mode with centered text.
+        
+        Args:
+            current_size (QSize): Current button size
+            zoom_factor (float): Current zoom factor
+            
+        Returns:
+            QPixmap: The rendered text pixmap
+        """
         text_pixmap = QtGui.QPixmap(current_size)
         text_pixmap.fill(QtCore.Qt.transparent)
-
-        # Start with height-based calculation (preserve as priority)
-        base_font_size = (self.height * 0.5) * zoom_factor
         
-        # Only render text if the calculated font size is large enough
-        if base_font_size >= 2:  # Only render text if font would be 2px or larger
-            font_size = max(int(base_font_size), 2)  # Ensure minimum readable size
-            min_font_size = 2  # Set a minimum font size for legibility
-            max_width = current_size.width() * 0.9  # 10% padding
-
-            # Prepare the display text (don't modify self.label)
-            display_text = self.label
-            
-            # Only wrap if not already colored
-            if "color:" not in display_text and "font color=" not in display_text:
-                display_text = f"<span style='color: {self.text_color};'>{display_text}</span>"
-            
-            # Use QTextDocument for rich text, but single line only
-            doc = QtGui.QTextDocument()
-            doc.setHtml(display_text)  # Use display_text instead of self.label
-
-            # Try to fit the text in one line by reducing font size if needed
-            while font_size >= min_font_size:
-                font = QtGui.QFont()
-                font.setPixelSize(font_size)
-                doc.setDefaultFont(font)
-                doc.setTextWidth(-1)  # No wrapping
-                text_width = doc.idealWidth()
-                if text_width <= max_width:
-                    break
-                font_size -= 1
-                
-            # Set final font
-            font = QtGui.QFont()
-            font.setPixelSize(font_size)
-            doc.setDefaultFont(font)
-            doc.setTextWidth(-1)  # No wrapping
-            text_width = doc.idealWidth()
-            text_height = doc.size().height()
-
-            # Center horizontally and vertically
-            x = (current_size.width() - text_width) / 2
-            y = (current_size.height() - text_height) / 2
-
-            text_painter = QtGui.QPainter(text_pixmap)
-            text_painter.setRenderHint(QtGui.QPainter.Antialiasing)
-            text_painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
-            text_painter.translate(x, y)
-            doc.drawContents(text_painter)
-            text_painter.end()
-
+        text_painter = QtGui.QPainter(text_pixmap)
+        text_painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        text_painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
+        
+        # Set up font
+        text_painter.setPen(QtGui.QColor('white'))
+        font = text_painter.font()
+        
+        # Start with height-based calculation (preserve as priority)
+        font_size = (self.height * 0.5) * zoom_factor
+        
+        # Calculate text rect with padding
+        text_rect = self.rect()
+        bottom_padding = (self.height * 0.1) * zoom_factor
+        text_rect.adjust(0, 0, 0, -int(bottom_padding))
+        
+        # Check if text fits width and adjust if needed
+        font.setPixelSize(int(font_size))
+        text_painter.setFont(font)
+        text_metrics = text_painter.fontMetrics()
+        text_width = text_metrics.horizontalAdvance(self.label)
+        
+        # If text is wider than button (with some padding), reduce font size to fit
+        if text_width > (current_size.width() * 0.9):  # 10% padding
+            width_based_font_size = font_size * (current_size.width() * 0.8) / text_width
+            # Use the smaller of the two sizes to ensure text fits both dimensions
+            font_size = min(font_size, width_based_font_size)
+            font.setPixelSize(int(font_size))
+            text_painter.setFont(font)
+        
+        # Draw text centered
+        text_painter.drawText(text_rect, QtCore.Qt.AlignCenter, self.label)
+        text_painter.end()
+        
         return text_pixmap
     
     def _should_update_pixmaps(self, zoom_factor, current_size, current_radius, current_text):
@@ -1671,18 +1663,6 @@ class PickerButton(QtWidgets.QWidget):
         # Apply the selection immediately with all modifier states
         canvas.apply_final_selection(shift_held, ctrl_held, alt_held)
 
-    def toggle_selection(self):
-        self.set_selected(not self.is_selected)
-        if self.parent():
-            self.parent().button_selection_changed.emit()
-
-    def set_selected(self, selected):
-        """Update selection state without triggering Maya selection"""
-        if self.is_selected != selected:
-            self.is_selected = selected
-            self.selected.emit(self, self.is_selected)
-            self.update()
-
     def update_visual_state(self, selected):
         """Update only the visual selection state"""
         if self.is_selected != selected:
@@ -1844,16 +1824,16 @@ class PickerButton(QtWidgets.QWidget):
                 return btn
             
             # Row 1: Vertical alignment options
-            align_left_btn = create_alignment_button("align_left.png", "Align Left", self.align_button_left)
-            align_center_btn = create_alignment_button("align_vCenter.png", "Align Vertical Center", self.align_button_center)
-            align_right_btn = create_alignment_button("align_right.png", "Align Right", self.align_button_right)
-            v_space_btn = create_alignment_button("v_spacing.png", "Distribute Evenly (Vertical)", self.evenly_space_vertical)
+            align_left_btn = create_alignment_button("align_left.png", "Align Left", self.parent().align_button_left)
+            align_center_btn = create_alignment_button("align_vCenter.png", "Align Vertical Center", self.parent().align_button_center)
+            align_right_btn = create_alignment_button("align_right.png", "Align Right", self.parent().align_button_right)
+            v_space_btn = create_alignment_button("v_spacing.png", "Distribute Evenly (Vertical)", self.parent().evenly_space_vertical)
             
             # Row 2: Horizontal alignment options
-            align_top_btn = create_alignment_button("align_top.png", "Align Top", self.align_button_top)
-            align_middle_btn = create_alignment_button("align_hCenter.png", "Align Horizontal Center", self.align_button_middle)
-            align_bottom_btn = create_alignment_button("align_bottom.png", "Align Bottom", self.align_button_bottom)
-            h_space_btn = create_alignment_button("h_spacing.png", "Distribute Evenly (Horizontal)", self.evenly_space_horizontal)
+            align_top_btn = create_alignment_button("align_top.png", "Align Top", self.parent().align_button_top)
+            align_middle_btn = create_alignment_button("align_hCenter.png", "Align Horizontal Center", self.parent().align_button_middle)
+            align_bottom_btn = create_alignment_button("align_bottom.png", "Align Bottom", self.parent().align_button_bottom)
+            h_space_btn = create_alignment_button("h_spacing.png", "Distribute Evenly (Horizontal)", self.parent().evenly_space_horizontal)
 
             color_palette_btn = CCP.ColorPicker(mode='palette')
             current_qcolor = QtGui.QColor(self.color)  # Convert hex string to QColor
@@ -2159,7 +2139,8 @@ class PickerButton(QtWidgets.QWidget):
             
             # Write to database once
             if updated_count > 0:
-                DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                #DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                DM.PickerDataManager.batch_update_buttons(current_tab, DM.PickerDataManager.get_tab_data(current_tab)['buttons'])
                 #print(f"Batch updated positions for {updated_count} buttons")
             
             # Reconnect signals properly
@@ -2199,354 +2180,6 @@ class PickerButton(QtWidgets.QWidget):
 
     def color_button_clicked(self, color):
         self.change_color_for_selected_buttons(color)
-    #---------------------------------------------------------------------------------------
-    def align_button_center(self):
-        """Align selected buttons to be centered horizontally"""
-        canvas = self.parent()
-        if canvas and canvas.edit_mode:
-            selected_buttons = canvas.get_selected_buttons()
-            if len(selected_buttons) <= 1:
-                return
-                
-            # Get main window for batch processing
-            main_window = canvas.window()
-            
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
-            
-            try:
-                # Calculate the average x position (center point)
-                avg_x = sum(button.scene_position.x() for button in selected_buttons) / len(selected_buttons)
-                
-                # Move all buttons to have the same x coordinate
-                for button in selected_buttons:
-                    current_pos = button.scene_position
-                    new_pos = QtCore.QPointF(avg_x, current_pos.y())
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
-    
-    def align_button_left(self):
-        """Align selected buttons to the leftmost button's left edge"""
-        canvas = self.parent()
-        if canvas and canvas.edit_mode:
-            selected_buttons = canvas.get_selected_buttons()
-            if len(selected_buttons) <= 1:
-                return
-                
-            # Get main window for batch processing
-            main_window = canvas.window()
-            
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
-            
-            try:
-                # Find the leftmost button's left edge position
-                left_edge = float('inf')
-                for button in selected_buttons:
-                    # Calculate the left edge position (center x - half width)
-                    button_left = button.scene_position.x() - (button.width / 2)
-                    left_edge = min(left_edge, button_left)
-                
-                # Move all buttons to align their left edges
-                for button in selected_buttons:
-                    current_pos = button.scene_position
-                    # Calculate new center position (left_edge + half width)
-                    new_center_x = left_edge + (button.width / 2)
-                    new_pos = QtCore.QPointF(new_center_x, current_pos.y())
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
-    
-    def align_button_right(self):
-        """Align selected buttons to the rightmost button's right edge"""
-        canvas = self.parent()
-        if canvas and canvas.edit_mode:
-            selected_buttons = canvas.get_selected_buttons()
-            if len(selected_buttons) <= 1:
-                return
-                
-            # Get main window for batch processing
-            main_window = canvas.window()
-            
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
-            
-            try:
-                # Find the rightmost button's right edge position
-                right_edge = float('-inf')
-                for button in selected_buttons:
-                    # Calculate the right edge position (center x + half width)
-                    button_right = button.scene_position.x() + (button.width / 2)
-                    right_edge = max(right_edge, button_right)
-                
-                # Move all buttons to align their right edges
-                for button in selected_buttons:
-                    current_pos = button.scene_position
-                    # Calculate new center position (right_edge - half width)
-                    new_center_x = right_edge - (button.width / 2)
-                    new_pos = QtCore.QPointF(new_center_x, current_pos.y())
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active#---------------------------------------------------------------------------------------
-    
-    def align_button_top(self):
-        """Align selected buttons to the topmost button's top edge"""
-        canvas = self.parent()
-        if canvas and canvas.edit_mode:
-            selected_buttons = canvas.get_selected_buttons()
-            if len(selected_buttons) <= 1:
-                return
-                
-            # Get main window for batch processing
-            main_window = canvas.window()
-            
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
-            
-            try:
-                # Find the topmost button's top edge position (lowest y value in scene coordinates)
-                top_edge = float('inf')
-                for button in selected_buttons:
-                    # Calculate the top edge position (center y - half height)
-                    button_top = button.scene_position.y() - (button.height / 2)
-                    top_edge = min(top_edge, button_top)
-                
-                # Move all buttons to align their top edges
-                for button in selected_buttons:
-                    current_pos = button.scene_position
-                    # Calculate new center position (top_edge + half height)
-                    new_center_y = top_edge + (button.height / 2)
-                    new_pos = QtCore.QPointF(current_pos.x(), new_center_y)
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
-    
-    def align_button_middle(self):
-        """Align selected buttons to be centered vertically"""
-        canvas = self.parent()
-        if canvas and canvas.edit_mode:
-            selected_buttons = canvas.get_selected_buttons()
-            if len(selected_buttons) <= 1:
-                return
-                
-            # Get main window for batch processing
-            main_window = canvas.window()
-            
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
-            
-            try:
-                # Calculate the average y position (middle point)
-                avg_y = sum(button.scene_position.y() for button in selected_buttons) / len(selected_buttons)
-                
-                # Move all buttons to have the same y coordinate
-                for button in selected_buttons:
-                    current_pos = button.scene_position
-                    new_pos = QtCore.QPointF(current_pos.x(), avg_y)
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
-    
-    def align_button_bottom(self):
-        """Align selected buttons to the bottommost button's bottom edge"""
-        canvas = self.parent()
-        if canvas and canvas.edit_mode:
-            selected_buttons = canvas.get_selected_buttons()
-            if len(selected_buttons) <= 1:
-                return
-                
-            # Get main window for batch processing
-            main_window = canvas.window()
-            
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
-            
-            try:
-                # Find the bottommost button's bottom edge position (highest y value in scene coordinates)
-                bottom_edge = float('-inf')
-                for button in selected_buttons:
-                    # Calculate the bottom edge position (center y + half height)
-                    button_bottom = button.scene_position.y() + (button.height / 2)
-                    bottom_edge = max(bottom_edge, button_bottom)
-                
-                # Move all buttons to align their bottom edges
-                for button in selected_buttons:
-                    current_pos = button.scene_position
-                    # Calculate new center position (bottom_edge - half height)
-                    new_center_y = bottom_edge - (button.height / 2)
-                    new_pos = QtCore.QPointF(current_pos.x(), new_center_y)
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
-    #---------------------------------------------------------------------------------------       
-    def evenly_space_horizontal(self):
-        """Distribute selected buttons evenly along the horizontal axis"""
-        canvas = self.parent()
-        if canvas and canvas.edit_mode:
-            selected_buttons = canvas.get_selected_buttons()
-            if len(selected_buttons) <= 2:  # Need at least 3 buttons for spacing to make sense
-                return
-                
-            # Get main window for batch processing
-            main_window = canvas.window()
-            
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
-            
-            try:
-                # Sort buttons by x position
-                sorted_buttons = sorted(selected_buttons, key=lambda btn: btn.scene_position.x())
-                
-                # Get leftmost and rightmost positions
-                left_x = sorted_buttons[0].scene_position.x()
-                right_x = sorted_buttons[-1].scene_position.x()
-                
-                # Calculate spacing
-                total_width = right_x - left_x
-                spacing = total_width / (len(sorted_buttons) - 1) if len(sorted_buttons) > 1 else 0
-                
-                # Skip first and last buttons (they define the range)
-                for i, button in enumerate(sorted_buttons[1:-1], 1):
-                    # Calculate new x position
-                    new_x = left_x + (i * spacing)
-                    current_pos = button.scene_position
-                    new_pos = QtCore.QPointF(new_x, current_pos.y())
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
-                
-    def evenly_space_vertical(self):
-        """Distribute selected buttons evenly along the vertical axis"""
-        canvas = self.parent()
-        if canvas and canvas.edit_mode:
-            selected_buttons = canvas.get_selected_buttons()
-            if len(selected_buttons) <= 2:  # Need at least 3 buttons for spacing to make sense
-                return
-                
-            # Get main window for batch processing
-            main_window = canvas.window()
-            
-            # CRITICAL: Disable batch mode temporarily for alignment
-            was_batch_active = getattr(main_window, 'batch_update_active', False)
-            main_window.batch_update_active = False
-            
-            try:
-                # Sort buttons by y position
-                sorted_buttons = sorted(selected_buttons, key=lambda btn: btn.scene_position.y())
-                
-                # Get topmost and bottommost positions
-                top_y = sorted_buttons[0].scene_position.y()
-                bottom_y = sorted_buttons[-1].scene_position.y()
-                
-                # Calculate spacing
-                total_height = bottom_y - top_y
-                spacing = total_height / (len(sorted_buttons) - 1) if len(sorted_buttons) > 1 else 0
-                
-                # Skip first and last buttons (they define the range)
-                for i, button in enumerate(sorted_buttons[1:-1], 1):
-                    # Calculate new y position
-                    new_y = top_y + (i * spacing)
-                    current_pos = button.scene_position
-                    new_pos = QtCore.QPointF(current_pos.x(), new_y)
-                    button.scene_position = new_pos
-                    
-                    # Force immediate database update for position changes
-                    if hasattr(main_window, '_process_single_button_update'):
-                        main_window._process_single_button_update(button)
-                    else:
-                        button.changed.emit(button)
-                        
-                # Update the buttons for the current tab
-                if hasattr(main_window, 'update_buttons_for_current_tab'):
-                    main_window.update_buttons_for_current_tab(force_update=True)
-            finally:
-                # Restore batch mode state
-                main_window.batch_update_active = was_batch_active
     
     def _apply_axis_constraint(self, scene_delta):
         """
@@ -4704,13 +4337,14 @@ class PickerButton(QtWidgets.QWidget):
     
     def commit_rename(self):
         """Commit the rename changes and exit rename mode"""
+        window = self.window()
         if not self.rename_mode or not self.rename_edit:
             return
             
         # Get the new label
         new_label = self.rename_edit.text().strip()
         
-        self.rename_selected_buttons(new_label)
+        window.rename_selected_buttons(new_label)
             
         # Exit rename mode
         self.exit_rename_mode()
@@ -4742,7 +4376,8 @@ class PickerButton(QtWidgets.QWidget):
                 
                 if new_count < original_count:
                     # Update the database
-                    DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                    #DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                    DM.PickerDataManager.batch_update_buttons(current_tab, DM.PickerDataManager.get_tab_data(current_tab)['buttons'])
                     # Force immediate save for single deletions too
                     DM.PickerDataManager.save_data(DM.PickerDataManager.get_data(), force_immediate=True)
                     
@@ -4762,13 +4397,15 @@ class PickerButton(QtWidgets.QWidget):
     #---------------------------------------------------------------------------------------
     def rename_selected_buttons(self, new_label):
         canvas = self.parent()
+        main_window = canvas.window()
+        current_tab = main_window.tab_system.current_tab
         if canvas:
             selected_buttons = canvas.get_selected_buttons()
             for button in selected_buttons:
                 button.rename_button(new_label)
             
+            
             # Update the main window
-            main_window = canvas.window()
             if isinstance(main_window, UI.AnimPickerWindow):
                 main_window.update_buttons_for_current_tab()
         self.update_tooltip()
@@ -4797,6 +4434,7 @@ class PickerButton(QtWidgets.QWidget):
 
     def delete_selected_buttons(self):
         canvas = self.parent()
+        
         if canvas:
             selected_buttons = canvas.get_selected_buttons()
             
@@ -4826,6 +4464,7 @@ class PickerButton(QtWidgets.QWidget):
             if hasattr(canvas, 'transform_guides'):
                 canvas.transform_guides.setVisible(False)
                 canvas.transform_guides.visual_layer.setVisible(False)
+                canvas.transform_guides.controls_widget.setVisible(False)
             
             # Remove buttons from canvas first (prevents further updates)
             for button in buttons_to_delete:
@@ -4849,8 +4488,8 @@ class PickerButton(QtWidgets.QWidget):
                     #print(f"Successfully deleted {original_count - new_count} buttons from database")
                     
                     # Update the database with the modified data
-                    DM.PickerDataManager.update_tab_data(current_tab, tab_data)
-                    
+                    #DM.PickerDataManager.update_tab_data(current_tab, tab_data)
+                    DM.PickerDataManager.batch_update_buttons(current_tab, DM.PickerDataManager.get_tab_data(current_tab)['buttons'])
                     # Force immediate save to ensure data persistence
                     DM.PickerDataManager.save_data(DM.PickerDataManager.get_data(), force_immediate=True)
                 else:
@@ -4890,7 +4529,7 @@ class PickerButton(QtWidgets.QWidget):
                 main_window.update_buttons_for_current_tab(force_update=True)
                 
             #print(f"Batch deletion complete: {len(deleted_button_ids)} buttons removed")
-
+        
     def add_selected_objects(self):
         """Store both UUID and long name for selected objects"""
         selected = cmds.ls(selection=True, long=True)
@@ -4987,8 +4626,12 @@ class PickerButton(QtWidgets.QWidget):
         elif event.button() == QtCore.Qt.RightButton:
             shift_held = event.modifiers() & QtCore.Qt.ShiftModifier
             if not self.is_selected:
-                self.parent().clear_selection() if not shift_held else None
-                self.toggle_selection()
+                canvas = self.parent()
+                canvas.clear_selection() if not shift_held else None
+                self.is_selected = True
+                self.selected.emit(self, True)
+                canvas.last_selected_button = self
+                canvas.button_selection_changed.emit()
             self.show_context_menu(event.pos())
             event.accept()
         else:
@@ -4996,7 +4639,9 @@ class PickerButton(QtWidgets.QWidget):
         
         double_click = event.type() == QtCore.QEvent.MouseButtonDblClick
         if not double_click:
-            UT.maya_main_window().activateWindow()
+            main_window = self.window()
+            if main_window.edit_mode == False:
+                UT.maya_main_window().activateWindow()
 
     def mouseDoubleClickEvent(self, event):
         """Handle double-click events for renaming buttons in edit mode"""
@@ -5095,24 +4740,28 @@ class PickerButton(QtWidgets.QWidget):
                 self.update_cursor()
                 
                 if canvas:
-                    selected_buttons = canvas.get_selected_buttons()
-                    main_window = canvas.window()
+                    # Check if button actually moved from its starting position
+                    distance_moved = ((self.scene_position.x() - self.button_start_pos.x()) ** 2 + 
+                                    (self.scene_position.y() - self.button_start_pos.y()) ** 2) ** 0.5
                     
-                    # Check for the correct main window class (you had BlenderAnimPickerWindow, should be AnimPickerWindow)
-                    if isinstance(main_window, UI.AnimPickerWindow):
-                        # Use optimized batch position update
-                        self._batch_update_button_positions(selected_buttons, main_window)
-                    else:
-                        # Fallback to individual updates if needed
-                        for button in selected_buttons:
-                            canvas.update_button_data(button)
+                    # Only save if moved more than 1 pixel
+                    if distance_moved > 1.0:
+                        # Save the position change
+                        selected_buttons = canvas.get_selected_buttons()
+                        main_window = canvas.window()
+                        
+                        # Check for the correct main window class (you had BlenderAnimPickerWindow, should be AnimPickerWindow)
+                        if isinstance(main_window, UI.AnimPickerWindow):
+                            # Use optimized batch position update
+                            self._batch_update_button_positions(selected_buttons, main_window)
+                        else:
+                            # Fallback to individual updates if needed
+                            for button in selected_buttons:
+                                canvas.update_button_data(button)
                 
                 event.accept()
         else:
             super().mouseReleaseEvent(event)
-        
-        # Fixed the window activation call
-        #UT.maya_main_window().activateWindow()
     
     def event(self, event):
         """Override event to handle key events."""

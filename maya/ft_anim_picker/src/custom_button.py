@@ -617,14 +617,20 @@ class CustomTooltipWidget(QtWidgets.QWidget):
     
     def clear_content(self):
         """Clear all content from the tooltip widget"""
-        # Clear the layout
-        while self.layout().count():
-            item = self.layout().takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-            elif item.layout():
-                self._clear_layout(item.layout())
-        
+        # Clear the layout with safety checks
+        try:
+            layout = self.layout()
+            if layout:
+                while layout.count():
+                    item = layout.takeAt(0)
+                    if item.widget():
+                        item.widget().deleteLater()
+                    elif item.layout():
+                        self._clear_layout(item.layout())
+        except:
+            # Layout is in an invalid state, likely due to widget deletion
+            pass
+         
     def _clear_layout(self, layout):
         """Recursively clear a layout"""
         while layout.count():

@@ -1,8 +1,8 @@
 {
-    "workbench.colorTheme": "Cursor Dark",
+    "workbench.colorTheme": "Default Dark Modern",
     "workbench.preferredLightColorTheme": "Cursor Dark",
     "workbench.preferredDarkColorTheme": "Cursor Dark",
-    "editor.semanticHighlighting.enabled": "configuredByTheme",
+    "editor.semanticHighlighting.enabled": true,  
     "editor.inlineSuggest.syntaxHighlightingEnabled": false,
     "editor.copyWithSyntaxHighlighting": true,
     "zenMode.showTabs": "multiple",
@@ -11,5 +11,6 @@
     "zenMode.hideStatusBar": true,
     "zenMode.hideLineNumbers": true,
     "zenMode.hideActivityBar": true,
-    "zenMode.fullScreen": true
+    "zenMode.fullScreen": true,
+    "python.languageServer": "None"
 }

@@ -74,25 +74,29 @@ class FadeAway(QObject):
                 canvas = self.parent.tab_system.tabs[current_tab]['canvas']
                 canvas.set_minimal_mode(self.minimal_mode_enabled)
                 
-                # Handle canvas frame and canvas reparenting
+                # Handle canvas_stack reparenting
                 if self.minimal_mode_enabled:
                     # Store the original parent and layout for restoration
                     canvas.original_parent = canvas.parent()
-                    canvas.original_layout = self.parent.canvas_frame_row
+                    canvas.original_layout = self.parent.canvas_frame_layout
                     
-                    # Remove from canvas frame and add directly to area_01_col layout
-                    self.parent.canvas_frame_row.removeWidget(canvas)
-                    self.parent.area_01_col.insertWidget(0, canvas)  # Insert at the beginning of area_01_col
+                    # Remove canvas_stack from the canvas frame layout
+                    self.parent.canvas_frame_layout.removeWidget(self.parent.canvas_stack)
+                    
+                    # Add the canvas_stack to the main_frame_body_layout at the beginning
+                    self.parent.area_01_col.insertWidget(0, self.parent.canvas_stack)
                     
                     # Hide the canvas frame
                     self.parent.canvas_frame.hide()
                 else:
-                    # Restore canvas to original layout
+                    # Restore canvas_stack to original layout
                     if hasattr(canvas, 'original_parent') and hasattr(canvas, 'original_layout'):
                         # First remove from area_01_col
-                        self.parent.area_01_col.removeWidget(canvas)
-                        # Then add back to canvas frame row
-                        canvas.original_layout.addWidget(canvas)
+                        self.parent.area_01_col.removeWidget(self.parent.canvas_stack)
+                        
+                        # Then add back to canvas frame layout
+                        if hasattr(self.parent.canvas_stack, 'original_layout'):
+                            self.parent.canvas_stack.original_layout.addWidget(self.parent.canvas_stack)
                         self.parent.canvas_frame.show()
         
         for widget in self.minimal_affected_widgets:

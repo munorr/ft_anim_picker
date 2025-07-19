@@ -38,6 +38,7 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
         
         self.last_x = None
         self.dragging = False
+        self.drag_used = False  # Track if dragging was actually used
         self.apply_to_all_mode = False  # Flag to enable/disable apply-to-all feature
 
         # Set size if provided
@@ -129,6 +130,7 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
         if event.button() == Qt.LeftButton:
             self.last_x = event.x()
             self.dragging = True
+            self.drag_used = False  # Reset drag usage flag
             self.setCursor(Qt.SizeHorCursor)  # Change cursor to indicate drag mode
         super(IntegerLineEdit, self).mousePressEvent(event)
 
@@ -139,10 +141,14 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
                 change = (delta // 5) * self.getAdjustedIncrement(event)
                 self.updateValue(change)
                 self.last_x = event.x()
+                self.drag_used = True  # Mark that dragging was actually used
         super(IntegerLineEdit, self).mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
+            # Only clear focus if dragging was actually used
+            if self.drag_used:
+                self.clearFocus()
             self.dragging = False
             self.setCursor(Qt.IBeamCursor)  # Reset cursor to text editing cursor
         super(IntegerLineEdit, self).mouseReleaseEvent(event)

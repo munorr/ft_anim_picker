@@ -183,6 +183,285 @@ class CoordinatePlaneConfig:
         }
     
     @classmethod
+    def detect_flat_plane_from_curves(cls, curve_objects, mesh_objects=None, bone_shapes=None):
+        """
+        Automatically detect the best coordinate plane based on selected curves, meshes, and bone shapes.
+        
+        Args:
+            curve_objects: List of Blender curve objects
+            mesh_objects: List of Blender mesh objects (optional)
+            bone_shapes: List of bone shape tuples (optional)
+            
+        Returns:
+            tuple: (plane_name, confidence_score, analysis_info)
+        """
+        if not curve_objects and not mesh_objects and not bone_shapes:
+            return cls._current_plane, 0.0, "No objects to analyze"
+        
+        # Collect all 3D bounds
+        all_bounds = []
+        
+        # Analyze curves
+        for curve_obj in curve_objects:
+            try:
+                bounds = _get_object_bounds_3d(curve_obj)
+                all_bounds.append(bounds)
+            except Exception as e:
+                print(f"Error analyzing curve {curve_obj.name}: {e}")
+                continue
+        
+        # Analyze meshes
+        if mesh_objects:
+            for mesh_obj in mesh_objects:
+                try:
+                    bounds = _get_object_bounds_3d(mesh_obj)
+                    all_bounds.append(bounds)
+                except Exception as e:
+                    print(f"Error analyzing mesh {mesh_obj.name}: {e}")
+                    continue
+        
+        # Analyze bone shapes
+        if bone_shapes:
+            for bone, shape_obj, armature_obj in bone_shapes:
+                try:
+                    bounds = _get_object_bounds_3d(shape_obj)
+                    all_bounds.append(bounds)
+                except Exception as e:
+                    print(f"Error analyzing bone shape {shape_obj.name}: {e}")
+                    continue
+        
+        if not all_bounds:
+            return cls._current_plane, 0.0, "No valid bounds found"
+        
+        # Calculate combined bounds
+        combined_bounds = cls._calculate_combined_3d_bounds(all_bounds)
+        
+        # Analyze flatness in each plane
+        plane_analysis = cls._analyze_flatness_in_planes(combined_bounds)
+        
+        # Find the flattest plane
+        best_plane = cls._find_flattest_plane(plane_analysis)
+        
+        return best_plane
+    
+    @classmethod
+    def _calculate_combined_3d_bounds(cls, bounds_list):
+        """Calculate combined 3D bounds from a list of individual bounds."""
+        if not bounds_list:
+            return {'min_x': 0, 'max_x': 1, 'min_y': 0, 'max_y': 1, 'min_z': 0, 'max_z': 1}
+        
+        min_x = min(bounds['min_x'] for bounds in bounds_list)
+        max_x = max(bounds['max_x'] for bounds in bounds_list)
+        min_y = min(bounds['min_y'] for bounds in bounds_list)
+        max_y = max(bounds['max_y'] for bounds in bounds_list)
+        min_z = min(bounds['min_z'] for bounds in bounds_list)
+        max_z = max(bounds['max_z'] for bounds in bounds_list)
+        
+        return {
+            'min_x': min_x, 'max_x': max_x,
+            'min_y': min_y, 'max_y': max_y,
+            'min_z': min_z, 'max_z': max_z,
+            'width_x': max_x - min_x,
+            'width_y': max_y - min_y,
+            'width_z': max_z - min_z
+        }
+    
+    @classmethod
+    def _analyze_flatness_in_planes(cls, bounds_3d):
+        """Analyze how flat the geometry is in each coordinate plane."""
+        # Calculate dimensions
+        dim_x = bounds_3d['width_x']
+        dim_y = bounds_3d['width_y']
+        dim_z = bounds_3d['width_z']
+        
+        # Calculate flatness ratios (smaller dimension = flatter)
+        total_xy = dim_x + dim_y
+        total_xz = dim_x + dim_z
+        total_yz = dim_y + dim_z
+        
+        # Flatness is inverse to the smallest dimension
+        flatness_xy = dim_z / (total_xy + dim_z) if (total_xy + dim_z) > 0 else 1.0
+        flatness_xz = dim_y / (total_xz + dim_y) if (total_xz + dim_y) > 0 else 1.0
+        flatness_yz = dim_x / (total_yz + dim_x) if (total_yz + dim_x) > 0 else 1.0
+        
+        return {
+            'XY': {
+                'flatness': flatness_xy,
+                'confidence': 1.0 - flatness_xy,
+                'dimensions': (dim_x, dim_y, dim_z),
+                'description': f"XY plane: {dim_x:.2f} x {dim_y:.2f} (Z depth: {dim_z:.2f})"
+            },
+            'XZ': {
+                'flatness': flatness_xz,
+                'confidence': 1.0 - flatness_xz,
+                'dimensions': (dim_x, dim_z, dim_y),
+                'description': f"XZ plane: {dim_x:.2f} x {dim_z:.2f} (Y depth: {dim_y:.2f})"
+            },
+            'YZ': {
+                'flatness': flatness_yz,
+                'confidence': 1.0 - flatness_yz,
+                'dimensions': (dim_y, dim_z, dim_x),
+                'description': f"YZ plane: {dim_y:.2f} x {dim_z:.2f} (X depth: {dim_x:.2f})"
+            }
+        }
+    
+    @classmethod
+    def _find_flattest_plane(cls, plane_analysis):
+        """Find the flattest plane and determine if it needs flipping."""
+        best_plane = None
+        best_confidence = 0.0
+        best_analysis = None
+        
+        for plane_name, analysis in plane_analysis.items():
+            if analysis['confidence'] > best_confidence:
+                best_confidence = analysis['confidence']
+                best_plane = plane_name
+                best_analysis = analysis
+        
+        # Determine if we need flipped version based on typical Blender conventions
+        # For most cases, we want Y-down orientation for SVG compatibility
+        if best_plane == 'XY':
+            # XY is typically used with Y flipped for SVG
+            final_plane = 'XY'  # Keep as XY (already has Y flip in config)
+        elif best_plane == 'XZ':
+            # XZ is typically used with Z flipped for SVG
+            final_plane = 'XZ'  # Keep as XZ (already has Z flip in config)
+        elif best_plane == 'YZ':
+            # YZ is typically used without flipping
+            final_plane = 'YZ'  # Keep as YZ (no flip in config)
+        else:
+            final_plane = 'XY'  # Fallback
+        
+        return final_plane, best_confidence, best_analysis
+    
+    @classmethod
+    def detect_optimal_plane_for_object(cls, obj):
+        """
+        Detect the optimal coordinate plane for a single Blender object.
+        
+        Args:
+            obj: Blender object (curve, mesh, etc.)
+            
+        Returns:
+            tuple: (plane_name, confidence_score, analysis_info)
+        """
+        try:
+            # Get bounds for this specific object
+            bounds = _get_object_bounds_3d(obj)
+            if not bounds:
+                return cls._current_plane, 0.0, "No valid bounds found"
+            
+            # Analyze flatness in each plane
+            plane_analysis = cls._analyze_flatness_in_planes(bounds)
+            
+            # Find the flattest plane
+            best_plane, confidence, analysis = cls._find_flattest_plane(plane_analysis)
+            
+            return best_plane, confidence, analysis
+            
+        except Exception as e:
+            print(f"Error detecting optimal plane for object {obj.name}: {e}")
+            return cls._current_plane, 0.0, f"Error: {str(e)}"
+    
+    @classmethod
+    def detect_optimal_plane_for_spline(cls, spline):
+        """
+        Detect the optimal coordinate plane for a single spline.
+        
+        Args:
+            spline: Blender spline object
+            
+        Returns:
+            tuple: (plane_name, confidence_score, analysis_info)
+        """
+        try:
+            # Get 3D points from spline for bounds calculation
+            points_3d = []
+            
+            if spline.type == 'BEZIER':
+                for point in spline.bezier_points:
+                    points_3d.append(point.co)
+                    points_3d.append(point.handle_left)
+                    points_3d.append(point.handle_right)
+            elif spline.type == 'NURBS':
+                for point in spline.points:
+                    points_3d.append(point.co)
+            elif spline.type == 'POLY':
+                for point in spline.points:
+                    points_3d.append(point.co)
+            
+            if not points_3d:
+                return cls._current_plane, 0.0, "No valid points found"
+            
+            # Calculate 3D bounds
+            min_x = min(point.x for point in points_3d)
+            max_x = max(point.x for point in points_3d)
+            min_y = min(point.y for point in points_3d)
+            max_y = max(point.y for point in points_3d)
+            min_z = min(point.z for point in points_3d)
+            max_z = max(point.z for point in points_3d)
+            
+            bounds = {
+                'min_x': min_x, 'max_x': max_x,
+                'min_y': min_y, 'max_y': max_y,
+                'min_z': min_z, 'max_z': max_z,
+                'width_x': max_x - min_x,
+                'width_y': max_y - min_y,
+                'width_z': max_z - min_z
+            }
+            
+            # Analyze flatness in each plane
+            plane_analysis = cls._analyze_flatness_in_planes(bounds)
+            
+            # Find the flattest plane
+            best_plane, confidence, analysis = cls._find_flattest_plane(plane_analysis)
+            
+            return best_plane, confidence, analysis
+            
+        except Exception as e:
+            print(f"Error detecting optimal plane for spline: {e}")
+            return cls._current_plane, 0.0, f"Error: {str(e)}"
+    
+    @classmethod
+    def transform_point_with_plane(cls, local_point, plane_name):
+        """
+        Transform a local 3D point to 2D SVG coordinates using a specific plane.
+        
+        Args:
+            local_point: Vector or tuple (x, y, z) in local coordinates
+            plane_name: Name of the plane to use for transformation
+            
+        Returns:
+            tuple: (x, y) in SVG coordinates
+        """
+        if plane_name not in cls.PLANES:
+            print(f"Warning: Unknown plane '{plane_name}', using current plane")
+            return cls.transform_point(local_point)
+        
+        config = cls.PLANES[plane_name]
+        
+        # Convert to tuple if needed
+        if hasattr(local_point, 'x'):
+            # Blender Vector
+            point_tuple = (local_point.x, local_point.y, local_point.z)
+        elif hasattr(local_point, '__len__'):
+            point_tuple = tuple(local_point)
+        else:
+            point_tuple = local_point
+        
+        # Extract the two coordinates for the specified plane
+        svg_x = point_tuple[config['x_axis']]
+        svg_y = point_tuple[config['y_axis']]
+        
+        # Apply flipping if needed
+        if config['flip_x']:
+            svg_x = -svg_x
+        if config['flip_y']:
+            svg_y = -svg_y
+            
+        return (svg_x, svg_y)
+    
+    @classmethod
     def show_plane_selector_dialog(cls, parent=None, show_spline_options=False):
         """Show a dialog to select the coordinate plane and optionally spline separation mode."""
         if not QtWidgets:
@@ -304,7 +583,7 @@ class CoordinatePlaneConfig:
 CoordinatePlaneConfig.set_plane('XY')
 #--------------------------------------------------------------------------------------------------------------
 @undoable
-def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_dialog=False):
+def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_dialog=False, use_per_object_planes=True):
     """
     Create picker buttons from selected curve objects and mesh objects (vertices only) in Blender scene.
     
@@ -312,6 +591,7 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
         canvas: The picker canvas to add buttons to
         drop_position (QPointF, optional): Position to place buttons. If None, uses canvas center.
         show_options_dialog (bool): Whether to show coordinate plane and spline options dialog
+        use_per_object_planes (bool): Whether to detect optimal plane for each object/spline individually
     
     Returns:
         list: List of created buttons
@@ -320,8 +600,8 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
     from . import data_management as DM
     from . import blender_ui as UI
     
-    # Default settings
-    separate_splines = True
+    # Get spline mode from canvas or use default
+    separate_splines = canvas.get_separate_splines_mode()
     
     # Show options dialog if requested
     if show_options_dialog:
@@ -331,9 +611,12 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
         # Handle the dictionary return format
         if isinstance(result, dict):
             separate_splines = result['separate_splines']
+            # Update canvas setting
+            canvas.set_separate_splines_mode(separate_splines)
         else:
             # Fallback for backward compatibility
             separate_splines = True
+            canvas.set_separate_splines_mode(separate_splines)
     
     # Get selected curve and mesh objects
     selected_curves = []
@@ -362,6 +645,29 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
     
     # Check for selected bones with custom shapes
     selected_bone_shapes = _get_selected_bones_with_shapes()
+    
+    # Auto-detect the best coordinate plane if we have objects to analyze and auto-detection is enabled
+    # Skip global auto-detection if using per-object planes to avoid conflicts
+    auto_detect_enabled = canvas.get_auto_detect_plane_mode()
+    if auto_detect_enabled and not use_per_object_planes and (selected_curves or selected_meshes or selected_bone_shapes):
+        detected_plane, confidence, analysis = CoordinatePlaneConfig.detect_flat_plane_from_curves(
+            selected_curves, selected_meshes, selected_bone_shapes
+        )
+        
+        # Only auto-set if confidence is high enough (avoid false positives)
+        if confidence > 0.7:  # 70% confidence threshold
+            CoordinatePlaneConfig.set_plane(detected_plane)
+            print(f"Auto-detected coordinate plane: {detected_plane} (confidence: {confidence:.1%})")
+            if analysis:
+                print(f"Analysis: {analysis['description']}")
+        else:
+            print(f"Auto-detection confidence too low ({confidence:.1%}), keeping current plane: {CoordinatePlaneConfig.get_current_plane_name()}")
+    elif not auto_detect_enabled:
+        print("Auto-detection disabled - using manually selected coordinate plane")
+    elif use_per_object_planes:
+        print("Per-object plane detection enabled - skipping global auto-detection")
+    
+
     
     if not selected_curves and not selected_meshes and not selected_bone_shapes:
         # Show error dialog
@@ -443,11 +749,11 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
         # Process curves
         if separate_splines:
             for curve_obj in selected_curves:
-                spline_bounds_list = _calculate_all_splines_bounding_boxes(curve_obj)
+                spline_bounds_list = _calculate_all_splines_bounding_boxes(curve_obj, use_per_object_planes)
                 all_object_bounds.extend(spline_bounds_list)
         else:
             for curve_obj in selected_curves:
-                curve_bounds = _calculate_curve_bounding_box(curve_obj)
+                curve_bounds = _calculate_curve_bounding_box(curve_obj, use_per_object_planes)
                 all_object_bounds.append(curve_bounds)
         
         # Process meshes
@@ -496,8 +802,17 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
                     # Create separate button for each spline (original behavior)
                     for spline_idx, spline in enumerate(curve_data.splines):
                         try:
+                            # Detect optimal plane for this specific spline if enabled
+                            optimal_plane = None
+                            if use_per_object_planes:
+                                optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_spline(spline)
+                                if confidence > 0.1:  # Only use if confidence is reasonable
+                                    print(f"    Using optimal plane {optimal_plane} for spline {spline_idx} (confidence: {confidence:.2f})")
+                                else:
+                                    optimal_plane = None  # Fall back to current plane
+                            
                             # Generate SVG path data for this specific spline
-                            svg_path_data = _convert_spline_to_svg_path(spline)
+                            svg_path_data = _convert_spline_to_svg_path(spline, optimal_plane)
                             
                             if not svg_path_data:
                                 print(f"Warning: Could not generate path data for spline {spline_idx} in curve {curve_obj.name}")
@@ -525,7 +840,7 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
                             new_button.svg_file_path = f"blender_curve:{curve_obj.name}:spline_{spline_idx}"
                             
                             # Calculate individual spline bounds for positioning
-                            spline_bounds = _calculate_spline_bounding_box(spline)
+                            spline_bounds = _calculate_spline_bounding_box(spline, use_per_object_planes)
                             
                             # Position and size button
                             spline_center_x = (spline_bounds['min_x'] + spline_bounds['max_x']) / 2
@@ -574,7 +889,7 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
                 else:
                     # Combine all splines into a single button per curve object
                     try:
-                        svg_path_string = _convert_curve_to_svg_path(curve_obj)
+                        svg_path_string = _convert_curve_to_svg_path(curve_obj, use_per_object_planes)
                         
                         if not svg_path_string:
                             print(f"Warning: Could not generate path data for curve {curve_obj.name}")
@@ -589,7 +904,7 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
                         new_button.svg_path_data = svg_path_string
                         new_button.svg_file_path = f"blender_curve:{curve_obj.name}:combined"
                         
-                        curve_bounds = _calculate_curve_bounding_box(curve_obj)
+                        curve_bounds = _calculate_curve_bounding_box(curve_obj, use_per_object_planes)
                         
                         curve_center_x = (curve_bounds['min_x'] + curve_bounds['max_x']) / 2
                         curve_center_y = (curve_bounds['min_y'] + curve_bounds['max_y']) / 2
@@ -874,7 +1189,8 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
         if created_buttons:
             canvas.clear_selection()
             for button in created_buttons:
-                button.toggle_selection()
+                button.is_selected = True
+                button.selected.emit(button, True)
             
             # Update UI
             canvas.update_button_positions()
@@ -890,18 +1206,28 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
 
     return created_buttons
 
-def _convert_curve_to_svg_path(curve_obj):
+def _convert_curve_to_svg_path(curve_obj, use_optimal_plane=True):
     """
     Convert a Blender curve object to SVG path data.
     Uses the object's local coordinate system directly via coordinate plane configuration.
     
     Args:
         curve_obj: Blender curve object
+        use_optimal_plane (bool): Whether to detect optimal plane for this curve
         
     Returns:
         str: SVG path data string
     """
     try:
+        # Detect optimal plane for this curve if requested
+        optimal_plane = None
+        if use_optimal_plane:
+            optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_object(curve_obj)
+            if confidence > 0.1:  # Only use if confidence is reasonable
+                print(f"  Using optimal plane {optimal_plane} for curve {curve_obj.name} (confidence: {confidence:.2f})")
+            else:
+                optimal_plane = None  # Fall back to current plane
+        
         # Get curve data
         curve_data = curve_obj.data
         
@@ -913,7 +1239,7 @@ def _convert_curve_to_svg_path(curve_obj):
         all_path_commands = []
         
         for spline_idx, spline in enumerate(curve_data.splines):
-            spline_path = _convert_spline_to_svg_path(spline)
+            spline_path = _convert_spline_to_svg_path(spline, optimal_plane)
             if spline_path:
                 if spline_idx == 0:
                     all_path_commands.extend(spline_path)
@@ -930,12 +1256,13 @@ def _convert_curve_to_svg_path(curve_obj):
         print(f"Error converting curve {curve_obj.name}: {e}")
         return None
 
-def _convert_spline_to_svg_path(spline):
+def _convert_spline_to_svg_path(spline, optimal_plane=None):
     """
     Convert a single spline to SVG path commands using local coordinates only.
     
     Args:
         spline: Blender spline object
+        optimal_plane: Optional plane name to use for transformation
         
     Returns:
         list: List of SVG path command strings
@@ -945,15 +1272,15 @@ def _convert_spline_to_svg_path(spline):
     try:
         # Handle different spline types using LOCAL coordinates
         if spline.type == 'BEZIER':
-            points = _get_bezier_points(spline)
+            points = _get_bezier_points(spline, optimal_plane)
             path_commands = _create_bezier_path(points, spline.use_cyclic_u)
             
         elif spline.type == 'NURBS':
-            points = _get_nurbs_points(spline)
+            points = _get_nurbs_points(spline, optimal_plane)
             path_commands = _create_nurbs_path(points, spline.use_cyclic_u)
             
         elif spline.type == 'POLY':
-            points = _get_poly_points(spline)
+            points = _get_poly_points(spline, optimal_plane)
             path_commands = _create_poly_path(points, spline.use_cyclic_u)
             
         else:
@@ -966,7 +1293,7 @@ def _convert_spline_to_svg_path(spline):
     
     return path_commands
 
-def _get_bezier_points(spline):
+def _get_bezier_points(spline, optimal_plane=None):
     """Extract points from Bezier spline using local coordinates and coordinate plane configuration."""
     points = []
     
@@ -976,10 +1303,15 @@ def _get_bezier_points(spline):
         handle_left_local = point.handle_left
         handle_right_local = point.handle_right
         
-        # Transform using current plane configuration (using local coordinates directly)
-        co_2d = CoordinatePlaneConfig.transform_point(co_local)
-        handle_left_2d = CoordinatePlaneConfig.transform_point(handle_left_local)
-        handle_right_2d = CoordinatePlaneConfig.transform_point(handle_right_local)
+        # Transform using optimal plane or current plane configuration
+        if optimal_plane:
+            co_2d = CoordinatePlaneConfig.transform_point_with_plane(co_local, optimal_plane)
+            handle_left_2d = CoordinatePlaneConfig.transform_point_with_plane(handle_left_local, optimal_plane)
+            handle_right_2d = CoordinatePlaneConfig.transform_point_with_plane(handle_right_local, optimal_plane)
+        else:
+            co_2d = CoordinatePlaneConfig.transform_point(co_local)
+            handle_left_2d = CoordinatePlaneConfig.transform_point(handle_left_local)
+            handle_right_2d = CoordinatePlaneConfig.transform_point(handle_right_local)
         
         points.append({
             'co': co_2d,
@@ -991,7 +1323,7 @@ def _get_bezier_points(spline):
     
     return points
 
-def _get_nurbs_points(spline):
+def _get_nurbs_points(spline, optimal_plane=None):
     """Extract points from NURBS spline by sampling using local coordinates and coordinate plane configuration."""
     points = []
     
@@ -1024,13 +1356,16 @@ def _get_nurbs_points(spline):
                 1.0
             ))
             
-            # Transform using current plane configuration (local coordinates)
-            co_2d = CoordinatePlaneConfig.transform_point(co_local)
+            # Transform using optimal plane or current plane configuration
+            if optimal_plane:
+                co_2d = CoordinatePlaneConfig.transform_point_with_plane(co_local, optimal_plane)
+            else:
+                co_2d = CoordinatePlaneConfig.transform_point(co_local)
             points.append(co_2d)
     
     return points
 
-def _get_poly_points(spline):
+def _get_poly_points(spline, optimal_plane=None):
     """Extract points from Poly spline using local coordinates and coordinate plane configuration."""
     points = []
     
@@ -1038,8 +1373,11 @@ def _get_poly_points(spline):
         # Use LOCAL coordinates directly (point.co is a 4D vector)
         co_local = point.co
         
-        # Transform using current plane configuration (local coordinates)
-        co_2d = CoordinatePlaneConfig.transform_point(co_local)
+        # Transform using optimal plane or current plane configuration
+        if optimal_plane:
+            co_2d = CoordinatePlaneConfig.transform_point_with_plane(co_local, optimal_plane)
+        else:
+            co_2d = CoordinatePlaneConfig.transform_point(co_local)
         points.append(co_2d)
     
     return points
@@ -1172,29 +1510,65 @@ def _get_object_bounds_3d(obj):
         'depth': max_z - min_z
     }
 
-def _calculate_curve_bounding_box(curve_obj):
+def _calculate_curve_bounding_box(curve_obj, use_optimal_plane=True):
     """
     Calculate the 2D bounding box of a curve object using coordinate plane configuration.
     
     Args:
         curve_obj: Blender curve object
+        use_optimal_plane (bool): Whether to use optimal plane detection
         
     Returns:
         dict: Dictionary with min_x, max_x, min_y, max_y, width, height
     """
     try:
+        # Use optimal plane if requested
+        if use_optimal_plane:
+            optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_object(curve_obj)
+            if confidence > 0.1:  # Only use if confidence is reasonable
+                # Get bounds for the optimal plane
+                bounds_3d = _get_object_bounds_3d(curve_obj)
+                config = CoordinatePlaneConfig.PLANES[optimal_plane]
+                
+                # Map axes
+                x_keys = ['min_x', 'max_x'] if config['x_axis'] == 0 else (['min_y', 'max_y'] if config['x_axis'] == 1 else ['min_z', 'max_z'])
+                y_keys = ['min_x', 'max_x'] if config['y_axis'] == 0 else (['min_y', 'max_y'] if config['y_axis'] == 1 else ['min_z', 'max_z'])
+                
+                min_x = bounds_3d[x_keys[0]]
+                max_x = bounds_3d[x_keys[1]]
+                min_y = bounds_3d[y_keys[0]]
+                max_y = bounds_3d[y_keys[1]]
+                
+                # Apply flipping to bounds if needed
+                if config['flip_x']:
+                    min_x, max_x = -max_x, -min_x
+                if config['flip_y']:
+                    min_y, max_y = -max_y, -min_y
+                
+                return {
+                    'min_x': min_x,
+                    'max_x': max_x,
+                    'min_y': min_y,
+                    'max_y': max_y,
+                    'width': max_x - min_x,
+                    'height': max_y - min_y
+                }
+        
+        # Fall back to current plane configuration
         bounds_3d = _get_object_bounds_3d(curve_obj)
         return CoordinatePlaneConfig.get_bounds_for_plane(bounds_3d)
+        
     except Exception as e:
         print(f"Error calculating bounding box for {curve_obj.name}: {e}")
         return {'min_x': 0, 'max_x': 100, 'min_y': 0, 'max_y': 100, 'width': 100, 'height': 100}
 
-def _calculate_all_splines_bounding_boxes(curve_obj):
+def _calculate_all_splines_bounding_boxes(curve_obj, use_optimal_plane=True):
     """
     Calculate bounding boxes for all splines in a curve object.
     
     Args:
         curve_obj: Blender curve object
+        use_optimal_plane (bool): Whether to use optimal plane detection
         
     Returns:
         list: List of bounding box dictionaries for each spline
@@ -1205,7 +1579,7 @@ def _calculate_all_splines_bounding_boxes(curve_obj):
         curve_data = curve_obj.data
         
         for spline in curve_data.splines:
-            bounds = _calculate_spline_bounding_box(spline)
+            bounds = _calculate_spline_bounding_box(spline, use_optimal_plane)
             spline_bounds.append(bounds)
             
     except Exception as e:
@@ -1213,32 +1587,42 @@ def _calculate_all_splines_bounding_boxes(curve_obj):
     
     return spline_bounds
 
-def _calculate_spline_bounding_box(spline):
+def _calculate_spline_bounding_box(spline, use_optimal_plane=True):
     """
     Calculate the 2D bounding box of a single spline using coordinate plane configuration.
     
     Args:
         spline: Blender spline object
+        use_optimal_plane (bool): Whether to use optimal plane detection
         
     Returns:
         dict: Dictionary with min_x, max_x, min_y, max_y, width, height
     """
     try:
+        # Detect optimal plane for this spline if requested
+        optimal_plane = None
+        if use_optimal_plane:
+            optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_spline(spline)
+            if confidence > 0.1:  # Only use if confidence is reasonable
+                print(f"    Using optimal plane {optimal_plane} for spline (confidence: {confidence:.2f})")
+            else:
+                optimal_plane = None  # Fall back to current plane
+        
         points_2d = []
         
         # Get 2D points based on spline type
         if spline.type == 'BEZIER':
-            bezier_points = _get_bezier_points(spline)
+            bezier_points = _get_bezier_points(spline, optimal_plane)
             for point in bezier_points:
                 points_2d.append(point['co'])
                 points_2d.append(point['handle_left'])
                 points_2d.append(point['handle_right'])
                 
         elif spline.type == 'NURBS':
-            points_2d = _get_nurbs_points(spline)
+            points_2d = _get_nurbs_points(spline, optimal_plane)
             
         elif spline.type == 'POLY':
-            points_2d = _get_poly_points(spline)
+            points_2d = _get_poly_points(spline, optimal_plane)
         
         if not points_2d:
             return {'min_x': 0, 'max_x': 10, 'min_y': 0, 'max_y': 10, 'width': 10, 'height': 10}
@@ -1852,6 +2236,102 @@ def _generate_bone_shape_unique_id(tab_name, existing_ids, bone_name, shape_name
     
     import time
     return f"{tab_name}_bone_shape_{int(time.time() * 1000)}_{button_index}"
+
+def detect_flat_plane_from_curves_simple():
+    """Simple wrapper for backward compatibility."""
+    return CoordinatePlaneConfig.detect_flat_plane_from_curves([], [], [])[0]
+
+def test_enhanced_plane_detection():
+    """Test the enhanced plane detection with multiple objects."""
+    print("=== Testing Enhanced Plane Detection ===")
+    
+    # Get selected objects
+    selected_curves = []
+    selected_meshes = []
+    
+    with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+        for obj in bpy.context.selected_objects:
+            if obj.type == 'CURVE':
+                selected_curves.append(obj)
+            elif obj.type == 'MESH':
+                mesh_data = obj.data
+                if not mesh_data.polygons:  # No faces
+                    selected_meshes.append(obj)
+    
+    selected_bone_shapes = _get_selected_bones_with_shapes()
+    
+    if not selected_curves and not selected_meshes and not selected_bone_shapes:
+        print("No valid objects selected for testing")
+        return
+    
+    # Test global detection
+    print("\n--- Global Plane Detection ---")
+    detected_plane, confidence, analysis = CoordinatePlaneConfig.detect_flat_plane_from_curves(
+        selected_curves, selected_meshes, selected_bone_shapes
+    )
+    print(f"Global detected plane: {detected_plane} (confidence: {confidence:.2f})")
+    if analysis:
+        print(f"Global analysis: {analysis['description']}")
+    
+    # Test per-object detection
+    print("\n--- Per-Object Plane Detection ---")
+    for curve_obj in selected_curves:
+        optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_object(curve_obj)
+        print(f"Curve {curve_obj.name}: {optimal_plane} (confidence: {confidence:.2f})")
+        if analysis:
+            print(f"  Analysis: {analysis['description']}")
+    
+    for mesh_obj in selected_meshes:
+        optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_object(mesh_obj)
+        print(f"Mesh {mesh_obj.name}: {optimal_plane} (confidence: {confidence:.2f})")
+        if analysis:
+            print(f"  Analysis: {analysis['description']}")
+    
+    for bone, shape_obj, armature_obj in selected_bone_shapes:
+        optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_object(shape_obj)
+        print(f"Bone shape {bone.name} -> {shape_obj.name}: {optimal_plane} (confidence: {confidence:.2f})")
+        if analysis:
+            print(f"  Analysis: {analysis['description']}")
+
+def test_per_spline_plane_detection():
+    """Test per-spline plane detection."""
+    print("=== Testing Per-Spline Plane Detection ===")
+    
+    with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+        for obj in bpy.context.selected_objects:
+            if obj.type == 'CURVE':
+                print(f"\n--- Curve: {obj.name} ---")
+                curve_data = obj.data
+                
+                for spline_idx, spline in enumerate(curve_data.splines):
+                    optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_spline(spline)
+                    print(f"  Spline {spline_idx}: {optimal_plane} (confidence: {confidence:.2f})")
+                    if analysis:
+                        print(f"    Analysis: {analysis['description']}")
+
+def test_per_spline_conversion():
+    """Test per-spline conversion with optimal planes."""
+    print("=== Testing Per-Spline Conversion with Optimal Planes ===")
+    
+    with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+        for obj in bpy.context.selected_objects:
+            if obj.type == 'CURVE':
+                print(f"\n--- Curve: {obj.name} ---")
+                curve_data = obj.data
+                
+                for spline_idx, spline in enumerate(curve_data.splines):
+                    # Detect optimal plane
+                    optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_spline(spline)
+                    print(f"  Spline {spline_idx}: {optimal_plane} (confidence: {confidence:.2f})")
+                    
+                    # Convert with optimal plane
+                    svg_path_data = _convert_spline_to_svg_path(spline, optimal_plane)
+                    if svg_path_data:
+                        print(f"    Converted successfully with {optimal_plane} plane")
+                        print(f"    Path commands: {len(svg_path_data)}")
+                    else:
+                        print(f"    Conversion failed")
+
 #--------------------------------------------------------------------------------------------------------------
 # Context menu integration
 def create_buttons_from_blender_curves_context_menu(self):

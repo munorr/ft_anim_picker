@@ -23,6 +23,13 @@ class PickerDataManager:
         }),
         'thumbnail_directory': ''
     })
+    _undo_stack = []
+    _redo_stack = []
+    _max_undo_steps = 128
+    _recording_enabled = True
+    _in_batch_operation = False
+    _last_undo_state = None
+    _saving_in_progress = False  # CRITICAL: Prevent recursion
 
     # Batch update system
     _batch_timer = None
@@ -32,6 +39,236 @@ class PickerDataManager:
     _min_save_interval = 0.0  # Minimum 100ms between saves
     _cached_data = None
 
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    # UNDO REDO SYSTEM
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    @classmethod
+    def save_undo_state(cls, operation_name="", selected_button_ids=None):
+        """Save current state to undo stack with batching for rapid changes"""
+        if selected_button_ids is None:
+            selected_button_ids = cls._get_selected_button_ids()
+        if not cls._recording_enabled or cls._in_batch_operation or cls._saving_in_progress:
+            return
+            
+        current_time = time.time()
+        
+        # CRITICAL FIX: Prevent recursion by temporarily disabling undo recording
+        cls._saving_in_progress = True
+        try:
+            # Import copy at the beginning where it's needed for both branches
+            import copy
+            
+            # CRITICAL FIX: Use internal method to avoid recursion
+            current_state = cls._get_data_internal()
+            
+            # Skip if state hasn't changed (avoid duplicate saves)
+            '''if cls._last_undo_state and cls._states_equal(current_state, cls._last_undo_state):
+                return
+                '''
+            # Batching logic: If last save was very recent, replace it instead of adding new entry
+            batch_threshold = 0.25  # 250ms - batch rapid changes within this window
+            
+            if (cls._undo_stack and 
+                len(cls._undo_stack) > 0 and 
+                (current_time - cls._undo_stack[-1]['timestamp']) < batch_threshold):
+                
+                # Check if the last entry is marked as a batch entry
+                last_entry = cls._undo_stack[-1]
+                
+                # If it's NOT already a batch entry, it means this is the start of a batch
+                # We need to preserve this entry and create a new one for the batch
+                if not last_entry.get('is_batch_entry', False):
+                    # Create a new batch entry instead of replacing the existing one
+                    batch_entry = {
+                        'state': copy.deepcopy(current_state),
+                        'operation': operation_name or "Change",
+                        'timestamp': current_time,
+                        'selected_button_ids': selected_button_ids,
+                        'is_batch_entry': True,  # Mark this as a batch entry
+                        'batch_start_time': last_entry['timestamp']  # Reference to when batch started
+                    }
+                    cls._undo_stack.append(batch_entry)
+                    cls._last_undo_state = copy.deepcopy(current_state)
+                    #print(f"Started batch undo state: {operation_name} (Stack size: {len(cls._undo_stack)})")
+                else:
+                    # This is a continuation of a batch - replace the batch entry
+                    cls._undo_stack[-1] = {
+                        'state': copy.deepcopy(current_state),
+                        'operation': operation_name or "Change",
+                        'timestamp': current_time,
+                        'selected_button_ids': selected_button_ids,
+                        'is_batch_entry': True,
+                        'batch_start_time': last_entry.get('batch_start_time', last_entry['timestamp'])
+                    }
+                    cls._last_undo_state = copy.deepcopy(current_state)
+                    #print(f"Updated batch undo state: {operation_name} (Stack size: {len(cls._undo_stack)})")
+            else:
+                # Check if we're ending a batch operation
+                if (cls._undo_stack and 
+                    len(cls._undo_stack) > 0 and 
+                    cls._undo_stack[-1].get('is_batch_entry', False)):
+                    
+                    # This is the end of a batch - just update the existing batch entry
+                    # instead of creating a new one
+                    if cls._states_equal(current_state, cls._undo_stack[-1]['state']):
+                        # No change from the last batch state - don't create new entry
+                        return
+                    else:
+                        # Update the batch entry with the final state
+                        cls._undo_stack[-1]['state'] = copy.deepcopy(current_state)
+                        cls._undo_stack[-1]['timestamp'] = current_time
+                        cls._undo_stack[-1]['operation'] = operation_name or "Change"
+                        cls._undo_stack[-1]['selected_button_ids'] = selected_button_ids
+                        cls._last_undo_state = copy.deepcopy(current_state)
+                        #print(f"Finalized batch undo state: {operation_name} (Stack size: {len(cls._undo_stack)})")
+                        return
+                # Create new undo entry for changes outside batch window
+                state_copy = copy.deepcopy(current_state)
+                
+                undo_entry = {
+                    'state': state_copy,
+                    'operation': operation_name or "Change",
+                    'timestamp': current_time,
+                    'selected_button_ids': selected_button_ids,
+                    'is_batch_entry': False  # Regular entry
+                }
+                
+                cls._undo_stack.append(undo_entry)
+                cls._last_undo_state = state_copy
+                
+                # Limit undo stack size
+                if len(cls._undo_stack) > cls._max_undo_steps:
+                    cls._undo_stack.pop(0)
+                
+                print(f"Saved undo state: {operation_name} (Stack size: {len(cls._undo_stack)})")
+
+            # Clear redo stack when new action is performed
+            cls._redo_stack.clear()
+            
+        finally:
+            cls._saving_in_progress = False
+    
+    @classmethod
+    def _states_equal(cls, state1, state2):
+        """Compare two states to see if they're identical"""
+        try:
+            import json
+            return json.dumps(state1, sort_keys=True) == json.dumps(state2, sort_keys=True)
+        except:
+            return False
+    
+    @classmethod
+    def can_undo(cls):
+        """Check if undo is available"""
+        return len(cls._undo_stack) > 0
+    
+    @classmethod
+    def can_redo(cls):
+        """Check if redo is available"""
+        return len(cls._redo_stack) > 0
+    
+    @classmethod
+    def undo(cls):
+        """Restore previous state"""
+        selected_button_ids = cls._get_selected_button_ids()
+        if not cls.can_undo():
+            return None, []
+            
+        # Save current state to redo stack
+        import copy
+        current_state = copy.deepcopy(cls.get_data())
+        cls._redo_stack.append({
+            'state': current_state,
+            'timestamp': time.time(),
+            'selected_button_ids': selected_button_ids   
+        })
+        
+        # Restore previous state
+        undo_entry = cls._undo_stack.pop()
+        previous_state = undo_entry['state']
+        restored_selected_ids = undo_entry.get('selected_button_ids', [])
+        
+        # Temporarily disable undo recording
+        old_recording = cls._recording_enabled
+        cls._recording_enabled = False
+        try:
+            # Force immediate save and update cache
+            cls._perform_save(previous_state)
+            cls._cached_data = copy.deepcopy(previous_state)
+            cls._last_undo_state = copy.deepcopy(previous_state)
+        finally:
+            cls._recording_enabled = old_recording
+            
+        print(f"Undid: {undo_entry['operation']}")
+        return undo_entry['operation'], restored_selected_ids
+    
+    @classmethod
+    def redo(cls):
+        """Restore next state"""
+        selected_button_ids = cls._get_selected_button_ids()
+        if not cls.can_redo():
+            return None, []
+            
+        # Save current state to undo stack
+        import copy
+        current_state = copy.deepcopy(cls.get_data())
+        cls._undo_stack.append({
+            'state': current_state,
+            'operation': 'before_redo',
+            'timestamp': time.time(),
+            'selected_button_ids': selected_button_ids
+        })
+        
+        # Restore next state
+        redo_entry = cls._redo_stack.pop()
+        next_state = redo_entry['state']
+        restored_selected_ids = redo_entry.get('selected_button_ids', [])
+        
+        # Temporarily disable undo recording
+        old_recording = cls._recording_enabled
+        cls._recording_enabled = False
+        try:
+            # Force immediate save and update cache
+            cls._perform_save(next_state)
+            cls._cached_data = copy.deepcopy(next_state)
+            cls._last_undo_state = copy.deepcopy(next_state)
+        finally:
+            cls._recording_enabled = old_recording
+            
+        print("Redid operation")
+        return "redo", restored_selected_ids
+    
+    @classmethod
+    def clear_undo_history(cls):
+        """Clear undo/redo history"""
+        cls._undo_stack.clear()
+        cls._redo_stack.clear()
+        cls._last_undo_state = None
+    
+    @classmethod
+    def _get_selected_button_ids(cls):
+        """Get the IDs of currently selected buttons"""
+        try:
+            # Get the current window instance from the window manager
+            from . import main
+            window_manager = main.PickerWindowManager.get_instance()
+            
+            # Get the first available picker window
+            if window_manager._picker_widgets:
+                picker_window = window_manager._picker_widgets[0]  # Use the first window
+                if hasattr(picker_window, 'get_selected_buttons'):
+                    selected_buttons = picker_window.get_selected_buttons()
+                    if selected_buttons:
+                        return [button.unique_id for button in selected_buttons if hasattr(button, 'unique_id')]
+            
+            return []
+        except Exception as e:
+            print(f"Error getting selected button IDs: {e}")
+            return []
+    
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    # DATA MANAGEMENT
+    #----------------------------------------------------------------------------------------------------------------------------------------
     @classmethod
     def initialize_data(cls):
         if not cmds.objExists('defaultObjectSet'):
@@ -39,7 +276,8 @@ class PickerDataManager:
         
         if not cmds.attributeQuery(cls.ATTR_NAME, node='defaultObjectSet', exists=True):
             cmds.addAttr('defaultObjectSet', longName=cls.ATTR_NAME, dataType='string')
-            cls.save_data(cls.DEFAULT_DATA, force_immediate=True)
+            # CRITICAL FIX: Use internal method to avoid recursion during initialization
+            cls._perform_save(cls.DEFAULT_DATA)
 
     @classmethod
     def reload_data_from_maya(cls):
@@ -61,21 +299,21 @@ class PickerDataManager:
                 return data
             except json.JSONDecodeError:
                 cmds.warning("Invalid data in PickerToolData. Resetting to default.")
-                cls.save_data(cls.DEFAULT_DATA, force_immediate=True)
+                cls._perform_save(cls.DEFAULT_DATA)
                 return cls.DEFAULT_DATA
         
         cls._cached_data = cls.DEFAULT_DATA
         return cls.DEFAULT_DATA
-    
+
     @classmethod
-    def get_data(cls):
-        """Get data with caching for better performance"""
-        # Return cached data if available and recent
-        if cls._cached_data is not None and not cls._pending_updates:
-            return cls._cached_data
-            
+    def _get_data_internal(cls):
+        """
+        CRITICAL FIX: Internal get_data method that doesn't trigger undo recording
+        This is the key difference from Blender that was missing in Maya
+        """
         cls.initialize_data()
         data_string = cmds.getAttr(f'defaultObjectSet.{cls.ATTR_NAME}')
+        
         if data_string:
             try:
                 data = json.loads(data_string, object_pairs_hook=OrderedDict)
@@ -114,22 +352,33 @@ class PickerDataManager:
                                             continue
                                     button['assigned_objects'] = converted_objects
                 
-                # Cache the data
-                cls._cached_data = data
-                
-                # Save converted data back to storage if needed
-                if cls._pending_updates:
-                    cls.save_data(data, force_immediate=True)
-                    
                 return data
                 
             except json.JSONDecodeError:
                 cmds.warning("Invalid data in PickerToolData. Resetting to default.")
-                cls.save_data(cls.DEFAULT_DATA, force_immediate=True)
+                cls._perform_save(cls.DEFAULT_DATA)
                 return cls.DEFAULT_DATA
         
-        cls._cached_data = cls.DEFAULT_DATA
         return cls.DEFAULT_DATA
+    
+    @classmethod
+    def get_data(cls):
+        """Get data with caching for better performance"""
+        # Return cached data if available and recent
+        if cls._cached_data is not None and not cls._pending_updates:
+            return cls._cached_data
+            
+        # Use internal method to get data
+        data = cls._get_data_internal()
+        
+        # Cache the data
+        cls._cached_data = data
+        
+        # Save converted data back to storage if needed
+        if cls._pending_updates:
+            cls._perform_save(data)
+            
+        return data
 
     @classmethod
     def save_data(cls, data, force_immediate=False):
@@ -185,6 +434,7 @@ class PickerDataManager:
     @classmethod
     def batch_update_buttons(cls, tab_name, buttons_data):
         """Batch update multiple buttons at once for better performance"""
+        cls.save_undo_state("Batch Update Buttons")
         data = cls.get_data()
         
         if tab_name in data['tabs']:
@@ -206,6 +456,7 @@ class PickerDataManager:
             # Use batched save for performance
             cls.save_data(data)
 
+    #------------------------------------------------------------------------------
     @classmethod
     def get_tab_data(cls, tab_name):
         data = cls.get_data()
@@ -227,13 +478,14 @@ class PickerDataManager:
 
     @classmethod
     def update_tab_data(cls, tab_name, tab_data):
-        """Update tab data with batching"""
+        #cls.save_undo_state("Data Change")  # CRITICAL: Save state BEFORE changes
         data = cls.get_data()
         data['tabs'][tab_name] = tab_data
-        cls.save_data(data)  # Uses batching automatically
+        cls.save_data(data, force_immediate=True)
 
     @classmethod
-    def add_tab(cls, tab_name):
+    def add_tab(cls, tab_name, operation_name="Add Tab"):
+        cls.save_undo_state(operation_name)  # CRITICAL FIX: Enable undo for tab operations
         data = cls.get_data()
         if tab_name not in data['tabs']:
             data['tabs'][tab_name] = OrderedDict({
@@ -251,14 +503,16 @@ class PickerDataManager:
             cls.save_data(data, force_immediate=True)
 
     @classmethod
-    def delete_tab(cls, tab_name):
+    def delete_tab(cls, tab_name, operation_name="Delete Tab"):
+        cls.save_undo_state(operation_name)  # CRITICAL FIX: Enable undo for tab operations
         data = cls.get_data()
         if tab_name in data['tabs']:
             del data['tabs'][tab_name]
-            cls.save_data(data, force_immediate=True)  # Force immediate for UI operations
+            cls.save_data(data, force_immediate=True)
 
     @classmethod
-    def rename_tab(cls, old_name, new_name):
+    def rename_tab(cls, old_name, new_name, operation_name="Rename Tab"):
+        cls.save_undo_state(operation_name)  # CRITICAL FIX: Enable undo for tab operations
         data = cls.get_data()
         if old_name in data['tabs']:
             # Create a new OrderedDict to preserve the order
@@ -269,10 +523,12 @@ class PickerDataManager:
                 else:
                     new_tabs[tab_name] = tab_data
             data['tabs'] = new_tabs
-            cls.save_data(data, force_immediate=True)  # Force immediate for UI operations
+            cls.save_data(data, force_immediate=True)
 
+    #------------------------------------------------------------------------------
     @classmethod
-    def add_button(cls, tab_name, button_data):
+    def add_button(cls, tab_name, button_data, operation_name="Add Button"):
+        cls.save_undo_state(operation_name)  # CRITICAL FIX: Enable undo for button operations
         data = cls.get_data()
         if tab_name not in data['tabs']:
             data['tabs'][tab_name] = {'buttons': [], 'image_path': None, 'image_opacity': 1.0}
@@ -341,26 +597,29 @@ class PickerDataManager:
             button_data['pose_data'] = {}
 
         data['tabs'][tab_name]['buttons'].append(button_data)
-        cls.save_data(data)  # Uses batching
+        cls.save_data(data, force_immediate=True)  # Force immediate for button operations
 
     @classmethod
-    def update_button(cls, tab_name, button_id, button_data):
-        """Update single button with batching"""
+    def update_button(cls, tab_name, button_id, button_data, operation_name="Update Button"):
+        """Update single button with undo support"""
+        #cls.save_undo_state(operation_name)  # CRITICAL FIX: Enable undo for button operations
         data = cls.get_data()
         if tab_name in data['tabs']:
             for i, button in enumerate(data['tabs'][tab_name]['buttons']):
                 if button['id'] == button_id:
                     data['tabs'][tab_name]['buttons'][i].update(button_data)
                     break
-        cls.save_data(data)  # Uses batching
+        cls.save_data(data, force_immediate=True)
 
     @classmethod
-    def delete_button(cls, tab_name, button_id):
+    def delete_button(cls, tab_name, button_id, operation_name="Delete Button"):
+        #cls.save_undo_state(operation_name)  # CRITICAL FIX: Enable undo for button operations
         data = cls.get_data()
         if tab_name in data['tabs']:
             data['tabs'][tab_name]['buttons'] = [b for b in data['tabs'][tab_name]['buttons'] if b['id'] != button_id]
-            cls.save_data(data, force_immediate=True)  # Force immediate for deletions
+            cls.save_data(data, force_immediate=True)
 
+    # Rest of the methods remain the same...
     @classmethod
     def update_image_data(cls, tab_name, image_path, image_opacity, image_scale):
         """Update image data with batching"""
@@ -369,37 +628,35 @@ class PickerDataManager:
             data['tabs'][tab_name]['image_path'] = image_path
             data['tabs'][tab_name]['image_opacity'] = image_opacity
             data['tabs'][tab_name]['image_scale'] = image_scale
-            cls.save_data(data)  # Uses batching
+            cls.save_data(data)
 
     @classmethod
     def update_axes_visibility(cls, tab_name, show_axes):
         data = cls.get_data()
         if tab_name in data['tabs']:
             data['tabs'][tab_name]['show_axes'] = show_axes
-            cls.save_data(data)  # Uses batching
+            cls.save_data(data)
 
     @classmethod
     def update_dots_visibility(cls, tab_name, show_dots):
         data = cls.get_data()
         if tab_name in data['tabs']:
             data['tabs'][tab_name]['show_dots'] = show_dots
-            cls.save_data(data)  # Uses batching
+            cls.save_data(data)
 
     @classmethod
     def update_grid_visibility(cls, tab_name, show_grid):
-        """Update grid visibility setting"""
         data = cls.get_data()
         if tab_name in data['tabs']:
             data['tabs'][tab_name]['show_grid'] = show_grid
-            cls.save_data(data)  # Uses batching
+            cls.save_data(data)
 
     @classmethod
     def update_grid_size(cls, tab_name, grid_size):
-        """Update grid size setting"""
         data = cls.get_data()
         if tab_name in data['tabs']:
             data['tabs'][tab_name]['grid_size'] = grid_size
-            cls.save_data(data)  # Uses batching
+            cls.save_data(data)
 
     @classmethod
     def update_button_positions(cls, tab_name, button_positions):
@@ -411,7 +668,7 @@ class PickerDataManager:
             for button in data['tabs'][tab_name]['buttons']:
                 if button['id'] in button_positions:
                     button['position'] = button_positions[button['id']]
-            cls.save_data(data)  # Uses batching - important for drag performance
+            cls.save_data(data)
     
     @classmethod
     def update_button_order(cls, tab_name, button_order_ids):
@@ -444,7 +701,7 @@ class PickerDataManager:
         data = cls.get_data()
         if tab_name in data['tabs']:
             data['tabs'][tab_name]['namespace'] = namespace
-            cls.save_data(data)  # Uses batching
+            cls.save_data(data)
 
     @classmethod
     def reorder_tabs(cls, new_order):
@@ -454,13 +711,13 @@ class PickerDataManager:
             if tab_name in data['tabs']:
                 new_tabs[tab_name] = data['tabs'][tab_name]
         data['tabs'] = new_tabs
-        cls.save_data(data, force_immediate=True)  # Force immediate for UI operations
+        cls.save_data(data, force_immediate=True)
         
     @classmethod
     def set_thumbnail_directory(cls, directory):
         data = cls.get_data()
         data['thumbnail_directory'] = directory
-        cls.save_data(data, force_immediate=True)  # Force immediate for settings
+        cls.save_data(data, force_immediate=True)
         
     @classmethod
     def get_thumbnail_directory(cls):
@@ -481,15 +738,13 @@ class PickerDataManager:
     def set_batch_delay(cls, delay_seconds):
         """Adjust the batch delay for different performance needs"""
         cls._batch_delay = delay_seconds
-    #----------------------------------------------------------------------------------------------------------------------------------------
+
     @classmethod
     def cleanup_stale_references(cls):
         """Clean up any stale object references in the data manager"""
-        # Clear any cached data that might hold onto Maya objects
         if hasattr(cls, '_cached_data'):
             cls._cached_data.clear()
         
-        # Clear any pending operations
         if hasattr(cls, '_pending_saves'):
             cls._pending_saves.clear()
     
@@ -498,13 +753,11 @@ class PickerDataManager:
         """Force cleanup of Maya-Python object references"""
         import gc
         
-        # Clear Maya command cache if it exists
         try:
             import maya.cmds as cmds
-            # Maya sometimes caches object references
             cmds.flushUndo()
         except:
             pass
         
-        # Force Python garbage collection
         gc.collect()
+

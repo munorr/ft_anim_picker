@@ -20,6 +20,22 @@ from .utils import undoable
 # =============================================================================
 # COORDINATE PLANE CONFIGURATION
 # =============================================================================
+# 
+# Enhanced coordinate plane detection system for Maya curve conversion.
+# Features:
+# - Automatic detection of the flattest coordinate plane from curves, meshes, and bone shapes
+# - Per-curve optimal plane detection for mixed-orientation curve sets
+# - Confidence scoring for detection accuracy
+# - Support for multiple object types in a single analysis
+# - Improved flatness analysis using 3D bounding box calculations
+# - Backward compatibility with existing code
+# 
+# NEW: Per-Curve Plane Detection
+# - Each curve is analyzed individually to find its optimal coordinate plane
+# - Curves with different orientations get their own optimal plane
+# - Maintains proper 2D projection regardless of curve orientation
+# - Can be enabled/disabled via use_per_curve_planes parameter
+# =============================================================================
 
 class CoordinatePlaneConfig:
     """
@@ -177,6 +193,258 @@ class CoordinatePlaneConfig:
         }
     
     @classmethod
+    def detect_flat_plane_from_curves(cls, curve_objects=None, mesh_objects=None, bone_shapes=None):
+        """
+        Automatically detect the best coordinate plane based on selected curves, meshes, and bone shapes.
+        
+        Args:
+            curve_objects: List of Maya curve shape nodes (optional, will auto-detect if None)
+            mesh_objects: List of Maya mesh objects (optional)
+            bone_shapes: List of bone shape tuples (optional)
+            
+        Returns:
+            tuple: (plane_name, confidence_score, analysis_info)
+        """
+        # Auto-detect objects if not provided
+        if curve_objects is None and mesh_objects is None and bone_shapes is None:
+            selected_objects = cmds.ls(selection=True, long=True)
+            if not selected_objects:
+                return cls._current_plane, 0.0, "No objects selected for auto-detection"
+            
+            # Auto-detect curve objects from selection
+            curve_objects = []
+            for obj in selected_objects:
+                curve_shapes = cmds.listRelatives(obj, shapes=True, type='nurbsCurve', fullPath=True) or []
+                curve_objects.extend(curve_shapes)
+            
+            # Auto-detect mesh objects from selection
+            mesh_objects = _get_selected_mesh_objects()
+            
+            # Auto-detect bone shapes from selection
+            bone_shapes = _get_selected_bones_with_shapes()
+        
+        if not curve_objects and not mesh_objects and not bone_shapes:
+            return cls._current_plane, 0.0, "No objects to analyze"
+        
+        # Collect all 3D bounds
+        all_bounds = []
+        
+        # Analyze curves
+        if curve_objects:
+            for curve_shape in curve_objects:
+                try:
+                    bounds = _get_curve_bounds_3d(curve_shape)
+                    if bounds:
+                        all_bounds.append(bounds)
+                except Exception as e:
+                    print(f"Error analyzing curve {curve_shape}: {e}")
+                    continue
+        
+        # Analyze meshes (if implemented)
+        if mesh_objects:
+            for mesh_obj in mesh_objects:
+                try:
+                    # Get mesh bounds in local space
+                    bbox = cmds.exactWorldBoundingBox(mesh_obj)
+                    bounds = {
+                        'min_x': bbox[0], 'max_x': bbox[3],
+                        'min_y': bbox[1], 'max_y': bbox[4],
+                        'min_z': bbox[2], 'max_z': bbox[5]
+                    }
+                    all_bounds.append(bounds)
+                except Exception as e:
+                    print(f"Error analyzing mesh {mesh_obj}: {e}")
+                    continue
+        
+        # Analyze bone shapes (if implemented)
+        if bone_shapes:
+            for bone, shape_obj, armature_obj in bone_shapes:
+                try:
+                    # Get bone shape bounds in local space
+                    bbox = cmds.exactWorldBoundingBox(shape_obj)
+                    bounds = {
+                        'min_x': bbox[0], 'max_x': bbox[3],
+                        'min_y': bbox[1], 'max_y': bbox[4],
+                        'min_z': bbox[2], 'max_z': bbox[5]
+                    }
+                    all_bounds.append(bounds)
+                except Exception as e:
+                    print(f"Error analyzing bone shape {shape_obj}: {e}")
+                    continue
+        
+        if not all_bounds:
+            return cls._current_plane, 0.0, "No valid bounds found"
+        
+        # Calculate combined bounds
+        combined_bounds = cls._calculate_combined_3d_bounds(all_bounds)
+        
+        # Analyze flatness in each plane
+        plane_analysis = cls._analyze_flatness_in_planes(combined_bounds)
+        
+        # Find the flattest plane
+        best_plane, confidence, analysis = cls._find_flattest_plane(plane_analysis)
+        
+        print(f"Auto-detected coordinate plane: {best_plane} (confidence: {confidence:.2f})")
+        print(f"Analysis: {analysis['description']}")
+        
+        return best_plane, confidence, analysis
+    
+    @classmethod
+    def _calculate_combined_3d_bounds(cls, bounds_list):
+        """Calculate combined 3D bounds from a list of individual bounds."""
+        if not bounds_list:
+            return {'min_x': 0, 'max_x': 1, 'min_y': 0, 'max_y': 1, 'min_z': 0, 'max_z': 1, 'width_x': 1, 'width_y': 1, 'width_z': 1}
+        
+        min_x = min(bounds['min_x'] for bounds in bounds_list)
+        max_x = max(bounds['max_x'] for bounds in bounds_list)
+        min_y = min(bounds['min_y'] for bounds in bounds_list)
+        max_y = max(bounds['max_y'] for bounds in bounds_list)
+        min_z = min(bounds['min_z'] for bounds in bounds_list)
+        max_z = max(bounds['max_z'] for bounds in bounds_list)
+        
+        return {
+            'min_x': min_x, 'max_x': max_x,
+            'min_y': min_y, 'max_y': max_y,
+            'min_z': min_z, 'max_z': max_z,
+            'width_x': max_x - min_x,
+            'width_y': max_y - min_y,
+            'width_z': max_z - min_z
+        }
+    
+    @classmethod
+    def _analyze_flatness_in_planes(cls, bounds_3d):
+        """Analyze how flat the geometry is in each coordinate plane."""
+        # Calculate dimensions
+        dim_x = bounds_3d['width_x']
+        dim_y = bounds_3d['width_y']
+        dim_z = bounds_3d['width_z']
+        
+        # Calculate flatness ratios (smaller dimension = flatter)
+        total_xy = dim_x + dim_y
+        total_xz = dim_x + dim_z
+        total_yz = dim_y + dim_z
+        
+        # Flatness is inverse to the smallest dimension
+        flatness_xy = dim_z / (total_xy + dim_z) if (total_xy + dim_z) > 0 else 1.0
+        flatness_xz = dim_y / (total_xz + dim_y) if (total_xz + dim_y) > 0 else 1.0
+        flatness_yz = dim_x / (total_yz + dim_x) if (total_yz + dim_x) > 0 else 1.0
+        
+        return {
+            'XY': {
+                'flatness': flatness_xy,
+                'confidence': 1.0 - flatness_xy,
+                'dimensions': (dim_x, dim_y, dim_z),
+                'description': f"XY plane: {dim_x:.2f} x {dim_y:.2f} (Z depth: {dim_z:.2f})"
+            },
+            'XZ': {
+                'flatness': flatness_xz,
+                'confidence': 1.0 - flatness_xz,
+                'dimensions': (dim_x, dim_z, dim_y),
+                'description': f"XZ plane: {dim_x:.2f} x {dim_z:.2f} (Y depth: {dim_y:.2f})"
+            },
+            'YZ': {
+                'flatness': flatness_yz,
+                'confidence': 1.0 - flatness_yz,
+                'dimensions': (dim_y, dim_z, dim_x),
+                'description': f"YZ plane: {dim_y:.2f} x {dim_z:.2f} (X depth: {dim_x:.2f})"
+            }
+        }
+    
+    @classmethod
+    def _find_flattest_plane(cls, plane_analysis):
+        """Find the flattest plane and determine if it needs flipping."""
+        best_plane = None
+        best_confidence = 0.0
+        best_analysis = None
+        
+        for plane_name, analysis in plane_analysis.items():
+            if analysis['confidence'] > best_confidence:
+                best_confidence = analysis['confidence']
+                best_plane = plane_name
+                best_analysis = analysis
+        
+        # Determine if we need flipped version based on typical Maya conventions
+        # For most cases, we want Y-down orientation for SVG compatibility
+        if best_plane == 'XY':
+            # XY is typically used with Y flipped for SVG
+            final_plane = 'XY'  # Keep as XY (already has Y flip in config)
+        elif best_plane == 'XZ':
+            # XZ is typically used without flipping
+            final_plane = 'XZ'  # Keep as XZ (no flip in config)
+        elif best_plane == 'YZ':
+            # YZ is typically used without flipping
+            final_plane = 'YZ'  # Keep as YZ (no flip in config)
+        else:
+            final_plane = 'XZ'  # Fallback to Maya default
+        
+        return final_plane, best_confidence, best_analysis
+    
+    @classmethod
+    def detect_optimal_plane_for_curve(cls, curve_shape):
+        """
+        Detect the optimal coordinate plane for a single curve.
+        
+        Args:
+            curve_shape: Maya curve shape node
+            
+        Returns:
+            tuple: (plane_name, confidence_score, analysis_info)
+        """
+        try:
+            # Get bounds for this specific curve
+            bounds = _get_curve_bounds_3d(curve_shape)
+            if not bounds:
+                return cls._current_plane, 0.0, "No valid bounds found"
+            
+            # Analyze flatness in each plane
+            plane_analysis = cls._analyze_flatness_in_planes(bounds)
+            
+            # Find the flattest plane
+            best_plane, confidence, analysis = cls._find_flattest_plane(plane_analysis)
+            
+            return best_plane, confidence, analysis
+            
+        except Exception as e:
+            print(f"Error detecting optimal plane for curve {curve_shape}: {e}")
+            return cls._current_plane, 0.0, f"Error: {str(e)}"
+    
+    @classmethod
+    def transform_point_with_plane(cls, local_point, plane_name):
+        """
+        Transform a local 3D point to 2D SVG coordinates using a specific plane.
+        
+        Args:
+            local_point: tuple (x, y, z) in local coordinates
+            plane_name: Name of the plane to use for transformation
+            
+        Returns:
+            tuple: (x, y) in SVG coordinates
+        """
+        if plane_name not in cls.PLANES:
+            print(f"Warning: Unknown plane '{plane_name}', using current plane")
+            return cls.transform_point(local_point)
+        
+        config = cls.PLANES[plane_name]
+        
+        # Convert to tuple if needed
+        if hasattr(local_point, '__len__'):
+            point_tuple = tuple(local_point)
+        else:
+            point_tuple = local_point
+        
+        # Extract the two coordinates for the specified plane
+        svg_x = point_tuple[config['x_axis']]
+        svg_y = point_tuple[config['y_axis']]
+        
+        # Apply flipping if needed
+        if config['flip_x']:
+            svg_x = -svg_x
+        if config['flip_y']:
+            svg_y = -svg_y
+            
+        return (svg_x, svg_y)
+    
+    @classmethod
     def show_plane_selector_dialog(cls, parent=None, show_spline_options=False):
         """Show a dialog to select the coordinate plane and optionally spline separation mode."""
         try:
@@ -275,7 +543,7 @@ class CoordinatePlaneConfig:
 CoordinatePlaneConfig.set_plane('XZ')
 
 @undoable
-def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dialog=False):
+def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dialog=False, use_per_curve_planes=True):
     """
     Create picker buttons from selected NURBS curves in Maya scene.
     Converts curve to SVG path data for custom button shapes.
@@ -284,6 +552,7 @@ def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dia
         canvas: The picker canvas to add buttons to
         drop_position (QPointF, optional): Position to place buttons. If None, uses canvas center.
         show_options_dialog (bool): Whether to show coordinate plane and curve options dialog
+        use_per_curve_planes (bool): Whether to detect optimal plane for each curve individually
     
     Returns:
         list: List of created buttons
@@ -292,8 +561,11 @@ def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dia
     from . import data_management as DM
     from . import ui as UI
     
-    # Default settings
-    separate_curves = True
+    # Get curve mode from canvas or use default
+    separate_curves = canvas.get_separate_curves_mode()
+    
+    # Check if auto-detection is enabled
+    auto_detect_enabled = canvas.get_auto_detect_plane_mode()
     
     # Show options dialog if requested
     if show_options_dialog:
@@ -303,9 +575,12 @@ def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dia
         # Handle the dictionary return format
         if isinstance(result, dict):
             separate_curves = result['separate_curves']
+            # Update canvas setting
+            canvas.set_separate_curves_mode(separate_curves)
         else:
             # Fallback for backward compatibility
             separate_curves = True
+            canvas.set_separate_curves_mode(separate_curves)
     
     # Get selected curves - simplified approach
     selected_curves = []
@@ -376,6 +651,29 @@ def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dia
         # Convert to a format that works with the rest of the function
         # For combined mode, we'll process transform groups
         selected_curves = transform_to_curves
+    
+    # Auto-detect coordinate plane if enabled
+    if auto_detect_enabled and selected_curves:
+        # Prepare curve objects for detection
+        curve_objects_for_detection = []
+        if separate_curves:
+            curve_objects_for_detection = selected_curves
+        else:
+            # For combined mode, collect all curve shapes
+            for transform, curves in selected_curves.items():
+                curve_objects_for_detection.extend(curves)
+        
+        detected_plane, confidence, analysis = CoordinatePlaneConfig.detect_flat_plane_from_curves(
+            curve_objects=curve_objects_for_detection,
+            mesh_objects=_get_selected_mesh_objects(),
+            bone_shapes=_get_selected_bones_with_shapes()
+        )
+        if detected_plane and confidence > 0.1:  # Only use if confidence is reasonable
+            CoordinatePlaneConfig.set_plane(detected_plane)
+            print(f"Auto-detected and set coordinate plane to: {detected_plane} (confidence: {confidence:.2f})")
+            print(f"Analysis: {analysis['description']}")
+        else:
+            print(f"Auto-detection confidence too low ({confidence:.2f}), keeping current plane")
     
     if not selected_curves:
         # Show error dialog
@@ -466,8 +764,8 @@ def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dia
             # Original behavior - one button per curve shape
             for i, curve in enumerate(selected_curves):
                 try:
-                    # Generate SVG path data from curve
-                    svg_path_data = _convert_curve_to_svg_path(curve)
+                    # Generate SVG path data from curve with optimal plane detection
+                    svg_path_data = _convert_curve_to_svg_path(curve, use_optimal_plane=use_per_curve_planes)
                     
                     if not svg_path_data:
                         print(f"Warning: Could not generate path data for curve {curve}")
@@ -484,10 +782,13 @@ def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dia
                     else:
                         button_label = curve.split(':')[-1]
                     
+                    # Calculate bounds using optimal plane for this curve
+                    curve_bounds = _calculate_curve_bounding_box(curve, use_optimal_plane=use_per_curve_planes)
+                    
                     # Create and setup button
                     new_button = _create_and_setup_button(
                         canvas, unique_id, svg_path_data, curve, button_label,
-                        curve, drop_position, layout_center, scale_factor
+                        curve, drop_position, layout_center, scale_factor, curve_bounds
                     )
                     
                     if new_button:
@@ -506,7 +807,8 @@ def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dia
                         continue
                     
                     # Generate combined SVG path data from all curves in this transform
-                    svg_path_data = _convert_curves_to_combined_svg_path(curve_list)
+                    # Each curve uses its optimal plane
+                    svg_path_data = _convert_curves_to_combined_svg_path(curve_list, use_optimal_plane=use_per_curve_planes)
                     
                     if not svg_path_data:
                         print(f"Warning: Could not generate path data for transform {transform_name}")
@@ -522,8 +824,11 @@ def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dia
                     else:
                         button_label = transform_name.split(':')[-1]  # Remove namespace
                     
-                    # Calculate combined bounds for this transform's curves
-                    transform_bounds = _calculate_curves_bounding_box(curve_list)
+                    # Calculate combined bounds for this transform's curves using optimal planes
+                    if use_per_curve_planes:
+                        transform_bounds = _calculate_curves_bounding_box_with_optimal_planes(curve_list)
+                    else:
+                        transform_bounds = _calculate_curves_bounding_box(curve_list)
                     
                     # Create and setup button
                     new_button = _create_and_setup_combined_button(
@@ -552,7 +857,8 @@ def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dia
         if created_buttons:
             canvas.clear_selection()
             for button in created_buttons:
-                button.toggle_selection()
+                button.is_selected = True
+                button.selected.emit(button, True)
             
             # Update UI
             canvas.update_button_positions()
@@ -566,13 +872,14 @@ def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dia
     
     return created_buttons
 
-def _convert_curve_to_svg_path(curve_shape):
+def _convert_curve_to_svg_path(curve_shape, use_optimal_plane=True):
     """
     Convert a Maya NURBS curve to SVG path data.
     Uses the object's local coordinate system directly via coordinate plane configuration.
     
     Args:
         curve_shape (str): Name of the NURBS curve shape node
+        use_optimal_plane (bool): Whether to detect optimal plane for this curve
         
     Returns:
         str: SVG path data string
@@ -586,21 +893,30 @@ def _convert_curve_to_svg_path(curve_shape):
         # Choose conversion method based on curve properties
         if degree == 1:
             # Linear curve - use CV positions directly
-            return _convert_linear_curve(curve_shape, is_closed)
+            return _convert_linear_curve(curve_shape, is_closed, use_optimal_plane)
         else:
             # NURBS curve - use proper Maya curve evaluation
-            return _convert_nurbs_curve(curve_shape, is_closed)
+            return _convert_nurbs_curve(curve_shape, is_closed, use_optimal_plane)
             
     except Exception as e:
         print(f"Error converting curve {curve_shape}: {e}")
         return None
 #-------------------------------------------------------------------------
-def _convert_nurbs_curve(curve_shape, is_closed):
+def _convert_nurbs_curve(curve_shape, is_closed, use_optimal_plane=True):
     """
     Improved NURBS curve conversion using TRUE local coordinates.
     Uses current coordinate plane configuration with PURE LOCAL coordinates.
     """
     try:
+        # Detect optimal plane for this curve if requested
+        optimal_plane = None
+        if use_optimal_plane:
+            optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_curve(curve_shape)
+            if confidence > 0.1:  # Only use if confidence is reasonable
+                print(f"  Using optimal plane {optimal_plane} for curve {curve_shape} (confidence: {confidence:.2f})")
+            else:
+                optimal_plane = None  # Fall back to current plane
+        
         # Get curve parameter range
         min_param = cmds.getAttr(f"{curve_shape}.minValue")
         max_param = cmds.getAttr(f"{curve_shape}.maxValue")
@@ -611,7 +927,7 @@ def _convert_nurbs_curve(curve_shape, is_closed):
         
         # Special handling for circles and rational curves
         if is_rational or _is_circle_like_curve(curve_shape):
-            return _convert_rational_curve(curve_shape, is_closed)
+            return _convert_rational_curve(curve_shape, is_closed, optimal_plane)
         
         # Calculate appropriate resolution based on curve properties
         try:
@@ -640,9 +956,13 @@ def _convert_nurbs_curve(curve_shape, is_closed):
                 pos = _get_true_local_curve_point(curve_shape, param)
                 tangent = _get_true_local_curve_tangent(curve_shape, param)
                 
-                # Transform using current plane configuration
-                svg_point = CoordinatePlaneConfig.transform_point(pos)
-                svg_tangent = CoordinatePlaneConfig.transform_point(tangent)
+                # Transform using optimal plane or current plane configuration
+                if optimal_plane:
+                    svg_point = CoordinatePlaneConfig.transform_point_with_plane(pos, optimal_plane)
+                    svg_tangent = CoordinatePlaneConfig.transform_point_with_plane(tangent, optimal_plane)
+                else:
+                    svg_point = CoordinatePlaneConfig.transform_point(pos)
+                    svg_tangent = CoordinatePlaneConfig.transform_point(tangent)
                 
                 points.append(svg_point)
                 tangents.append(svg_tangent)
@@ -779,7 +1099,7 @@ def _create_smooth_rational_path(points, tangents, is_closed):
     result = " ".join(path_commands)
     return result
 #---------------------------------------------------------
-def _convert_rational_curve(curve_shape, is_closed):
+def _convert_rational_curve(curve_shape, is_closed, optimal_plane=None):
     """
     Special conversion for rational curves using TRUE local coordinates.
     Uses higher resolution and handles potential numerical issues.
@@ -815,9 +1135,13 @@ def _convert_rational_curve(curve_shape, is_closed):
                 pos = _get_true_local_curve_point(curve_shape, param)
                 tangent = _get_true_local_curve_tangent(curve_shape, param)
                 
-                # Transform using current plane configuration
-                svg_point = CoordinatePlaneConfig.transform_point(pos)
-                svg_tangent = CoordinatePlaneConfig.transform_point(tangent)
+                # Transform using optimal plane or current plane configuration
+                if optimal_plane:
+                    svg_point = CoordinatePlaneConfig.transform_point_with_plane(pos, optimal_plane)
+                    svg_tangent = CoordinatePlaneConfig.transform_point_with_plane(tangent, optimal_plane)
+                else:
+                    svg_point = CoordinatePlaneConfig.transform_point(pos)
+                    svg_tangent = CoordinatePlaneConfig.transform_point(tangent)
                 
                 points.append(svg_point)
                 tangents.append(svg_tangent)
@@ -856,7 +1180,7 @@ def _get_cv_bounds_true_local(curve_shape):
             z_coords.append(cv_pos[2])
         
         if not x_coords:
-            return {'min_x': 0, 'max_x': 100, 'min_y': 0, 'max_y': 100, 'min_z': 0, 'max_z': 100, 'width': 100, 'height': 100, 'depth': 100}
+            return {'min_x': 0, 'max_x': 100, 'min_y': 0, 'max_y': 100, 'min_z': 0, 'max_z': 100, 'width': 100, 'height': 100, 'depth': 100, 'width_x': 100, 'width_y': 100, 'width_z': 100}
         
         return {
             'min_x': min(x_coords),
@@ -867,12 +1191,15 @@ def _get_cv_bounds_true_local(curve_shape):
             'max_z': max(z_coords),
             'width': max(x_coords) - min(x_coords),
             'height': max(y_coords) - min(y_coords),
-            'depth': max(z_coords) - min(z_coords)
+            'depth': max(z_coords) - min(z_coords),
+            'width_x': max(x_coords) - min(x_coords),
+            'width_y': max(y_coords) - min(y_coords),
+            'width_z': max(z_coords) - min(z_coords)
         }
         
     except Exception as e:
         print(f"Error getting CV bounds in true local: {e}")
-        return {'min_x': 0, 'max_x': 100, 'min_y': 0, 'max_y': 100, 'min_z': 0, 'max_z': 100, 'width': 100, 'height': 100, 'depth': 100}
+        return {'min_x': 0, 'max_x': 100, 'min_y': 0, 'max_y': 100, 'min_z': 0, 'max_z': 100, 'width': 100, 'height': 100, 'depth': 100, 'width_x': 100, 'width_y': 100, 'width_z': 100}
 
 def _check_circular_pattern(curve_shape):
     """
@@ -917,20 +1244,32 @@ def _check_circular_pattern(curve_shape):
         print(f"Error checking circular pattern: {e}")
         return False
 
-def _convert_linear_curve(curve_shape, is_closed):
+def _convert_linear_curve(curve_shape, is_closed, use_optimal_plane=True):
     """
     Convert linear (degree 1) curve using TRUE local coordinates.
     Uses current coordinate plane configuration with PURE LOCAL coordinates.
     """
     try:
+        # Detect optimal plane for this curve if requested
+        optimal_plane = None
+        if use_optimal_plane:
+            optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_curve(curve_shape)
+            if confidence > 0.1:  # Only use if confidence is reasonable
+                print(f"  Using optimal plane {optimal_plane} for linear curve {curve_shape} (confidence: {confidence:.2f})")
+            else:
+                optimal_plane = None  # Fall back to current plane
+        
         cv_count = cmds.getAttr(f"{curve_shape}.controlPoints", size=True)
         points = []
         
         for i in range(cv_count):
             # Get CV position using TRUE local coordinates
             cv_pos = _get_true_local_cv_position(curve_shape, i)
-            # Transform using current plane configuration
-            svg_point = CoordinatePlaneConfig.transform_point(cv_pos)
+            # Transform using optimal plane or current plane configuration
+            if optimal_plane:
+                svg_point = CoordinatePlaneConfig.transform_point_with_plane(cv_pos, optimal_plane)
+            else:
+                svg_point = CoordinatePlaneConfig.transform_point(cv_pos)
             points.append(svg_point)
         
         if len(points) < 2:
@@ -1150,7 +1489,10 @@ def _get_curve_bounds_3d(curve_shape):
             'max_z': max(z_coords),
             'width': max(x_coords) - min(x_coords),
             'height': max(y_coords) - min(y_coords),
-            'depth': max(z_coords) - min(z_coords)
+            'depth': max(z_coords) - min(z_coords),
+            'width_x': max(x_coords) - min(x_coords),
+            'width_y': max(y_coords) - min(y_coords),
+            'width_z': max(z_coords) - min(z_coords)
         }
         
         return bounds
@@ -1159,13 +1501,46 @@ def _get_curve_bounds_3d(curve_shape):
         print(f"Error getting true local curve bounds: {e}")
         return _get_cv_bounds_true_local(curve_shape)
 
-def _calculate_curve_bounding_box(curve_shape):
+def _calculate_curve_bounding_box(curve_shape, use_optimal_plane=True):
     """
     Calculate the 2D bounding box of a curve for layout purposes.
-    Uses current coordinate plane configuration.
+    Uses optimal plane detection or current coordinate plane configuration.
     """
     try:
         bounds_3d = _get_curve_bounds_3d(curve_shape)
+        
+        # Use optimal plane if requested
+        if use_optimal_plane:
+            optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_curve(curve_shape)
+            if confidence > 0.1:  # Only use if confidence is reasonable
+                # Get bounds for the optimal plane
+                config = CoordinatePlaneConfig.PLANES[optimal_plane]
+                
+                # Map axes
+                x_keys = ['min_x', 'max_x'] if config['x_axis'] == 0 else (['min_y', 'max_y'] if config['x_axis'] == 1 else ['min_z', 'max_z'])
+                y_keys = ['min_x', 'max_x'] if config['y_axis'] == 0 else (['min_y', 'max_y'] if config['y_axis'] == 1 else ['min_z', 'max_z'])
+                
+                min_x = bounds_3d[x_keys[0]]
+                max_x = bounds_3d[x_keys[1]]
+                min_y = bounds_3d[y_keys[0]]
+                max_y = bounds_3d[y_keys[1]]
+                
+                # Apply flipping to bounds if needed
+                if config['flip_x']:
+                    min_x, max_x = -max_x, -min_x
+                if config['flip_y']:
+                    min_y, max_y = -max_y, -min_y
+                
+                return {
+                    'min_x': min_x,
+                    'max_x': max_x,
+                    'min_y': min_y,
+                    'max_y': max_y,
+                    'width': max_x - min_x,
+                    'height': max_y - min_y
+                }
+        
+        # Fall back to current plane configuration
         return CoordinatePlaneConfig.get_bounds_for_plane(bounds_3d)
         
     except Exception as e:
@@ -1181,6 +1556,31 @@ def _calculate_curves_bounding_box(curve_list):
     
     # Get bounding box for each curve
     all_bounds = [_calculate_curve_bounding_box(curve) for curve in curve_list]
+    
+    # Find overall bounds
+    min_x = min(bounds['min_x'] for bounds in all_bounds)
+    max_x = max(bounds['max_x'] for bounds in all_bounds)
+    min_y = min(bounds['min_y'] for bounds in all_bounds)
+    max_y = max(bounds['max_y'] for bounds in all_bounds)
+    
+    return {
+        'min_x': min_x,
+        'max_x': max_x,
+        'min_y': min_y,
+        'max_y': max_y,
+        'width': max_x - min_x,
+        'height': max_y - min_y
+    }
+
+def _calculate_curves_bounding_box_with_optimal_planes(curve_list):
+    """
+    Calculate the combined 2D bounding box of multiple curves using optimal planes for each.
+    """
+    if not curve_list:
+        return {'min_x': 0, 'max_x': 100, 'min_y': 0, 'max_y': 100, 'width': 100, 'height': 100}
+    
+    # Get bounding box for each curve using optimal planes
+    all_bounds = [_calculate_curve_bounding_box(curve, use_optimal_plane=True) for curve in curve_list]
     
     # Find overall bounds
     min_x = min(bounds['min_x'] for bounds in all_bounds)
@@ -1223,12 +1623,14 @@ def _generate_curve_unique_id(tab_name, existing_ids, curve_index):
     timestamp_id = f"{tab_name}_curve_{int(time.time() * 1000)}_{curve_index}"
     return timestamp_id
 #-------------------------------------------------------------------------
-def _convert_curves_to_combined_svg_path(curve_list):
+def _convert_curves_to_combined_svg_path(curve_list, use_optimal_plane=True):
     """
     Convert multiple Maya curves to a single combined SVG path data.
+    Each curve uses its optimal plane for conversion.
     
     Args:
         curve_list: List of Maya curve shape nodes
+        use_optimal_plane: Whether to use optimal plane detection for each curve
         
     Returns:
         str: Combined SVG path data string
@@ -1237,7 +1639,7 @@ def _convert_curves_to_combined_svg_path(curve_list):
         all_path_commands = []
         
         for i, curve_shape in enumerate(curve_list):
-            curve_path = _convert_curve_to_svg_path(curve_shape)
+            curve_path = _convert_curve_to_svg_path(curve_shape, use_optimal_plane=use_optimal_plane)
             if curve_path:
                 if i == 0:
                     # First curve - use as is
@@ -1256,7 +1658,7 @@ def _convert_curves_to_combined_svg_path(curve_list):
         return None
 
 def _create_and_setup_button(canvas, unique_id, svg_path_data, curve, button_label, 
-                           source_reference, drop_position, layout_center, scale_factor):
+                           source_reference, drop_position, layout_center, scale_factor, curve_bounds=None):
     """Helper function to create and setup individual curve buttons."""
     from . import picker_button as PB
     
@@ -1269,8 +1671,11 @@ def _create_and_setup_button(canvas, unique_id, svg_path_data, curve, button_lab
         new_button.svg_path_data = svg_path_data
         new_button.svg_file_path = f"maya_curve:{source_reference}"
         
-        # Calculate button bounds for sizing and positioning
-        curve_bounds_individual = _calculate_curve_bounding_box(curve)
+        # Use provided curve bounds or calculate them
+        if curve_bounds is None:
+            curve_bounds_individual = _calculate_curve_bounding_box(curve, use_optimal_plane=True)
+        else:
+            curve_bounds_individual = curve_bounds
         
         # Position button relative to drop position
         curve_center_x = (curve_bounds_individual['min_x'] + curve_bounds_individual['max_x']) / 2
@@ -1390,17 +1795,80 @@ def _generate_transform_unique_id(tab_name, existing_ids, transform_name, transf
     import time
     timestamp_id = f"{tab_name}_transform_{int(time.time() * 1000)}_{transform_index}"
     return timestamp_id
+
+def _get_selected_mesh_objects():
+    """
+    Get selected mesh objects for plane detection.
+    
+    Returns:
+        list: List of mesh transform nodes
+    """
+    selected_objects = cmds.ls(selection=True, long=True)
+    mesh_objects = []
+    
+    for obj in selected_objects:
+        try:
+            # Check if it's a mesh transform
+            shapes = cmds.listRelatives(obj, shapes=True, type='mesh', fullPath=True) or []
+            if shapes:
+                mesh_objects.append(obj)
+        except Exception as e:
+            print(f"Error checking mesh object {obj}: {e}")
+            continue
+    
+    return mesh_objects
+
+def _get_selected_bones_with_shapes():
+    """
+    Get selected bones with custom shapes for plane detection.
+    
+    Returns:
+        list: List of (bone, shape_obj, armature_obj) tuples
+    """
+    selected_objects = cmds.ls(selection=True, long=True)
+    bone_shapes = []
+    
+    for obj in selected_objects:
+        try:
+            # Check if it's a joint (bone)
+            if cmds.nodeType(obj) == 'joint':
+                # Look for custom shape objects
+                connections = cmds.listConnections(obj, type='transform', destination=True) or []
+                for connection in connections:
+                    # Check if this transform has mesh shapes (custom bone shape)
+                    shapes = cmds.listRelatives(connection, shapes=True, type='mesh', fullPath=True) or []
+                    if shapes:
+                        # Find the armature (parent of the joint)
+                        armature = cmds.listRelatives(obj, parent=True, type='transform')
+                        armature_obj = armature[0] if armature else None
+                        bone_shapes.append((obj, connection, armature_obj))
+                        break
+        except Exception as e:
+            print(f"Error checking bone object {obj}: {e}")
+            continue
+    
+    return bone_shapes
+
+def detect_flat_plane_from_curves_simple():
+    """
+    Backward compatibility function for the old simple detection method.
+    
+    Returns:
+        str: The detected plane name (e.g., 'XY', 'XZ', 'YZ')
+    """
+    plane_name, confidence, analysis = CoordinatePlaneConfig.detect_flat_plane_from_curves()
+    return plane_name
     
 # Context menu integration
 def create_buttons_from_maya_curves_context_menu(self):
     """Context menu action to create buttons from selected Maya curves"""
     scene_pos = self.get_center_position()  # Use canvas center
-    create_buttons_from_maya_curves(self, scene_pos)
+    create_buttons_from_maya_curves(self, scene_pos, use_per_curve_planes=True)
 
 def create_buttons_from_maya_curves_with_plane_selector(self):
     """Context menu action to create buttons with plane selector dialog"""
     scene_pos = self.get_center_position()
-    create_buttons_from_maya_curves(self, scene_pos, show_plane_selector=True)
+    create_buttons_from_maya_curves(self, scene_pos, show_options_dialog=True, use_per_curve_planes=True)
 
 # Utility functions for external access
 def set_coordinate_plane(plane_name):
@@ -1419,3 +1887,99 @@ def get_available_planes():
 def get_current_plane_info():
     """Get current coordinate plane information."""
     return CoordinatePlaneConfig.get_current_plane()
+
+def test_enhanced_plane_detection():
+    """
+    Test function to demonstrate the enhanced plane detection capabilities.
+    Run this function to test the new detection system with selected objects.
+    """
+    print("=== Enhanced Plane Detection Test ===")
+    
+    # Test the new detection method
+    plane_name, confidence, analysis = CoordinatePlaneConfig.detect_flat_plane_from_curves()
+    
+    print(f"Detected plane: {plane_name}")
+    print(f"Confidence: {confidence:.3f}")
+    print(f"Analysis: {analysis['description']}")
+    
+    # Show all available planes and their analysis
+    print("\n=== All Plane Analysis ===")
+    selected_objects = cmds.ls(selection=True, long=True)
+    if not selected_objects:
+        print("No objects selected for analysis")
+        return
+    
+    # Get curve objects for analysis
+    curve_objects = []
+    for obj in selected_objects:
+        curve_shapes = cmds.listRelatives(obj, shapes=True, type='nurbsCurve', fullPath=True) or []
+        curve_objects.extend(curve_shapes)
+    
+    if curve_objects:
+        # Calculate combined bounds
+        all_bounds = []
+        for curve_shape in curve_objects:
+            try:
+                bounds = _get_curve_bounds_3d(curve_shape)
+                if bounds:
+                    all_bounds.append(bounds)
+            except Exception as e:
+                print(f"Error getting bounds for {curve_shape}: {e}")
+                continue
+        
+        if all_bounds:
+            combined_bounds = CoordinatePlaneConfig._calculate_combined_3d_bounds(all_bounds)
+            plane_analysis = CoordinatePlaneConfig._analyze_flatness_in_planes(combined_bounds)
+            
+            for plane_name, analysis in plane_analysis.items():
+                print(f"{plane_name}: {analysis['description']} (confidence: {analysis['confidence']:.3f})")
+    
+    print("=== Test Complete ===")
+
+def test_per_curve_plane_detection():
+    """
+    Test function to demonstrate per-curve plane detection.
+    Run this function to test individual curve plane detection with selected curves.
+    """
+    print("=== Per-Curve Plane Detection Test ===")
+    
+    selected_objects = cmds.ls(selection=True, long=True)
+    if not selected_objects:
+        print("No objects selected for analysis")
+        return
+    
+    # Get curve objects for analysis
+    curve_objects = []
+    for obj in selected_objects:
+        curve_shapes = cmds.listRelatives(obj, shapes=True, type='nurbsCurve', fullPath=True) or []
+        curve_objects.extend(curve_shapes)
+    
+    if not curve_objects:
+        print("No curves found in selection")
+        return
+    
+    print(f"Analyzing {len(curve_objects)} curves for optimal planes:")
+    print("-" * 60)
+    
+    for i, curve_shape in enumerate(curve_objects):
+        try:
+            # Get curve name for display
+            curve_transform = cmds.listRelatives(curve_shape, parent=True)
+            if curve_transform:
+                curve_name = curve_transform[0].split(':')[-1]
+            else:
+                curve_name = curve_shape.split(':')[-1]
+            
+            # Detect optimal plane for this curve
+            plane_name, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_curve(curve_shape)
+            
+            print(f"Curve {i+1}: {curve_name}")
+            print(f"  Optimal plane: {plane_name} (confidence: {confidence:.3f})")
+            print(f"  Analysis: {analysis['description']}")
+            print()
+            
+        except Exception as e:
+            print(f"Error analyzing curve {curve_shape}: {e}")
+            continue
+    
+    print("=== Per-Curve Test Complete ===")

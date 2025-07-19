@@ -363,7 +363,9 @@ class CustomButton(QtWidgets.QPushButton):
                     self.click_count = 0
                     self.doubleClicked.emit()
         super(CustomButton, self).mouseReleaseEvent(event)
-        UT.blender_main_window() 
+        main_window = self.window()
+        if main_window.edit_mode == False:
+            UT.blender_main_window() 
         
     def performSingleClick(self):
         if not self.onlyContext:
@@ -448,12 +450,15 @@ class CustomRadioButton(QtWidgets.QRadioButton):
             super().mousePressEvent(event)
 
     def _get_style(self):
+        # Use different padding for fill mode to make it look more like a button
+        padding = "2px" 
         base_style = f"""
             QRadioButton {{
                 background-color: {'transparent' if not self.fill else '#555555'};
                 color: white;
-                padding: 5px;
+                padding: {padding};
                 border-radius: {self.border_radius}px;
+                text-align: {'center' if self.fill else 'left'};    
             }}
         """
         
@@ -610,13 +615,19 @@ class CustomTooltipWidget(QtWidgets.QWidget):
     
     def clear_content(self):
         """Clear all content from the tooltip widget"""
-        # Clear the layout
-        while self.layout().count():
-            item = self.layout().takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-            elif item.layout():
-                self._clear_layout(item.layout())
+        # Clear the layout with safety checks
+        try:
+            layout = self.layout()
+            if layout:
+                while layout.count():
+                    item = layout.takeAt(0)
+                    if item.widget():
+                        item.widget().deleteLater()
+                    elif item.layout():
+                        self._clear_layout(item.layout())
+        except:
+            # Layout is in an invalid state, likely due to widget deletion
+            pass
         
     def _clear_layout(self, layout):
         """Recursively clear a layout"""
