@@ -705,11 +705,45 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                     canvas.transform_guides.update_selection()
     
     def get_selected_buttons(self):
-        if self.tab_system.current_tab:
+        """Get selected buttons from the current tab's canvas"""
+        try:
+            # Check if tab system is initialized
+            if not hasattr(self, 'tab_system') or not self.tab_system:
+                return []
+            
+            # Check if there's a current tab
+            if not self.tab_system.current_tab:
+                return []
+            
+            # Check if the current tab exists in the tabs dictionary
+            if self.tab_system.current_tab not in self.tab_system.tabs:
+                return []
+            
+            # Get the canvas for the current tab
             current_tab = self.tab_system.current_tab
-            canvas = self.tab_system.tabs[current_tab]['canvas']
-            return canvas.get_selected_buttons()
-        return None
+            tab_data = self.tab_system.tabs[current_tab]
+            
+            if 'canvas' not in tab_data or not tab_data['canvas']:
+                return []
+            
+            canvas = tab_data['canvas']
+            
+            # Check if canvas has the get_selected_buttons method
+            if not hasattr(canvas, 'get_selected_buttons'):
+                return []
+            
+            # Get selected buttons from canvas
+            selected_buttons = canvas.get_selected_buttons()
+            
+            # Ensure we return a list
+            if selected_buttons is None:
+                return []
+            
+            return selected_buttons
+            
+        except Exception as e:
+            print(f"Error getting selected buttons: {e}")
+            return []
     #---------------------------------------------------------------------------------------------------------------------------------------- 
     def connect_canvas_signals(self, canvas):
         """ENHANCED signal connection with proper cleanup"""
@@ -2661,14 +2695,6 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             current_tab = self.tab_system.current_tab
             current_canvas = self.tab_system.tabs[current_tab]['canvas']
             current_canvas.focus_canvas()
-    
-
-    
-
-    
-
-    
-
     
     def clear_line_edit_focus(self):
         if self.add_p_button_label_qline.hasFocus():

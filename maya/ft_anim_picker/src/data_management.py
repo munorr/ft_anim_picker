@@ -4,6 +4,11 @@ from collections import OrderedDict
 import time
 from threading import Timer
 
+try:
+    from PySide6 import QtWidgets
+except ImportError:
+    from PySide2 import QtWidgets
+
 class PickerDataManager:
     ATTR_NAME = 'PickerToolData'
     DEFAULT_DATA = OrderedDict({
@@ -48,6 +53,10 @@ class PickerDataManager:
         if selected_button_ids is None:
             selected_button_ids = cls._get_selected_button_ids()
         if not cls._recording_enabled or cls._in_batch_operation or cls._saving_in_progress:
+            return
+            
+        # Only record undo states when any canvas is in edit mode
+        if not cls._is_any_canvas_in_edit_mode():
             return
             
         current_time = time.time()
@@ -108,20 +117,21 @@ class PickerDataManager:
                     len(cls._undo_stack) > 0 and 
                     cls._undo_stack[-1].get('is_batch_entry', False)):
                     
-                    # This is the end of a batch - just update the existing batch entry
-                    # instead of creating a new one
-                    if cls._states_equal(current_state, cls._undo_stack[-1]['state']):
-                        # No change from the last batch state - don't create new entry
-                        return
-                    else:
-                        # Update the batch entry with the final state
-                        cls._undo_stack[-1]['state'] = copy.deepcopy(current_state)
-                        cls._undo_stack[-1]['timestamp'] = current_time
-                        cls._undo_stack[-1]['operation'] = operation_name or "Change"
-                        cls._undo_stack[-1]['selected_button_ids'] = selected_button_ids
-                        cls._last_undo_state = copy.deepcopy(current_state)
-                        #print(f"Finalized batch undo state: {operation_name} (Stack size: {len(cls._undo_stack)})")
-                        return
+                    # This is the end of a batch - finalize the batch entry
+                    # Always update the batch entry with the final state, even if it's the same
+                    # This ensures the batch is properly finalized
+                    cls._undo_stack[-1]['state'] = copy.deepcopy(current_state)
+                    cls._undo_stack[-1]['timestamp'] = current_time
+                    cls._undo_stack[-1]['operation'] = operation_name or "Change"
+                    cls._undo_stack[-1]['selected_button_ids'] = selected_button_ids
+                    cls._undo_stack[-1]['is_batch_entry'] = False  # Mark as finalized
+                    cls._last_undo_state = copy.deepcopy(current_state)
+                    #print(f"Finalized batch undo state: {operation_name} (Stack size: {len(cls._undo_stack)})")
+                    
+                    # Clear redo stack when new action is performed
+                    cls._redo_stack.clear()
+                    return
+                    
                 # Create new undo entry for changes outside batch window
                 state_copy = copy.deepcopy(current_state)
                 
@@ -246,6 +256,78 @@ class PickerDataManager:
         cls._last_undo_state = None
     
     @classmethod
+    def _is_window_fully_initialized(cls, picker_window):
+        """Check if a picker window is fully initialized and ready to use"""
+        try:
+            # Check if window has all required attributes
+            if not hasattr(picker_window, 'tab_system'):
+                return False
+            
+            if not picker_window.tab_system:
+                return False
+            
+            if not hasattr(picker_window.tab_system, 'current_tab'):
+                return False
+            
+            if not picker_window.tab_system.current_tab:
+                return False
+            
+            if not hasattr(picker_window.tab_system, 'tabs'):
+                return False
+            
+            if picker_window.tab_system.current_tab not in picker_window.tab_system.tabs:
+                return False
+            
+            tab_data = picker_window.tab_system.tabs[picker_window.tab_system.current_tab]
+            if 'canvas' not in tab_data or not tab_data['canvas']:
+                return False
+            
+            return True
+        except Exception:
+            return False
+    
+    @classmethod
+    def _is_any_canvas_in_edit_mode(cls):
+        """Check if any canvas in any picker window is in edit mode"""
+        try:
+            # Get the current window instance from the window manager
+            from . import main
+            window_manager = main.PickerWindowManager.get_instance()
+            
+            # Check if there are any picker windows available
+            if not window_manager._picker_widgets:
+                return False
+            
+            # Check all picker windows
+            for picker_window in window_manager._picker_widgets:
+                try:
+                    # Check if window is still valid
+                    if hasattr(picker_window, 'isValid') and not picker_window.isValid():
+                        continue
+                    
+                    # Check if window is fully initialized
+                    if not cls._is_window_fully_initialized(picker_window):
+                        continue
+                    
+                    # Check edit mode on the window itself
+                    if hasattr(picker_window, 'edit_mode') and picker_window.edit_mode:
+                        return True
+                        
+                    # Also check if any canvas in the tab system is in edit mode
+                    for tab_name, tab_data in picker_window.tab_system.tabs.items():
+                        if 'canvas' in tab_data and hasattr(tab_data['canvas'], 'edit_mode'):
+                            if tab_data['canvas'].edit_mode:
+                                return True
+                except (RuntimeError, AttributeError):
+                    # Window might be deleted, skip it
+                    continue
+            
+            return False
+        except Exception as e:
+            print(f"Error checking canvas edit mode: {e}")
+            return False
+    
+    @classmethod
     def _get_selected_button_ids(cls):
         """Get the IDs of currently selected buttons"""
         try:
@@ -253,15 +335,35 @@ class PickerDataManager:
             from . import main
             window_manager = main.PickerWindowManager.get_instance()
             
-            # Get the first available picker window
-            if window_manager._picker_widgets:
-                picker_window = window_manager._picker_widgets[0]  # Use the first window
-                if hasattr(picker_window, 'get_selected_buttons'):
-                    selected_buttons = picker_window.get_selected_buttons()
-                    if selected_buttons:
-                        return [button.unique_id for button in selected_buttons if hasattr(button, 'unique_id')]
+            # Check if there are any windows at all
+            if not window_manager._picker_widgets:
+                return []
             
-            return []
+            # Get the active window using the window manager's method
+            active_picker_window = window_manager.get_active_window()
+            
+            if not active_picker_window:
+                return []
+            
+            # Check if the window is fully initialized
+            if not cls._is_window_fully_initialized(active_picker_window):
+                return []
+            
+            # If we found a valid window, try to get selected buttons
+            if hasattr(active_picker_window, 'get_selected_buttons'):
+                try:
+                    selected_buttons = active_picker_window.get_selected_buttons()
+                    if selected_buttons:
+                        button_ids = [button.unique_id for button in selected_buttons if hasattr(button, 'unique_id')]
+                        return button_ids
+                    else:
+                        return []
+                except (RuntimeError, AttributeError) as e:
+                    print(f"Error getting selected buttons from window: {e}")
+                    return []
+            else:
+                return []
+            
         except Exception as e:
             print(f"Error getting selected button IDs: {e}")
             return []
