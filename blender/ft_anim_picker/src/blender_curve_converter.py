@@ -423,6 +423,61 @@ class CoordinatePlaneConfig:
             return cls._current_plane, 0.0, f"Error: {str(e)}"
     
     @classmethod
+    def detect_optimal_plane_for_mesh(cls, mesh_obj):
+        """
+        Detect the optimal coordinate plane for a mesh by analyzing actual vertex positions.
+        This provides more accurate results than using object bounding box.
+        
+        Args:
+            mesh_obj: Blender mesh object
+            
+        Returns:
+            tuple: (plane_name, confidence_score, analysis_info)
+        """
+        try:
+            mesh_data = mesh_obj.data
+            
+            if not mesh_data.vertices:
+                return cls._current_plane, 0.0, "No vertices found"
+            
+            # Get 3D points from actual mesh vertices (in local coordinates)
+            points_3d = []
+            for vertex in mesh_data.vertices:
+                points_3d.append(vertex.co)
+            
+            if not points_3d:
+                return cls._current_plane, 0.0, "No valid vertex points found"
+            
+            # Calculate 3D bounds from actual vertex positions
+            min_x = min(point.x for point in points_3d)
+            max_x = max(point.x for point in points_3d)
+            min_y = min(point.y for point in points_3d)
+            max_y = max(point.y for point in points_3d)
+            min_z = min(point.z for point in points_3d)
+            max_z = max(point.z for point in points_3d)
+            
+            bounds = {
+                'min_x': min_x, 'max_x': max_x,
+                'min_y': min_y, 'max_y': max_y,
+                'min_z': min_z, 'max_z': max_z,
+                'width_x': max_x - min_x,
+                'width_y': max_y - min_y,
+                'width_z': max_z - min_z
+            }
+            
+            # Analyze flatness in each plane
+            plane_analysis = cls._analyze_flatness_in_planes(bounds)
+            
+            # Find the flattest plane
+            best_plane, confidence, analysis = cls._find_flattest_plane(plane_analysis)
+            
+            return best_plane, confidence, analysis
+            
+        except Exception as e:
+            print(f"Error detecting optimal plane for mesh {mesh_obj.name}: {e}")
+            return cls._current_plane, 0.0, f"Error: {str(e)}"
+    
+    @classmethod
     def transform_point_with_plane(cls, local_point, plane_name):
         """
         Transform a local 3D point to 2D SVG coordinates using a specific plane.
@@ -583,7 +638,7 @@ class CoordinatePlaneConfig:
 CoordinatePlaneConfig.set_plane('XY')
 #--------------------------------------------------------------------------------------------------------------
 @undoable
-def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_dialog=False, use_per_object_planes=True):
+def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_dialog=False, use_per_object_planes=True, use_smart_layout=True):
     """
     Create picker buttons from selected curve objects and mesh objects (vertices only) in Blender scene.
     
@@ -759,11 +814,18 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
         # Process meshes
         if separate_splines:
             for mesh_obj in selected_meshes:
-                mesh_component_bounds_list = _calculate_mesh_component_bounding_boxes(mesh_obj)
+                # Detect optimal plane for layout bounds if enabled
+                optimal_plane_for_layout = None
+                if use_per_object_planes:
+                    optimal_plane_for_layout, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_mesh(mesh_obj)
+                    if confidence <= 0.1:  # Fall back to None if confidence is too low
+                        optimal_plane_for_layout = None
+                
+                mesh_component_bounds_list = _calculate_mesh_component_bounding_boxes(mesh_obj, optimal_plane_for_layout)
                 all_object_bounds.extend(mesh_component_bounds_list)
         else:
             for mesh_obj in selected_meshes:
-                mesh_bounds = _calculate_mesh_bounding_box(mesh_obj)
+                mesh_bounds = _calculate_mesh_bounding_box(mesh_obj, use_per_object_planes)
                 all_object_bounds.append(mesh_bounds)
         
         # Process bones with custom shapes
@@ -788,6 +850,14 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
         # Prepare for batch database update
         new_buttons_data = []
         button_index = 0
+        
+        # Collect all button information for smart layout
+        button_info_list = []
+        
+        # If using smart layout, collect all button bounds first
+        if use_smart_layout:
+            smart_layout_bounds = []
+            smart_layout_buttons = []
         
         # Process each curve object (existing curve processing logic)
         for curve_obj in selected_curves:
@@ -962,15 +1032,26 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
                     continue
                 
                 if separate_splines and mesh_data.edges:
+                    # Detect optimal plane for this mesh if enabled
+                    optimal_plane = None
+                    if use_per_object_planes:
+                        optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_mesh(mesh_obj)
+                        if confidence > 0.1:  # Only use if confidence is reasonable
+                            print(f"  Using optimal plane {optimal_plane} for mesh {mesh_obj.name} (confidence: {confidence:.2f})")
+                            if analysis:
+                                print(f"    Analysis: {analysis['description']}")
+                        else:
+                            optimal_plane = None  # Fall back to current plane
+                    
                     # Create separate button for each connected component
-                    svg_path_strings = _convert_mesh_to_svg_path(mesh_obj, separate_components=True)
+                    svg_path_strings = _convert_mesh_to_svg_path(mesh_obj, separate_components=True, optimal_plane=optimal_plane)
                     
                     if not svg_path_strings:
                         print(f"Warning: Could not generate path data for mesh {mesh_obj.name}")
                         continue
                     
                     # Get component bounds for positioning
-                    component_bounds_list = _calculate_mesh_component_bounding_boxes(mesh_obj)
+                    component_bounds_list = _calculate_mesh_component_bounding_boxes(mesh_obj, optimal_plane)
                     
                     for component_idx, (svg_path_string, component_bounds) in enumerate(zip(svg_path_strings, component_bounds_list)):
                         try:
@@ -1035,8 +1116,19 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
                             continue
                 
                 else:
+                    # Detect optimal plane for this mesh if enabled
+                    optimal_plane = None
+                    if use_per_object_planes:
+                        optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_mesh(mesh_obj)
+                        if confidence > 0.1:  # Only use if confidence is reasonable
+                            print(f"  Using optimal plane {optimal_plane} for mesh {mesh_obj.name} (confidence: {confidence:.2f})")
+                            if analysis:
+                                print(f"    Analysis: {analysis['description']}")
+                        else:
+                            optimal_plane = None  # Fall back to current plane
+                    
                     # Create single combined button for entire mesh (original behavior)
-                    svg_path_string = _convert_mesh_to_svg_path(mesh_obj, separate_components=False)
+                    svg_path_string = _convert_mesh_to_svg_path(mesh_obj, separate_components=False, optimal_plane=optimal_plane)
                     
                     if not svg_path_string:
                         print(f"Warning: Could not generate path data for mesh {mesh_obj.name}")
@@ -1177,6 +1269,11 @@ def create_buttons_from_blender_curves(canvas, drop_position=None, show_options_
             except Exception as e:
                 print(f"Error processing bone shape {bone.name} -> {custom_shape_obj.name}: {e}")
                 continue
+        
+        # Apply smart layout if multiple buttons were created
+        if use_smart_layout and len(created_buttons) > 1:
+            _apply_grid_layout_to_buttons(created_buttons, drop_position, padding=30)
+            print(f"Applied grid layout to {len(created_buttons)} buttons")
         
         # Batch database update
         if new_buttons_data:
@@ -1731,13 +1828,14 @@ def _generate_spline_unique_id(tab_name, existing_ids, curve_name, spline_index,
     timestamp_id = f"{tab_name}_spline_{int(time.time() * 1000)}_{button_index}"
     return timestamp_id
 #--------------------------------------------------------------------------------------------------------------
-def _convert_mesh_to_svg_path(mesh_obj, separate_components=False):
+def _convert_mesh_to_svg_path(mesh_obj, separate_components=False, optimal_plane=None):
     """
     Convert a Blender mesh object (vertices only) to SVG path data.
     
     Args:
         mesh_obj: Blender mesh object
         separate_components: If True, return separate paths for each connected component
+        optimal_plane: Optional plane name to use for transformation
         
     Returns:
         str or list: SVG path data string (combined) or list of strings (separated)
@@ -1755,7 +1853,12 @@ def _convert_mesh_to_svg_path(mesh_obj, separate_components=False):
         for vertex in mesh_data.vertices:
             # Use LOCAL coordinates directly
             co_local = vertex.co
-            co_2d = CoordinatePlaneConfig.transform_point(co_local)
+            
+            # Transform using optimal plane or current plane configuration
+            if optimal_plane:
+                co_2d = CoordinatePlaneConfig.transform_point_with_plane(co_local, optimal_plane)
+            else:
+                co_2d = CoordinatePlaneConfig.transform_point(co_local)
             vertices_2d.append(co_2d)
         
         if separate_components and mesh_data.edges:
@@ -1888,12 +1991,13 @@ def _find_connected_component(start_vertex, edge_connections, visited_vertices):
     
     return component
 
-def _calculate_mesh_component_bounding_boxes(mesh_obj):
+def _calculate_mesh_component_bounding_boxes(mesh_obj, optimal_plane=None):
     """
     Calculate bounding boxes for each connected component in a mesh object.
     
     Args:
         mesh_obj: Blender mesh object
+        optimal_plane: Optional plane name to use for transformation
         
     Returns:
         list: List of bounding box dictionaries for each component
@@ -1910,7 +2014,12 @@ def _calculate_mesh_component_bounding_boxes(mesh_obj):
         vertices_2d = []
         for vertex in mesh_data.vertices:
             co_local = vertex.co
-            co_2d = CoordinatePlaneConfig.transform_point(co_local)
+            
+            # Transform using optimal plane or current plane configuration
+            if optimal_plane:
+                co_2d = CoordinatePlaneConfig.transform_point_with_plane(co_local, optimal_plane)
+            else:
+                co_2d = CoordinatePlaneConfig.transform_point(co_local)
             vertices_2d.append(co_2d)
         
         if mesh_data.edges:
@@ -1953,7 +2062,7 @@ def _calculate_mesh_component_bounding_boxes(mesh_obj):
                         })
         else:
             # No edges, treat whole mesh as one component
-            component_bounds.append(_calculate_mesh_bounding_box(mesh_obj))
+            component_bounds.append(_calculate_mesh_bounding_box(mesh_obj, use_optimal_plane=(optimal_plane is not None)))
             
     except Exception as e:
         print(f"Error calculating mesh component bounds for {mesh_obj.name}: {e}")
@@ -2084,17 +2193,71 @@ def _create_mesh_vertex_path(vertices_2d):
     
     return path_commands
 
-def _calculate_mesh_bounding_box(mesh_obj):
+def _calculate_mesh_bounding_box(mesh_obj, use_optimal_plane=True):
     """
     Calculate the 2D bounding box of a mesh object using coordinate plane configuration.
     
     Args:
         mesh_obj: Blender mesh object
+        use_optimal_plane (bool): Whether to use optimal plane detection
         
     Returns:
         dict: Dictionary with min_x, max_x, min_y, max_y, width, height
     """
     try:
+        # Use optimal plane if requested
+        if use_optimal_plane:
+            optimal_plane, confidence, analysis = CoordinatePlaneConfig.detect_optimal_plane_for_mesh(mesh_obj)
+            if confidence > 0.1:  # Only use if confidence is reasonable
+                # Get bounds for the optimal plane using detailed vertex analysis
+                mesh_data = mesh_obj.data
+                if mesh_data.vertices:
+                    # Analyze actual vertices instead of object bounding box
+                    points_3d = [vertex.co for vertex in mesh_data.vertices]
+                    
+                    min_x = min(point.x for point in points_3d)
+                    max_x = max(point.x for point in points_3d)
+                    min_y = min(point.y for point in points_3d)
+                    max_y = max(point.y for point in points_3d)
+                    min_z = min(point.z for point in points_3d)
+                    max_z = max(point.z for point in points_3d)
+                    
+                    bounds_3d = {
+                        'min_x': min_x, 'max_x': max_x,
+                        'min_y': min_y, 'max_y': max_y,
+                        'min_z': min_z, 'max_z': max_z
+                    }
+                else:
+                    # Fallback to object bounds if no vertices
+                    bounds_3d = _get_object_bounds_3d(mesh_obj)
+                
+                config = CoordinatePlaneConfig.PLANES[optimal_plane]
+                
+                # Map axes
+                x_keys = ['min_x', 'max_x'] if config['x_axis'] == 0 else (['min_y', 'max_y'] if config['x_axis'] == 1 else ['min_z', 'max_z'])
+                y_keys = ['min_x', 'max_x'] if config['y_axis'] == 0 else (['min_y', 'max_y'] if config['y_axis'] == 1 else ['min_z', 'max_z'])
+                
+                min_x = bounds_3d[x_keys[0]]
+                max_x = bounds_3d[x_keys[1]]
+                min_y = bounds_3d[y_keys[0]]
+                max_y = bounds_3d[y_keys[1]]
+                
+                # Apply flipping to bounds if needed
+                if config['flip_x']:
+                    min_x, max_x = -max_x, -min_x
+                if config['flip_y']:
+                    min_y, max_y = -max_y, -min_y
+                
+                return {
+                    'min_x': min_x,
+                    'max_x': max_x,
+                    'min_y': min_y,
+                    'max_y': max_y,
+                    'width': max_x - min_x,
+                    'height': max_y - min_y
+                }
+        
+        # Fall back to current plane configuration
         bounds_3d = _get_object_bounds_3d(mesh_obj)
         return CoordinatePlaneConfig.get_bounds_for_plane(bounds_3d)
     except Exception as e:
@@ -2450,3 +2613,299 @@ def register():
 def unregister():
     bpy.utils.unregister_class(CURVE_OT_to_picker_buttons)
     bpy.utils.unregister_class(CURVE_OT_set_coordinate_plane)
+
+def test_mesh_plane_detection_comparison():
+    """Test and compare old vs new mesh plane detection methods."""
+    print("=== Testing Mesh Plane Detection: Object Bounds vs Vertex Analysis ===")
+    
+    selected_meshes = []
+    with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+        for obj in bpy.context.selected_objects:
+            if obj.type == 'MESH':
+                mesh_data = obj.data
+                if not mesh_data.polygons:  # No faces
+                    selected_meshes.append(obj)
+    
+    if not selected_meshes:
+        print("No valid mesh objects selected for testing")
+        return
+    
+    for mesh_obj in selected_meshes:
+        print(f"\n--- Mesh: {mesh_obj.name} ---")
+        
+        # Old method: Using object bounding box
+        print("OLD METHOD (Object Bounds):")
+        try:
+            old_plane, old_confidence, old_analysis = CoordinatePlaneConfig.detect_optimal_plane_for_object(mesh_obj)
+            print(f"  Detected plane: {old_plane} (confidence: {old_confidence:.2f})")
+            if old_analysis:
+                print(f"  Analysis: {old_analysis['description']}")
+        except Exception as e:
+            print(f"  Error: {e}")
+        
+        # New method: Using detailed vertex analysis
+        print("NEW METHOD (Vertex Analysis):")
+        try:
+            new_plane, new_confidence, new_analysis = CoordinatePlaneConfig.detect_optimal_plane_for_mesh(mesh_obj)
+            print(f"  Detected plane: {new_plane} (confidence: {new_confidence:.2f})")
+            if new_analysis:
+                print(f"  Analysis: {new_analysis['description']}")
+        except Exception as e:
+            print(f"  Error: {e}")
+        
+        # Compare results
+        if old_plane == new_plane:
+            print(f"  RESULT: Both methods agree on {old_plane}")
+        else:
+            print(f"  RESULT: Methods disagree! Old: {old_plane}, New: {new_plane}")
+            confidence_diff = new_confidence - old_confidence
+            if confidence_diff > 0.1:
+                print(f"  New method has {confidence_diff:.2f} higher confidence - likely more accurate")
+            elif confidence_diff < -0.1:
+                print(f"  Old method has {-confidence_diff:.2f} higher confidence")
+            else:
+                print(f"  Similar confidence levels (diff: {confidence_diff:.2f})")
+
+def test_detailed_vertex_bounds_vs_object_bounds():
+    """Compare bounds calculation between object bounding box and actual vertex analysis."""
+    print("=== Testing Bounds Calculation: Object Bounds vs Vertex Bounds ===")
+    
+    selected_meshes = []
+    with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+        for obj in bpy.context.selected_objects:
+            if obj.type == 'MESH':
+                mesh_data = obj.data
+                if not mesh_data.polygons:  # No faces
+                    selected_meshes.append(obj)
+    
+    if not selected_meshes:
+        print("No valid mesh objects selected for testing")
+        return
+    
+    for mesh_obj in selected_meshes:
+        print(f"\n--- Mesh: {mesh_obj.name} ---")
+        
+        # Object bounds method
+        print("OBJECT BOUNDS:")
+        obj_bounds = _get_object_bounds_3d(mesh_obj)
+        print(f"  X: {obj_bounds['min_x']:.3f} to {obj_bounds['max_x']:.3f} (width: {obj_bounds['width']:.3f})")
+        print(f"  Y: {obj_bounds['min_y']:.3f} to {obj_bounds['max_y']:.3f} (height: {obj_bounds['height']:.3f})")
+        print(f"  Z: {obj_bounds['min_z']:.3f} to {obj_bounds['max_z']:.3f} (depth: {obj_bounds['depth']:.3f})")
+        
+        # Vertex bounds method
+        print("VERTEX BOUNDS:")
+        mesh_data = mesh_obj.data
+        if mesh_data.vertices:
+            points_3d = [vertex.co for vertex in mesh_data.vertices]
+            
+            min_x = min(point.x for point in points_3d)
+            max_x = max(point.x for point in points_3d)
+            min_y = min(point.y for point in points_3d)
+            max_y = max(point.y for point in points_3d)
+            min_z = min(point.z for point in points_3d)
+            max_z = max(point.z for point in points_3d)
+            
+            width = max_x - min_x
+            height = max_y - min_y
+            depth = max_z - min_z
+            
+            print(f"  X: {min_x:.3f} to {max_x:.3f} (width: {width:.3f})")
+            print(f"  Y: {min_y:.3f} to {max_y:.3f} (height: {height:.3f})")
+            print(f"  Z: {min_z:.3f} to {max_z:.3f} (depth: {depth:.3f})")
+            
+            # Compare differences
+            width_diff = abs(width - obj_bounds['width'])
+            height_diff = abs(height - obj_bounds['height'])
+            depth_diff = abs(depth - obj_bounds['depth'])
+            
+            print("DIFFERENCES:")
+            print(f"  Width diff: {width_diff:.3f}")
+            print(f"  Height diff: {height_diff:.3f}")
+            print(f"  Depth diff: {depth_diff:.3f}")
+            
+            if width_diff > 0.001 or height_diff > 0.001 or depth_diff > 0.001:
+                print("  SIGNIFICANT DIFFERENCE DETECTED - Object bounds may be misleading!")
+            else:
+                print("  Bounds are very similar - both methods should work equally well")
+        else:
+            print("  No vertices found")
+
+def _calculate_smart_layout_positions(button_bounds_list, drop_position, canvas_size=None, padding=20):
+    """
+    Calculate smart layout positions for multiple buttons to avoid overlapping.
+    
+    Args:
+        button_bounds_list: List of dicts with 'width', 'height', 'center_x', 'center_y' for each button
+        drop_position: QPointF where the layout should be centered
+        canvas_size: Optional QSizeF of canvas for boundary checking
+        padding: Padding between buttons
+        
+    Returns:
+        List of QPointF positions for each button
+    """
+    if not button_bounds_list:
+        return []
+    
+    if len(button_bounds_list) == 1:
+        # Single button - center it at drop position
+        bounds = button_bounds_list[0]
+        return [QtCore.QPointF(
+            drop_position.x() - bounds['width'] / 2,
+            drop_position.y() - bounds['height'] / 2
+        )]
+    
+    # Calculate total area needed
+    total_width = sum(bounds['width'] for bounds in button_bounds_list) + padding * (len(button_bounds_list) - 1)
+    max_height = max(bounds['height'] for bounds in button_bounds_list)
+    
+    # Try to arrange in a grid
+    import math
+    cols = math.ceil(math.sqrt(len(button_bounds_list)))
+    rows = math.ceil(len(button_bounds_list) / cols)
+    
+    # Calculate grid dimensions
+    col_widths = []
+    for col in range(cols):
+        col_start = col * rows
+        col_end = min(col_start + rows, len(button_bounds_list))
+        col_width = max(bounds['width'] for bounds in button_bounds_list[col_start:col_end])
+        col_widths.append(col_width)
+    
+    grid_width = sum(col_widths) + padding * (cols - 1)
+    grid_height = max_height * rows + padding * (rows - 1)
+    
+    # If grid is too wide, try single column
+    if canvas_size and grid_width > canvas_size.width() * 0.8:
+        cols = 1
+        rows = len(button_bounds_list)
+        grid_width = max(bounds['width'] for bounds in button_bounds_list)
+        grid_height = sum(bounds['height'] for bounds in button_bounds_list) + padding * (rows - 1)
+    
+    # Calculate starting position to center the grid
+    start_x = drop_position.x() - grid_width / 2
+    start_y = drop_position.y() - grid_height / 2
+    
+    # Generate positions
+    positions = []
+    button_index = 0
+    
+    for row in range(rows):
+        for col in range(cols):
+            if button_index >= len(button_bounds_list):
+                break
+                
+            bounds = button_bounds_list[button_index]
+            
+            # Calculate position for this button
+            if cols == 1:
+                # Single column layout
+                x = start_x + (grid_width - bounds['width']) / 2
+                y = start_y + sum(bounds['height'] + padding for bounds in button_bounds_list[:button_index])
+            else:
+                # Grid layout
+                col_x = start_x + sum(col_widths[:col]) + padding * col
+                x = col_x + (col_widths[col] - bounds['width']) / 2
+                y = start_y + row * (max_height + padding)
+            
+            positions.append(QtCore.QPointF(x, y))
+            button_index += 1
+    
+    return positions
+
+def _get_button_bounds_for_layout(button_data):
+    """
+    Extract bounds information from button data for layout calculation.
+    
+    Args:
+        button_data: Dict with button information including bounds
+        
+    Returns:
+        Dict with 'width', 'height', 'center_x', 'center_y'
+    """
+    return {
+        'width': button_data.get('width', 100),
+        'height': button_data.get('height', 100),
+        'center_x': button_data.get('center_x', 0),
+        'center_y': button_data.get('center_y', 0)
+    }
+
+def _apply_grid_layout_to_buttons(buttons, drop_position, padding=30):
+    """
+    Apply a simple grid layout to multiple buttons to prevent overlapping.
+    
+    Args:
+        buttons: List of PickerButton objects
+        drop_position: QPointF center position for the grid
+        padding: Padding between buttons
+    """
+    if len(buttons) <= 1:
+        return
+    
+    # Calculate grid dimensions
+    import math
+    cols = math.ceil(math.sqrt(len(buttons)))
+    rows = math.ceil(len(buttons) / cols)
+    
+    # Calculate button sizes for grid
+    max_width = max(button.width for button in buttons)
+    max_height = max(button.height for button in buttons)
+    
+    # Calculate grid dimensions
+    grid_width = cols * max_width + (cols - 1) * padding
+    grid_height = rows * max_height + (rows - 1) * padding
+    
+    # Calculate starting position to center the grid
+    start_x = drop_position.x() - grid_width / 2
+    start_y = drop_position.y() - grid_height / 2
+    
+    # Position each button
+    for i, button in enumerate(buttons):
+        row = i // cols
+        col = i % cols
+        
+        x = start_x + col * (max_width + padding)
+        y = start_y + row * (max_height + padding)
+        
+        # Center the button within its grid cell
+        x += (max_width - button.width) / 2
+        y += (max_height - button.height) / 2
+        
+        button.scene_position = QtCore.QPointF(x, y)
+
+def test_smart_layout_feature():
+    """Test the smart layout feature with multiple objects."""
+    print("=== Testing Smart Layout Feature ===")
+    
+    # Get selected objects
+    selected_curves = []
+    selected_meshes = []
+    
+    with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+        for obj in bpy.context.selected_objects:
+            if obj.type == 'CURVE':
+                selected_curves.append(obj)
+            elif obj.type == 'MESH':
+                mesh_data = obj.data
+                if not mesh_data.polygons:  # No faces
+                    selected_meshes.append(obj)
+    
+    total_objects = len(selected_curves) + len(selected_meshes)
+    
+    if total_objects < 2:
+        print("Please select at least 2 curve or mesh objects to test smart layout")
+        return
+    
+    print(f"Found {len(selected_curves)} curves and {len(selected_meshes)} meshes")
+    print("Smart layout will arrange these in a grid instead of overlapping")
+    
+    # Show what would happen with and without smart layout
+    print("\nWITHOUT smart layout:")
+    print("  - All buttons would overlap at the same position")
+    print("  - Only the last button would be visible")
+    
+    print("\nWITH smart layout:")
+    print("  - Buttons arranged in a grid pattern")
+    print("  - Each button visible and accessible")
+    print("  - Automatic spacing and centering")
+    
+    print(f"\nExpected grid: {total_objects} buttons in a grid layout")

@@ -543,7 +543,7 @@ class CoordinatePlaneConfig:
 CoordinatePlaneConfig.set_plane('XZ')
 
 @undoable
-def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dialog=False, use_per_curve_planes=True):
+def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dialog=False, use_per_curve_planes=True, use_smart_layout=True):
     """
     Create picker buttons from selected NURBS curves in Maya scene.
     Converts curve to SVG path data for custom button shapes.
@@ -553,6 +553,7 @@ def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dia
         drop_position (QPointF, optional): Position to place buttons. If None, uses canvas center.
         show_options_dialog (bool): Whether to show coordinate plane and curve options dialog
         use_per_curve_planes (bool): Whether to detect optimal plane for each curve individually
+        use_smart_layout (bool): Whether to use smart grid layout for multiple objects
     
     Returns:
         list: List of created buttons
@@ -845,6 +846,11 @@ def create_buttons_from_maya_curves(canvas, drop_position=None, show_options_dia
                 except Exception as e:
                     print(f"Error processing transform {transform_name}: {e}")
                     continue
+        
+        # Apply smart layout if multiple buttons were created
+        if use_smart_layout and len(created_buttons) > 1:
+            _apply_grid_layout_to_buttons(created_buttons, drop_position, padding=30)
+            print(f"Applied grid layout to {len(created_buttons)} buttons")
         
         # Batch database update
         if new_buttons_data:
@@ -1983,3 +1989,46 @@ def test_per_curve_plane_detection():
             continue
     
     print("=== Per-Curve Test Complete ===")
+
+def _apply_grid_layout_to_buttons(buttons, drop_position, padding=30):
+    """
+    Apply a simple grid layout to multiple buttons to prevent overlapping.
+    
+    Args:
+        buttons: List of PickerButton objects
+        drop_position: QPointF center position for the grid
+        padding: Padding between buttons
+    """
+    if len(buttons) <= 1:
+        return
+    
+    # Calculate grid dimensions
+    import math
+    cols = math.ceil(math.sqrt(len(buttons)))
+    rows = math.ceil(len(buttons) / cols)
+    
+    # Calculate button sizes for grid
+    max_width = max(button.width for button in buttons)
+    max_height = max(button.height for button in buttons)
+    
+    # Calculate grid dimensions
+    grid_width = cols * max_width + (cols - 1) * padding
+    grid_height = rows * max_height + (rows - 1) * padding
+    
+    # Calculate starting position to center the grid
+    start_x = drop_position.x() - grid_width / 2
+    start_y = drop_position.y() - grid_height / 2
+    
+    # Position each button
+    for i, button in enumerate(buttons):
+        row = i // cols
+        col = i % cols
+        
+        x = start_x + col * (max_width + padding)
+        y = start_y + row * (max_height + padding)
+        
+        # Center the button within its grid cell
+        x += (max_width - button.width) / 2
+        y += (max_height - button.height) / 2
+        
+        button.scene_position = QtCore.QPointF(x, y)
