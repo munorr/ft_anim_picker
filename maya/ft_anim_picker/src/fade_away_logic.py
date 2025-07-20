@@ -77,8 +77,8 @@ class FadeAway(QObject):
                 # Handle canvas_stack reparenting
                 if self.minimal_mode_enabled:
                     # Store the original parent and layout for restoration
-                    canvas.original_parent = canvas.parent()
-                    canvas.original_layout = self.parent.canvas_frame_layout
+                    self.parent.canvas_stack.original_parent = self.parent.canvas_stack.parent()
+                    self.parent.canvas_stack.original_layout = self.parent.canvas_frame_layout
                     
                     # Remove canvas_stack from the canvas frame layout
                     self.parent.canvas_frame_layout.removeWidget(self.parent.canvas_stack)
@@ -90,14 +90,15 @@ class FadeAway(QObject):
                     self.parent.canvas_frame.hide()
                 else:
                     # Restore canvas_stack to original layout
-                    if hasattr(canvas, 'original_parent') and hasattr(canvas, 'original_layout'):
-                        # First remove from area_01_col
-                        self.parent.area_01_col.removeWidget(self.parent.canvas_stack)
-                        
-                        # Then add back to canvas frame layout
-                        if hasattr(self.parent.canvas_stack, 'original_layout'):
-                            self.parent.canvas_stack.original_layout.addWidget(self.parent.canvas_stack)
-                        self.parent.canvas_frame.show()
+                    self.parent.area_01_col.removeWidget(self.parent.canvas_stack)
+
+                    # Then add back to canvas frame layout
+                    if hasattr(self.parent.canvas_stack, 'original_layout'):
+                        self.parent.canvas_stack.original_layout.addWidget(self.parent.canvas_stack)
+                            
+                    canvas.set_minimal_mode(False)
+                    # Show the canvas frame
+                    self.parent.canvas_frame.show()
         
         for widget in self.minimal_affected_widgets:
             if isinstance(widget, dict):

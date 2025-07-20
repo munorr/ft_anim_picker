@@ -3440,7 +3440,21 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
-        # Check for Ctrl+Left Click first (highest priority)
+        # Check for Ctrl+Alt+Left Click first 
+        if event.button() == QtCore.Qt.LeftButton and event.modifiers() & QtCore.Qt.ControlModifier and event.modifiers() & QtCore.Qt.AltModifier:
+            # Ctrl+Alt+Left Click to toggle fade away mode
+            self.fade_manager.toggle_fade_away()
+            event.accept()
+            return
+        
+        # Check for Ctrl+Shift+Left Click first
+        if event.button() == QtCore.Qt.LeftButton and event.modifiers() & QtCore.Qt.ControlModifier and event.modifiers() & QtCore.Qt.ShiftModifier:
+            # Ctrl+Shift+Left Click to toggle minimal mode
+            self.fade_manager.toggle_minimal_mode()
+            event.accept()
+            return
+        
+        # Check for Ctrl+Left Click first
         if event.button() == QtCore.Qt.LeftButton and event.modifiers() & QtCore.Qt.ControlModifier:
             # Ctrl+Left Click to toggle edit mode
             self.activateWindow()
@@ -3758,8 +3772,6 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                 
                 #print(f"Cleaned up timer: {timer_attr}")
         
-
-
     def _cleanup_tabs_and_canvases(self):
         """Properly cleanup all tabs, canvases and buttons"""
         if hasattr(self, 'tab_system') and self.tab_system.tabs:
