@@ -6,6 +6,8 @@ from PySide6 import QtWidgets, QtCore
 # Global variable to store the Qt application instance
 _qt_app = None
 
+from . import utils as UT
+
 # Function to get or create the Qt application
 def get_qt_app():
     global _qt_app
@@ -529,7 +531,53 @@ class PickerVisibilityManager:
                 except ValueError:
                     pass
         
+        #UT.blender_main_window()
         #print(f"Successfully updated visibility for {successful_updates}/{len(self._registered_pickers)} windows")
+
+    def toggle_visibility(self):
+        """Toggle visibility of all registered picker instances"""
+        if not self._registered_pickers:
+            print("No picker instances registered to toggle visibility")
+            return False
+        
+        # Determine current visibility state by checking if any picker is visible
+        any_visible = False
+        for picker in self._registered_pickers:
+            try:
+                if picker and hasattr(picker, 'isVisible') and picker.isVisible():
+                    any_visible = True
+                    break
+            except (RuntimeError, AttributeError):
+                continue
+        
+        # Toggle to opposite state
+        new_visibility = not any_visible
+        print(f"Toggling picker visibility from {any_visible} to {new_visibility}")
+        
+        # Apply the new visibility state
+        self._apply_visibility_to_all(new_visibility)
+        UT.blender_main_window()
+        return new_visibility
+
+    def show_all_pickers(self):
+        """Show all registered picker instances"""
+        if not self._registered_pickers:
+            print("No picker instances registered to show")
+            return
+        
+        print("Showing all picker instances")
+        UT.blender_main_window()
+        self._apply_visibility_to_all(True)
+
+    def hide_all_pickers(self):
+        """Hide all registered picker instances"""
+        if not self._registered_pickers:
+            print("No picker instances registered to hide")
+            return
+        
+        print("Hiding all picker instances")
+        UT.blender_main_window()
+        self._apply_visibility_to_all(False)
                        
 class PickerWindowManager:
     _instance = None
@@ -626,10 +674,81 @@ class PickerWindowManager:
         if app:
             app.processEvents()
 
+def _check_shortcuts_installed():
+    """Check if the addon shortcuts are already installed"""
+    addon_keymaps = bpy.app.driver_namespace.get('ft_picker_keymaps', [])
+    return len(addon_keymaps) > 0
+
+def _install_shortcuts():
+    """Install the addon shortcuts if they haven't been installed yet"""
+    if _check_shortcuts_installed():
+        return  # Shortcuts already installed
+    
+    # Register keymap for toggle visibility shortcut
+    addon_keymaps = []
+    
+    # Get the keymap for 3D View
+    wm = bpy.context.window_manager
+    kc = wm.keyconfigs.addon
+    
+    if kc:
+        # Add keymap for toggle visibility (Ctrl+Shift+P)
+        km = kc.keymaps.new(name='3D View', space_type='VIEW_3D')
+        kmi = km.keymap_items.new(
+            ANIM_OT_toggle_ft_picker_visibility.bl_idname,
+            type='P',
+            value='PRESS',
+            ctrl=True,
+            shift=True
+        )
+        addon_keymaps.append((km, kmi))
+        
+        # Add keymap for show picker (Ctrl+Shift+Up)
+        kmi_show = km.keymap_items.new(
+            ANIM_OT_show_ft_picker.bl_idname,
+            type='UP_ARROW',
+            value='PRESS',
+            ctrl=True,
+            shift=True
+        )
+        addon_keymaps.append((km, kmi_show))
+        
+        # Add keymap for hide picker (Ctrl+Shift+Down)
+        kmi_hide = km.keymap_items.new(
+            ANIM_OT_hide_ft_picker.bl_idname,
+            type='DOWN_ARROW',
+            value='PRESS',
+            ctrl=True,
+            shift=True
+        )
+        addon_keymaps.append((km, kmi_hide))
+    
+    # Store keymaps for cleanup
+    bpy.app.driver_namespace['ft_picker_keymaps'] = addon_keymaps
+    print("FT Animation Picker shortcuts installed")
+
 def open():
     """Create a new instance of the animation picker window"""
+    # Check and install shortcuts if needed
+    _install_shortcuts()
+    
     manager = PickerWindowManager.get_instance()
     return manager.create_window()
+
+def toggle_all_pickers_visibility():
+    """Toggle visibility of all picker instances"""
+    visibility_manager = PickerVisibilityManager.get_instance()
+    return visibility_manager.toggle_visibility()
+
+def show_all_pickers():
+    """Show all picker instances"""
+    visibility_manager = PickerVisibilityManager.get_instance()
+    visibility_manager.show_all_pickers()
+
+def hide_all_pickers():
+    """Hide all picker instances"""
+    visibility_manager = PickerVisibilityManager.get_instance()
+    visibility_manager.hide_all_pickers()
 
 # Blender operator to open the picker
 class ANIM_OT_open_ft_picker(bpy.types.Operator):
@@ -641,13 +760,60 @@ class ANIM_OT_open_ft_picker(bpy.types.Operator):
         open()
         return {'FINISHED'}
 
+# Blender operator to toggle picker visibility
+class ANIM_OT_toggle_ft_picker_visibility(bpy.types.Operator):
+    bl_idname = "anim.toggle_ft_picker_visibility"
+    bl_label = "Toggle FT Animation Picker Visibility"
+    bl_description = "Toggle visibility of all FT Animation Picker windows"
+    
+    def execute(self, context):
+        new_state = toggle_all_pickers_visibility()
+        if new_state:
+            self.report({'INFO'}, "FT Animation Picker windows shown")
+        else:
+            self.report({'INFO'}, "FT Animation Picker windows hidden")
+        return {'FINISHED'}
+
+# Blender operator to show all pickers
+class ANIM_OT_show_ft_picker(bpy.types.Operator):
+    bl_idname = "anim.show_ft_picker"
+    bl_label = "Show FT Animation Picker"
+    bl_description = "Show all FT Animation Picker windows"
+    
+    def execute(self, context):
+        show_all_pickers()
+        self.report({'INFO'}, "FT Animation Picker windows shown")
+        return {'FINISHED'}
+
+# Blender operator to hide all pickers
+class ANIM_OT_hide_ft_picker(bpy.types.Operator):
+    bl_idname = "anim.hide_ft_picker"
+    bl_label = "Hide FT Animation Picker"
+    bl_description = "Hide all FT Animation Picker windows"
+    
+    def execute(self, context):
+        hide_all_pickers()
+        self.report({'INFO'}, "FT Animation Picker windows hidden")
+        return {'FINISHED'}
+
 # Registration
 def register():
     bpy.utils.register_class(ANIM_OT_open_ft_picker)
+    bpy.utils.register_class(ANIM_OT_toggle_ft_picker_visibility)
+    bpy.utils.register_class(ANIM_OT_show_ft_picker)
+    bpy.utils.register_class(ANIM_OT_hide_ft_picker)
 
 def unregister():
-
+    # Unregister keymaps
+    addon_keymaps = bpy.app.driver_namespace.get('ft_picker_keymaps', [])
+    for km, kmi in addon_keymaps:
+        km.keymap_items.remove(kmi)
+    bpy.app.driver_namespace.pop('ft_picker_keymaps', None)
+    
     bpy.utils.unregister_class(ANIM_OT_open_ft_picker)
+    bpy.utils.unregister_class(ANIM_OT_toggle_ft_picker_visibility)
+    bpy.utils.unregister_class(ANIM_OT_show_ft_picker)
+    bpy.utils.unregister_class(ANIM_OT_hide_ft_picker)
 
 if __name__ == "__main__":
     register()
