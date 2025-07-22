@@ -482,7 +482,7 @@ class PickerVisibilityManager:
         # Use the first picker's task switcher detection method
         return self._registered_pickers[0]._is_task_switcher_active()
     
-    def _apply_visibility_to_all(self, should_be_visible):
+    def _apply_visibility_to_all(self, should_be_visible, focus=False):
         """ENHANCED: Apply visibility state to all registered picker windows with safety checks"""
         #print(f"Applying visibility {should_be_visible} to {len(self._registered_pickers)} windows")
         
@@ -530,8 +530,8 @@ class PickerVisibilityManager:
                     self._registered_pickers.remove(picker)
                 except ValueError:
                     pass
-        
-        #UT.blender_main_window()
+        if focus:
+            UT.blender_main_window()
         #print(f"Successfully updated visibility for {successful_updates}/{len(self._registered_pickers)} windows")
 
     def toggle_visibility(self):
@@ -555,8 +555,7 @@ class PickerVisibilityManager:
         print(f"Toggling picker visibility from {any_visible} to {new_visibility}")
         
         # Apply the new visibility state
-        self._apply_visibility_to_all(new_visibility)
-        UT.blender_main_window()
+        self._apply_visibility_to_all(new_visibility, focus=True)
         return new_visibility
 
     def show_all_pickers(self):
@@ -566,8 +565,7 @@ class PickerVisibilityManager:
             return
         
         print("Showing all picker instances")
-        UT.blender_main_window()
-        self._apply_visibility_to_all(True)
+        self._apply_visibility_to_all(True, focus=True)
 
     def hide_all_pickers(self):
         """Hide all registered picker instances"""
@@ -576,8 +574,7 @@ class PickerVisibilityManager:
             return
         
         print("Hiding all picker instances")
-        UT.blender_main_window()
-        self._apply_visibility_to_all(False)
+        self._apply_visibility_to_all(False, focus=True)
                        
 class PickerWindowManager:
     _instance = None
