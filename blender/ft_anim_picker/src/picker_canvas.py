@@ -2888,6 +2888,8 @@ class PickerCanvas(QtWidgets.QWidget):
             # Create submenu for coordinate plane options with embedded widget
             from . import curve_import_widget as CIW
             plane_submenu = menu.addMenu("Curve Import Options")
+            plane_submenu.setWindowFlags(plane_submenu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
+            plane_submenu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
             #plane_submenu.setIcon(QtGui.QIcon(UT.get_icon('code.png')))
             
             # Create the embedded widget

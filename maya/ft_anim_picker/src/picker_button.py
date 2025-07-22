@@ -1727,6 +1727,8 @@ class PickerButton(QtWidgets.QWidget):
 
         # Mode selection
         mode_menu = QtWidgets.QMenu("Mode")
+        mode_menu.setWindowFlags(mode_menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
+        mode_menu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         mode_menu.setStyleSheet(menu.styleSheet())
         
         select_action = QAction(QtGui.QIcon(UT.get_icon("select.png")), "Select Mode", self)
@@ -1760,6 +1762,8 @@ class PickerButton(QtWidgets.QWidget):
             # Add thumbnail options for pose mode buttons
             if self.mode == 'pose':
                 thumbnail_menu = QtWidgets.QMenu("Thumbnail", menu)
+                thumbnail_menu.setWindowFlags(thumbnail_menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
+                thumbnail_menu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
                 thumbnail_menu.setIcon(QtGui.QIcon(UT.get_icon('image.png')))
                 thumbnail_menu.setStyleSheet(menu.styleSheet())
                 
@@ -1786,6 +1790,8 @@ class PickerButton(QtWidgets.QWidget):
             #---------------------------------------------------------------------------------------
             # Button placement submenu
             placement_menu = QtWidgets.QMenu("Placement", menu)
+            placement_menu.setWindowFlags(placement_menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
+            placement_menu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
             placement_menu.setStyleSheet(menu.styleSheet())
             
             # Z-order actions (keep these as text)
@@ -1861,6 +1867,8 @@ class PickerButton(QtWidgets.QWidget):
             menu.addMenu(placement_menu)
             #---------------------------------------------------------------------------------------
             shape_menu = QtWidgets.QMenu("Shape", menu)
+            shape_menu.setWindowFlags(shape_menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
+            shape_menu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
             shape_menu.setIcon(QtGui.QIcon(UT.get_icon('shape.png')))  # You'll need a shape icon
             shape_menu.setStyleSheet(menu.styleSheet())
             
@@ -1894,6 +1902,8 @@ class PickerButton(QtWidgets.QWidget):
             #---------------------------------------------------------------------------------------
             # Create Paste submenu
             paste_menu = QtWidgets.QMenu("Paste Options", menu)
+            paste_menu.setWindowFlags(paste_menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
+            paste_menu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
             paste_menu.setIcon(QtGui.QIcon(UT.get_icon('paste.png')))
             paste_menu.setStyleSheet(menu.styleSheet())
             
@@ -1979,6 +1989,8 @@ class PickerButton(QtWidgets.QWidget):
                 remove_pose_action.triggered.connect(self.remove_pose_for_selected_buttons)
 
                 thumbnail_menu = QtWidgets.QMenu("Thumbnail")
+                thumbnail_menu.setWindowFlags(thumbnail_menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
+                thumbnail_menu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
                 thumbnail_menu.setIcon(QtGui.QIcon(UT.get_icon('image.png')))
                 thumbnail_menu.setStyleSheet(menu.styleSheet())
                 

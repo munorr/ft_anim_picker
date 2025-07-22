@@ -2813,6 +2813,8 @@ class PickerCanvas(QtWidgets.QWidget):
 
             # Add curve import submenu
             curve_import_submenu = menu.addMenu("Curve Import Options")
+            curve_import_submenu.setWindowFlags(curve_import_submenu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
+            curve_import_submenu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
             curve_import_submenu.setStyleSheet(menu.styleSheet())
             
             # Create the widget and embed it in the submenu

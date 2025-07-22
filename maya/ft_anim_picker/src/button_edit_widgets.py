@@ -311,6 +311,7 @@ def create_button_edit_widgets(parent):
         return """
         QPushButton {
             background-color: #333333;
+            color: #ffffff;
         }
         QPushButton:hover {
             background-color: #444444;

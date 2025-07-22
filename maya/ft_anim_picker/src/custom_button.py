@@ -455,12 +455,15 @@ class CustomRadioButton(QtWidgets.QRadioButton):
             super().mousePressEvent(event)
 
     def _get_style(self):
+        # Use different padding for fill mode to make it look more like a button
+        padding = "2px" 
         base_style = f"""
             QRadioButton {{
                 background-color: {'transparent' if not self.fill else '#555555'};
                 color: white;
-                padding: 5px;
+                padding: {padding};
                 border-radius: {self.border_radius}px;
+                text-align: {'center' if self.fill else 'left'};    
             }}
         """
         

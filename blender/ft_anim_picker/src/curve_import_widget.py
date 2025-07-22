@@ -17,6 +17,14 @@ class CurveImportOptionsWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self.canvas = canvas
         self.setup_ui()
+    
+    def mousePressEvent(self, event):
+        """
+        Override mouse press event to prevent context menu from closing
+        when clicking on this widget.
+        """
+        # Accept the event but don't call parent to prevent menu closing
+        event.accept()
         
     def setup_ui(self):
         """Set up the user interface"""
@@ -42,6 +50,13 @@ class CurveImportOptionsWidget(QtWidgets.QWidget):
                 background-color: transparent;
                 border: none;
                 font-weight: bold;
+            }
+            QToolTip {
+                background-color: #1e1e1e;
+                color: white;
+                border: 1px solid #444444;
+                border-radius: 4px;
+                padding: 4px;
             }
         ''')
         #-------------------------------------------------------------------------------------------------------------------
