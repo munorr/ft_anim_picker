@@ -344,10 +344,31 @@ class PickerCanvas(QtWidgets.QWidget):
         self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Down"), self)
         self.align_button_shortcut.activated.connect(lambda: self.align_button_bottom())
 
+        # Center buttons shortcuts
+        self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Shift+Right"), self)
+        self.align_button_shortcut.activated.connect(lambda: self.align_button_center())
+
+        self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Shift+Left"), self)
+        self.align_button_shortcut.activated.connect(lambda: self.align_button_center())
+        
+        
+        self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Shift+Up"), self)
+        self.align_button_shortcut.activated.connect(lambda: self.align_button_middle())
+
+        self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Shift+Down"), self)
+        self.align_button_shortcut.activated.connect(lambda: self.align_button_middle())
+
+        # Evenly space buttons shortcuts
         self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Shift+Right"), self)
         self.align_button_shortcut.activated.connect(lambda: self.evenly_space_horizontal())
 
+        self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Shift+Left"), self)
+        self.align_button_shortcut.activated.connect(lambda: self.evenly_space_horizontal())
+
         self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Shift+Up"), self)
+        self.align_button_shortcut.activated.connect(lambda: self.evenly_space_vertical())
+
+        self.align_button_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+Shift+Down"), self)
         self.align_button_shortcut.activated.connect(lambda: self.evenly_space_vertical())
 
     def add_curve_button_at_position(self):
