@@ -362,10 +362,12 @@ class CustomButton(QtWidgets.QPushButton):
                     self.timer.stop()
                     self.click_count = 0
                     self.doubleClicked.emit()
+
+                main_window = self.window()
+                if main_window.edit_mode == False:
+                    UT.blender_main_window() 
         super(CustomButton, self).mouseReleaseEvent(event)
-        main_window = self.window()
-        if main_window.edit_mode == False:
-            UT.blender_main_window() 
+        
         
     def performSingleClick(self):
         if not self.onlyContext:

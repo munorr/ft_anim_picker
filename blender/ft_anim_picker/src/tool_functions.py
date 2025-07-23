@@ -19,6 +19,7 @@ from . import custom_slider as CS
 from . import custom_dialog as CD
 from . import blender_ui as UI
 from . import blender_main as MAIN
+from . import utils as UT
 
 class animation_tool_layout:
     def show_mirror_pose_dialog(self):
@@ -150,14 +151,14 @@ class animation_tool_layout:
         ts = 11 # text size
         bh = 20 # button height
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-        reset_transform_button = CB.CustomButton(text='Reset', icon=':delete.png', color='#222222', size=14, tooltip="Resets the object transform to Origin.",
+        reset_transform_button = CB.CustomButton(text='Reset', icon=UT.get_icon('delete_white.png',opacity=0.8,size=13), color='#222222', size=14, tooltip="Resets the object transform to Origin.",
                                                  text_size=ts, height=bh,ContextMenu=True, onlyContext=False)
-        reset_transform_button.addToMenu("Move", reset_move, icon='delete.png', position=(0,0))
-        reset_transform_button.addToMenu("Rotate", reset_rotate, icon='delete.png', position=(1,0))
-        reset_transform_button.addToMenu("Scale", reset_scale, icon='delete.png', position=(2,0))
+        reset_transform_button.addToMenu("Move", reset_move, icon=UT.get_icon('delete_white.png',opacity=0.8,size=13), position=(0,0))
+        reset_transform_button.addToMenu("Rotate", reset_rotate, icon=UT.get_icon('delete_white.png',opacity=0.8,size=13), position=(1,0))
+        reset_transform_button.addToMenu("Scale", reset_scale, icon=UT.get_icon('delete_white.png',opacity=0.8,size=13), position=(2,0))
         
         timeLine_key_button = CB.CustomButton(text='Key', color='#d62e22', tooltip="Sets key frame.",text_size=ts, height=bh)
-        timeLine_delete_key_button = CB.CustomButton(text='Key', icon=get_icon('delete_white.png',opacity=0.8,size=12), color='#222222', size=14, tooltip="Deletes keys from the given start frame to the current frame.",text_size=ts, height=bh)
+        timeLine_delete_key_button = CB.CustomButton(text='Key', icon=get_icon('delete_white.png',opacity=0.8,size=13), color='#222222', size=14, tooltip="Deletes keys from the given start frame to the current frame.",text_size=ts, height=bh)
         timeLine_copy_key_button = CB.CustomButton(text='Copy', color='#293F64', tooltip="Copy selected key(s).",text_size=ts, height=bh)
         timeLine_paste_key_button = CB.CustomButton(text='Paste', color='#1699CA', tooltip="Paste copied key(s).",text_size=ts, height=bh)
         timeLine_pasteInverse_key_button = CB.CustomButton(text='Paste Inverse', color='#9416CA', tooltip="Paste Inverted copied keys(s).",text_size=ts, height=bh)
@@ -216,7 +217,7 @@ def reset_scale():
 
 @undoable
 def reset_all():
-    '''with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+    with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
         if bpy.context.mode == 'POSE':
             bpy.ops.pose.loc_clear()
             bpy.ops.pose.rot_clear()
@@ -224,31 +225,8 @@ def reset_all():
         elif bpy.context.mode == 'OBJECT':
             bpy.ops.object.location_clear(clear_delta=False)
             bpy.ops.object.rotation_clear(clear_delta=False)
-            bpy.ops.object.scale_clear(clear_delta=False)'''
-    with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
-        active_object = bpy.context.view_layer.objects.active
-        if bpy.context.mode == 'POSE':
-            for bone in selected_bones():
-                active_object.pose.bones[bone].location = (0, 0, 0)
-                # Try different rotation methods
-                try:
-                    active_object.pose.bones[bone].rotation_euler = (0, 0, 0)
-                except:
-                    active_object.pose.bones[bone].rotation_quaternion = (1, 0, 0, 0)
-                finally:
-                    pass
-                active_object.pose.bones[bone].scale = (1, 1, 1)
-        elif bpy.context.mode == 'OBJECT':
-            for obj in selected_objects():
-                bpy.data.objects[obj].location = (0, 0, 0)
-                # Try different rotation methods
-                try:
-                    bpy.data.objects[obj].rotation_euler = (0, 0, 0)
-                except:
-                    bpy.data.objects[obj].rotation_quaternion = (1, 0, 0, 0)
-                finally:
-                    pass
-                bpy.data.objects[obj].scale = (1, 1, 1)
+            bpy.ops.object.scale_clear(clear_delta=False)
+
 #---------------------------------------------------------------------------------------------------------------
 def selected_objects():
     object_list = []
