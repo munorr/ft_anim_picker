@@ -12,6 +12,36 @@ from PySide6 import QtWidgets
 # Import the data manager
 from . import data_management as DM
 
+def get_file_dialog_directory():
+    """
+    Get the appropriate directory for file dialogs.
+    Priority: Current Blender file directory > System last directory > User home directory
+    
+    Returns:
+        str: Directory path to use for file dialogs
+    """
+    # First, try to get the current Blender file's directory
+    if bpy.data.filepath:
+        current_file_path = bpy.data.filepath
+        if current_file_path and os.path.exists(current_file_path):
+            file_dir = os.path.dirname(current_file_path)
+            if os.path.exists(file_dir):
+                return file_dir
+    
+    # If no current file or invalid path, try to get the last used directory
+    # from Blender's file browser preferences
+    try:
+        # Try to get the last directory from Blender's file browser
+        if hasattr(bpy.context.preferences, 'filepaths'):
+            last_directory = bpy.context.preferences.filepaths.save_directory
+            if last_directory and os.path.exists(last_directory):
+                return last_directory
+    except:
+        pass
+    
+    # Fallback to user's home directory
+    return os.path.expanduser("~")
+
 def get_unique_tab_name(existing_tabs, base_name):
     """
     Generate a unique tab name by appending a number if the base name already exists.

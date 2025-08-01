@@ -369,8 +369,13 @@ class CustomButton(QtWidgets.QPushButton):
                     self.timer.stop()
                     self.click_count = 0
                     self.doubleClicked.emit()
+                    
+        main_window = self.window()
+        if hasattr(main_window, "__class__") and main_window.__class__.__name__ == "AnimPickerWindow":
+            if getattr(main_window, "edit_mode", True) == False:
+                UT.maya_main_window().activateWindow()
         super(CustomButton, self).mouseReleaseEvent(event)
-        UT.maya_main_window().activateWindow()
+        
         
     def performSingleClick(self):
         if not self.onlyContext:

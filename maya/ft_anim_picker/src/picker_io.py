@@ -12,6 +12,37 @@ from . import custom_dialog as CD
 from . import main as MAIN
 from . import custom_button as CB
 
+def get_file_dialog_directory():
+    """
+    Get the appropriate directory for file dialogs in Maya.
+    Priority: Current Maya file directory > System last directory > User home directory
+    
+    Returns:
+        str: Directory path to use for file dialogs
+    """
+    # First, try to get the current Maya file's directory
+    try:
+        current_file_path = cmds.file(q=True, sn=True)
+        if current_file_path and current_file_path != "unknown":
+            file_dir = os.path.dirname(current_file_path)
+            if os.path.exists(file_dir):
+                return file_dir
+    except:
+        pass
+    
+    # If no current file or invalid path, try to get the last used directory
+    # from Maya's file browser preferences
+    try:
+        # Try to get the last directory from Maya's file browser
+        last_directory = cmds.workspace(q=True, rd=True)
+        if last_directory and os.path.exists(last_directory):
+            return last_directory
+    except:
+        pass
+    
+    # Fallback to user's home directory
+    return os.path.expanduser("~")
+
 def get_unique_tab_name(existing_tabs, base_name):
     """
     Generate a unique tab name by appending a number if the base name already exists.

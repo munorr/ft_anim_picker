@@ -72,7 +72,7 @@ except:
     if gShelfTopLevel:
         current_shelf = cmds.tabLayout(gShelfTopLevel, query=True, selectTab=True)
         shelf_button = cmds.shelfButton(
-            label="FT Anim Picker (v2.2.0)",
+            label="FT Anim Picker (v2.2.2)",
             image=icon_path,
             command=command_str,
             parent=current_shelf,

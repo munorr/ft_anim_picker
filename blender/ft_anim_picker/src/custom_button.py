@@ -364,10 +364,11 @@ class CustomButton(QtWidgets.QPushButton):
                     self.doubleClicked.emit()
 
                 main_window = self.window()
-                if main_window.edit_mode == False:
-                    UT.blender_main_window() 
+                # Only call UT.blender_main_window() if main_window is a BlenderAnimPickerWindow and not in edit mode
+                if hasattr(main_window, "__class__") and main_window.__class__.__name__ == "BlenderAnimPickerWindow":
+                    if getattr(main_window, "edit_mode", True) == False:
+                        UT.blender_main_window() 
         super(CustomButton, self).mouseReleaseEvent(event)
-        
         
     def performSingleClick(self):
         if not self.onlyContext:

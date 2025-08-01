@@ -40,6 +40,7 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
         self.dragging = False
         self.drag_used = False  # Track if dragging was actually used
         self.apply_to_all_mode = False  # Flag to enable/disable apply-to-all feature
+        self.is_programmatic_update = False  # Flag to prevent signal emission during programmatic updates
 
         # Set size if provided
         if width is not None or height is not None:
@@ -168,9 +169,12 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
             self.valueChanged.emit(new_value)
 
     def setValue(self, value):
+        """Set value programmatically without triggering applyValue"""
+        self.is_programmatic_update = True
         clamped_value = max(self.min_value, min(self.max_value, float(value)))
         self.setText(f"{clamped_value:.{self.precision}f}")
-        self.valueChanged.emit(clamped_value)
+        self.is_programmatic_update = False
+        # Don't emit valueChanged here to avoid conflicts during widget updates
 
     def value(self):
         return float(self.text())
@@ -187,28 +191,48 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
 
     def applyValue(self):
         """Apply value normally (single button or current behavior)"""
+        # Skip if this is a programmatic update
+        if self.is_programmatic_update:
+            return
+            
         try:
             value = float(self.text())
             clamped_value = max(self.min_value, min(self.max_value, value))
-            self.setText(f"{clamped_value:.{self.precision}f}")
+            # Only update text if the value actually changed
+            if abs(clamped_value - value) > 0.001:  # Small tolerance for floating point
+                self.setText(f"{clamped_value:.{self.precision}f}")
             self.valueChanged.emit(clamped_value)
         except ValueError:
-            # If the text is not a valid float, reset to the minimum value
-            self.setText(f"{self.min_value:.{self.precision}f}")
-            self.valueChanged.emit(self.min_value)
+            # If the text is not a valid float, try to preserve the current value
+            # Only reset to min_value if the text is completely empty or invalid
+            current_text = self.text().strip()
+            if not current_text or current_text == '':
+                self.setText(f"{self.min_value:.{self.precision}f}")
+                self.valueChanged.emit(self.min_value)
+            # If text is not empty but invalid, don't change it - let user fix it
 
     def applyToAll(self):
         """Apply the entered value to all selected buttons"""
+        # Skip if this is a programmatic update
+        if self.is_programmatic_update:
+            return
+            
         try:
             value = float(self.text())
             clamped_value = max(self.min_value, min(self.max_value, value))
-            self.setText(f"{clamped_value:.{self.precision}f}")
+            # Only update text if the value actually changed
+            if abs(clamped_value - value) > 0.001:  # Small tolerance for floating point
+                self.setText(f"{clamped_value:.{self.precision}f}")
             
             # Emit the special signal for apply-to-all functionality
             self.applyToAllRequested.emit(clamped_value)
             
         except ValueError:
-            # If the text is not a valid float, reset to the minimum value
-            self.setText(f"{self.min_value:.{self.precision}f}")
-            self.applyToAllRequested.emit(self.min_value)
+            # If the text is not a valid float, try to preserve the current value
+            # Only reset to min_value if the text is completely empty or invalid
+            current_text = self.text().strip()
+            if not current_text or current_text == '':
+                self.setText(f"{self.min_value:.{self.precision}f}")
+                self.applyToAllRequested.emit(self.min_value)
+            # If text is not empty but invalid, don't change it - let user fix it
 

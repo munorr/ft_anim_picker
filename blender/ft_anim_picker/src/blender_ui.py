@@ -1147,11 +1147,16 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         else:
             default_filename = "picker_data.json"
         
+        # Get the appropriate directory for the file dialog
+        start_directory = picker_io.get_file_dialog_directory()
+        # Combine directory with default filename
+        default_path = os.path.join(start_directory, default_filename)
+        
         # Show file save dialog
         file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "Store Picker Data",
-            default_filename,
+            default_path,
             "JSON Files (*.json)"
         )
         
@@ -1179,10 +1184,14 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                 QtWidgets.QMessageBox.critical(self, "Error", str(e))
                 
     def load_picker(self):
+        from . import picker_io
+        # Get the appropriate directory for the file dialog
+        start_directory = picker_io.get_file_dialog_directory()
+        
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             "Load Picker Data",
-            "",
+            start_directory,
             "JSON Files (*.json)"
         )
         if file_path:
@@ -3260,7 +3269,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         
         for widget_name, value in widget_updates:
             widget = widgets[widget_name]
-            #widget.blockSignals(True)
+            widget.blockSignals(True)
             if hasattr(widget, 'setText'):
                 widget.setText(str(value))
             elif hasattr(widget, 'setValue'):
@@ -3268,7 +3277,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             elif hasattr(widget, 'updateLabel'):
                 widget.setValue(value)
                 widget.updateLabel(value)
-            #widget.blockSignals(False)
+            widget.blockSignals(False)
         
         # Handle checkboxes
         for checkbox_name in ['transform_prop', 'single_radius']:
@@ -3307,7 +3316,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         
         for widget_name, value in widget_updates:
             widget = widgets[widget_name]
-            #widget.blockSignals(True)
+            widget.blockSignals(True)
             if hasattr(widget, 'setText'):
                 widget.setText(str(value))
             elif hasattr(widget, 'setValue'):
@@ -3315,7 +3324,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             elif hasattr(widget, 'updateLabel'):  # For custom sliders
                 widget.setValue(value)
                 widget.updateLabel(value)
-            #widget.blockSignals(False)
+            widget.blockSignals(False)
         
         # Handle single radius state
         is_single_radius = len(set(button.radius)) == 1
