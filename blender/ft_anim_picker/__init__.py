@@ -1,7 +1,7 @@
 bl_info = {
     "name": "FT Animation Picker",
     "author": "MUNORR - [Floating Tools]",
-    "version": (2, 2, 2),
+    "version": (2, 2, 3),
     "blender": (4, 0, 0),
     "location": "Main Menu > FT > Anim Picker",
     "description": "Animation picker for Blender",

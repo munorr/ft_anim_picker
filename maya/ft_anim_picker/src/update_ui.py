@@ -202,7 +202,7 @@ class UpdateWidget(QWidget):
         # Hardcoded repository URL
         self.repo_url = "https://github.com/munorr/ft_anim_picker"
         # Hardcoded folder path to download (set to None to download entire release)
-        self.folder_path = "blender/ft_anim_picker"
+        self.folder_path = "maya/ft_anim_picker"
         self.releases = []
         self.download_worker = None
         self.LAST_AVAILABLE_VERSION = '1.7.0'

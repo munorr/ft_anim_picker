@@ -489,28 +489,28 @@ def vertical_mirror_selected_buttons(main_window):
     get_selected_picker_buttons(main_window)[-1].parent().vertical_mirror_button_positions()
 #---------------------------------------------------------------------------------------------------------------------------------------
 def align_selected_buttons_left(main_window):
-    get_selected_picker_buttons(main_window)[-1].align_button_left()
+    get_selected_picker_buttons(main_window)[-1].parent().align_button_left()
 
 def align_selected_buttons_vcenter(main_window):
-    get_selected_picker_buttons(main_window)[-1].align_button_center()
+    get_selected_picker_buttons(main_window)[-1].parent().align_button_center()
 
 def align_selected_buttons_right(main_window):
-    get_selected_picker_buttons(main_window)[-1].align_button_right()
+    get_selected_picker_buttons(main_window)[-1].parent().align_button_right()
 
 def align_selected_buttons_top(main_window):
-    get_selected_picker_buttons(main_window)[-1].align_button_top()
+    get_selected_picker_buttons(main_window)[-1].parent().align_button_top()
 
 def align_selected_buttons_hcenter(main_window):
-    get_selected_picker_buttons(main_window)[-1].align_button_middle()
+    get_selected_picker_buttons(main_window)[-1].parent().align_button_middle()
 
 def align_selected_buttons_bottom(main_window):
-    get_selected_picker_buttons(main_window)[-1].align_button_bottom()
+    get_selected_picker_buttons(main_window)[-1].parent().align_button_bottom()
 
 def evenly_space_selected_buttons_horizontal(main_window):
-    get_selected_picker_buttons(main_window)[-1].evenly_space_horizontal()
+    get_selected_picker_buttons(main_window)[-1].parent().evenly_space_horizontal()
 
 def evenly_space_selected_buttons_vertical(main_window):
-    get_selected_picker_buttons(main_window)[-1].evenly_space_vertical()
+    get_selected_picker_buttons(main_window)[-1].parent().evenly_space_vertical()
 
 def get_current_selected_button_color(main_window):
     buttons = get_selected_picker_buttons(main_window)
