@@ -645,7 +645,7 @@ class UpdateWidget(QWidget):
         success_message.setAlignment(QtCore.Qt.AlignCenter)
         
         # Create restart message
-        restart_message = QLabel("Please restart Blender\nto complete the update.")
+        restart_message = QLabel("Please restart the Picker\nto complete the update.")
         restart_message.setStyleSheet("""
             color: #aaaaaa;
             font-size: 12px;
