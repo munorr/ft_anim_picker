@@ -25,10 +25,18 @@ from . import custom_button as CB
 from . import custom_line_edit as CLE
 from . import data_management as DM
 from . import button_edit_widgets as BEW
+from . import edit_mode_controller as EMC
 from . import tool_functions as TF
 from . import custom_dialog as CD
 from . fade_away_logic import FadeAway
-from .update_ui import UpdateWidget
+from .update_ui import UpdateBanner
+from . import selection_sync_manager as SSM
+from . import custom_segment_control as CSC
+from .settings_page import SettingsPage
+from .library_ui import LibraryPageController
+from .picker_session import PickerSession
+from .auth_manager import AuthManager
+from .marketplace_manager import MarketplaceManager
 
 # Get version from __init__
 import ft_anim_picker
@@ -38,27 +46,60 @@ anim_picker_version = f" (v{anim_picker_version})"
 class AnimPickerWindow(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super(AnimPickerWindow, self).__init__(parent)
-        self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint)
+        import sys
+        if sys.platform == "darwin":
+            self.setWindowFlags(QtCore.Qt.Tool | QtCore.Qt.FramelessWindowHint)
+        else:
+            self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setAttribute(QtCore.Qt.WA_AlwaysShowToolTips, True)
-        self.setStyleSheet('''QWidget {background-color: rgba(40, 40, 40, 0.5); border-radius: 4px;}''')
+        self.setStyleSheet('''QWidget {background-color: rgba(40, 40, 40, 0.5); border-radius: 8px;}''')
         
         # Enable drag and drop
         self.setAcceptDrops(True)
         self.edit_mode = False
         self.fade_manager = FadeAway(self)
         self.drag_highlight_active = False
+        self._programmatic_resize = False
+        self._edit_mode_width_delta = 0
+        self._width_anim = None
+        self._button_load_gen = None
+        self._button_load_tab = None
+        self._button_load_canvas = None
+        self.session = None  # PickerSession for .bpicker persistence
+        self._launch_dialog_pending = False  # guard against multiple launch dialogs
 
         self.setup_ui()
+
+        # Edit mode controller — must be created after setup_ui (which builds
+        # edit_value_layout) but before setup_layout (which wires controller
+        # widget into the panel).
+        self.edit_controller = EMC.EditModeController(self)
+
         self.setup_layout()
         self.setup_tab_system()
         self.setup_connections()
         self.setup_shortcuts()
-        
+
+        # Deferred startup: check for existing .bpicker session or legacy data
+        QtCore.QTimer.singleShot(150, self._check_launch_state)
+
+        # Listen for Maya scene changes so we can re-check for legacy data
+        self._scene_script_jobs = []
+        try:
+            for event in ('SceneOpened', 'NewSceneOpened'):
+                job_id = cmds.scriptJob(
+                    event=[event, self._on_scene_opened],
+                    killWithScene=False
+                )
+                self._scene_script_jobs.append(job_id)
+        except Exception as e:
+            print(f"[picker] Could not register scene callbacks: {e}")
+
         self.oldPos = self.pos()
         self.resizing = False
         self.resize_edge = None
-        self.resize_range = 8 # Pixels from edge where resizing is active
+        self.resize_range = 16 # Pixels from edge where resizing is active
         self.resize_handle.installEventFilter(self)
         self.main_frame.setMouseTracking(True)
         self.main_frame.installEventFilter(self)
@@ -101,11 +142,11 @@ class AnimPickerWindow(QtWidgets.QWidget):
         minimal_affected_widgets = [
             {'widget': self.util_frame, 'hide_in_minimal': False},
             {'widget': self.main_frame, 'exclude': [self.canvas_frame]}, # Keep canvas frame visible
-            {'widget': self.canvas_frame, 'exclude': [self.canvas_stack]}, # Keep the canvas content visible
-            {'widget': self.tools_EF, 'hide_in_minimal': False},
+            {'widget': self.canvas_frame, 'exclude': [self.canvas_frame_layout]}, # Keep the canvas content visible
+            {'widget': self.tools_row_frame, 'show_in_minimal': True},
             {'widget': self.canvas_tab_frame, 'hide_in_minimal': True},
             {'widget': self.namespace_dropdown, 'hide_in_minimal': True},
-            {'widget': self.close_button, 'hide_in_minimal': True},
+            {'widget': self.close_button, 'hide_in_minimal': False},
         ]
 
         # Set the affected widgets in the fade manager
@@ -126,10 +167,11 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.pending_widget_changes = {}
         self.widget_update_delay = 10  # ms delay for widget updates
 
-        # Setup update checker timer (every 5 seconds)
+        # Setup update checker timer (every 1 hour) + initial check after 3s
         self.update_checker_timer = QTimer()
         self.update_checker_timer.timeout.connect(self.update_anim_picker_checker)
         self.update_checker_timer.start(3600000)
+        QtCore.QTimer.singleShot(3000, self.update_anim_picker_checker)
         
         self.setup_periodic_cleanup()
 
@@ -150,28 +192,28 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.main_layout = QtWidgets.QVBoxLayout(self)
         set_margin_space(self.main_layout, mls, mls)
 
-        mfc = 36 #main frame color
         self.main_frame = QtWidgets.QFrame()
-        self.main_frame.setStyleSheet(f'''QFrame {{border: 0px solid gray; border-radius: 4px; background-color: rgba({mfc}, {mfc}, {mfc}, .6);}}''')
+        self.main_frame.setStyleSheet('''QFrame {border: 0px solid gray; border-radius: 8px; background-color: #1D1D1D;}''')
         self.main_frame_col = QtWidgets.QVBoxLayout(self.main_frame)
         set_margin_space(self.main_frame_col, mfs, mfs)
 
         self.util_frame = QtWidgets.QFrame()
         self.util_frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.util_frame.setFixedHeight(24)
-        self.util_frame.setStyleSheet(f'''QFrame {{border: 0px solid gray; border-radius: 4px; background-color: rgba(40, 40, 40, .8);padding: 0px;}}''')
+        self.util_frame.setFixedHeight(30)
+        self.util_frame.setStyleSheet('''QFrame {border: 0px solid gray; border-radius: 4px; background-color: rgba(40, 40, 40, 0); padding: 0px;}''')
         self.util_frame_col = QtWidgets.QHBoxLayout(self.util_frame)
         self.util_frame_col.setAlignment(QtCore.Qt.AlignLeft)
         set_margin_space(self.util_frame_col, 2, 2)
 
         self.icon_image = QtWidgets.QLabel()
         package_dir = Path(__file__).parent
-        icon_path = package_dir / 'ft_picker_icons' / 'ftap_logo_64.png'
+        icon_path = package_dir / 'bgen_picker_icons' / 'bgen-picker-icon-02.png'
+        if not icon_path.exists():
+            icon_path = package_dir / 'bgen_picker_icons' / 'ftap_logo_64.png'
         icon_pixmap = QtGui.QPixmap(str(icon_path))
         self.icon_image.setPixmap(icon_pixmap)
-        #self.resize(icon_pixmap.width(), icon_pixmap.height())
         self.icon_image.setScaledContents(True)
-        self.icon_image.setFixedSize(14, 14)
+        self.icon_image.setFixedSize(18, 18)
 
         self.util_frame_col.addSpacing(4)
         self.util_frame_col.addWidget(self.icon_image)
@@ -180,8 +222,10 @@ class AnimPickerWindow(QtWidgets.QWidget):
                                     cmColor='#333333',tooltip='File Utilities', flat=True)
         
         file_util.addMenuLabel("File Utilities",position=(0,0))
-        file_util.addToMenu("Load Picker", self.load_picker, icon='loadPreset.png', position=(1,0))
-        file_util.addToMenu("Store Picker", self.store_picker, icon='save.png', position=(2,0))
+        file_util.addToMenu("Save", self.save_current_picker, icon='save.png', position=(1,0))
+        file_util.addToMenu("Save As...", self.save_picker_as, icon='save.png', position=(2,0))
+        file_util.addToMenu("Import Picker", self.import_picker, icon='loadPreset.png', position=(3,0))
+        file_util.addToMenu("Export Picker", self.export_picker, icon='save.png', position=(4,0))
         
         edit_util = CB.CustomButton(text='Edit', height=20, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
                                     cmColor='#333333',tooltip='Edit Utilities', flat=True)
@@ -198,22 +242,20 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.info_util.addMenuLabel(f"Anim Picker{anim_picker_version}",position=(0,0))
         self.info_util.addToMenu(f"Manual", self.info, icon=UT.get_icon('manual.png'), position=(1,0))
         self.info_util.addToMenu(f"Update", self.update_anim_picker, icon=UT.get_icon('update.png'), position=(2,0))
-        #-----------------------------------------------------------------------------------------------------------------------------------
-        self.update_anim_picker_button = CB.CustomButton(text='Update Available',icon=UT.get_icon('update.png',size=14,opacity=.7), height=16, radius=8,color='#555555',
-        text_size=10,tooltip='Update Anim Picker', textColor='#eeeeee')
-        self.update_anim_picker_button.clicked.connect(self.update_anim_picker)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         #-Close button
-        self.close_button = CB.CustomButton(icon=UT.get_icon('close_01.png',size=12,opacity=.7), height=16, width=16, radius=3,color='#c0091a',tooltip='Close')
+        self.close_button = CB.CustomButton(icon=UT.get_icon('close_01.png',size=16,opacity=1), height=26, width=26, radius=13,color='#db2525',tooltip='Close')
         #------------------------------------------------------------------------------------------------------------------------------------------------------
 
         self.util_frame_col.addWidget(file_util)
         self.util_frame_col.addWidget(edit_util)
         self.util_frame_col.addWidget(self.info_util)
         self.util_frame_col.addStretch(1)
-        self.util_frame_col.addWidget(self.update_anim_picker_button)
-        self.util_frame_col.addSpacing(4)
-        self.update_anim_picker_button.setVisible(False)
+        # Page segment control placeholder — will be populated in setup_layout
+        self._page_segment_placeholder = QtWidgets.QWidget()
+        self._page_segment_placeholder.setFixedSize(0, 0)
+        self.util_frame_col.addWidget(self._page_segment_placeholder)
+        self.util_frame_col.addSpacing(6)
         self.util_frame_col.addWidget(self.close_button)
         self.util_frame_col.addSpacing(2)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -234,16 +276,21 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.canvas_frame = QtWidgets.QFrame()
         self.canvas_frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.canvas_frame.setMinimumWidth(160)
-        self.canvas_frame.setStyleSheet(f'''QFrame {{border: 0px solid gray; border-radius: 3px; background-color: rgba(40, 40, 40, .8);}}''')
+        self.canvas_frame.setStyleSheet('''QFrame {border: 0px solid gray; border-radius: 4px; background-color: rgba(40, 40, 40, 0);}''')
         self.canvas_frame_layout = QtWidgets.QVBoxLayout(self.canvas_frame)
         set_margin_space(self.canvas_frame_layout, 4, 4)
-        
-        
+        # Update notification banner (above tabs)
+        from .update_ui import UpdateBanner
+        self.update_banner = UpdateBanner(self.canvas_frame)
+        self.update_banner.view_details.connect(self.update_anim_picker)
+        self.canvas_frame_layout.addWidget(self.update_banner)
+
+
         #-Canvas Tab Frame
         self.canvas_tab_frame = QtWidgets.QFrame()
         self.canvas_tab_frame.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding)
         self.canvas_tab_frame.setFixedHeight(24)
-        self.canvas_tab_frame.setStyleSheet(f'''QFrame {{border: 0px solid gray; border-radius: 12px; background-color: rgba(55, 55, 55, .4);}}''')
+        self.canvas_tab_frame.setStyleSheet('''QFrame {border: 0px solid gray; border-radius: 12px; background-color: rgba(255, 255, 255, 0);}''')
 
         # Create a scroll area
         self.canvas_tab_frame_scroll_area = CS.HorizontalScrollArea() #QtWidgets.QScrollArea()
@@ -276,7 +323,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.canvas_tab_frame_scroll_area.setWidget(self.canvas_tab_frame)
         
         self.canvas_tab_frame_layout = QtWidgets.QHBoxLayout(self.canvas_tab_frame)
-        self.add_tab_button = CB.CustomButton(icon=UT.get_icon('add.png',size=10,opacity=.9), height=16, width=16, radius=8,color='#91cb08',tooltip='Add New Tab')
+        self.add_tab_button = CB.CustomButton(icon=UT.get_icon('add.png',size=10,opacity=.9), height=16, width=16, radius=8,color='#1D65CA',tooltip='Add New Tab')
         self.canvas_tab_frame_layout.addWidget(self.add_tab_button)
         
         set_margin_space(self.canvas_tab_frame_layout, 4, 2)
@@ -292,11 +339,12 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.namespace_dropdown.setMaximumWidth(120)
         #self.namespace_dropdown.setFixedSize(100, 20)
         
-        self.namespace_dropdown.setStyleSheet(f'''QComboBox{{background-color: {UT.rgba_value('#222222', 1,.9)}; color: #dddddd;border: 1px solid #2f2f2f; padding: 0px 0px 0px 5px;}}
-                                    QComboBox:hover {{background-color: {UT.rgba_value('#222222', .8,1)};}}
-                                    QComboBox::drop-down {{border: 0px;}}
-                                    QComboBox::down-arrow {{background-color: transparent;}} 
-                                    QToolTip {{background-color: #222222; color: white; border:0px;}} ''')
+        self.namespace_dropdown.setStyleSheet(f'''QComboBox{{background-color: {UT.rgba_value('#222222', 1,.9)}; color: #dddddd; border: 1px solid #2f2f2f; padding: 2px 2px 2px 8px; border-radius: 11px;}}
+                            QComboBox:hover {{background-color: {UT.rgba_value('#222222', .8,1)};}}
+                            QComboBox::drop-down {{border: 0px; color: #dddddd;}}
+                            QComboBox::down-arrow {{background-color: transparent;}}
+                            QComboBox QAbstractItemView {{background-color: #222222; color: #dddddd; border: 1px solid #2f2f2f; selection-background-color: rgba(29,101,202,0.4);}}
+                            QToolTip {{background-color: #222222; color: #eeeeee;border: 1px solid rgba(255,255,255,.2); padding: 4px; border-radius: 0px;}} ''')
         self.namespace_dropdown.setToolTip('Select Namespace')
 
         #------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -304,13 +352,13 @@ class AnimPickerWindow(QtWidgets.QWidget):
         #-Edit Frame
         efw = 200 #edit fixed width
         self.edit_frame = QtWidgets.QFrame()
-        self.edit_frame.setStyleSheet('QFrame {background-color: rgba(40, 40, 40, .8); border: 0px solid #333333;}')
-        self.edit_frame.setFixedWidth(efw - 10)
+        self.edit_frame.setStyleSheet('QFrame {background-color: #1d1d1d; border: 0px solid #333333;}')
+        # Width managed by CanvasEditPanel overlay
         
         # Create a scroll area
         self.edit_scroll_area = QtWidgets.QScrollArea()
         self.edit_scroll_area.setWidgetResizable(True)
-        self.edit_scroll_area.setFixedWidth(efw)  # Set a fixed width for the scroll area
+        # Width managed by CanvasEditPanel overlay (no fixed width)
         self.edit_scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.edit_scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOn)
         #self.edit_scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
@@ -367,7 +415,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         self.add_button_EF = EF.ExpandableFrame(title='Add Button', color='#222222', border=1, border_color='#333333') 
         self.add_button_EF.toggle_expand()
-        self.add_button_EF.setFixedWidth(efw-20)
+        self.add_button_EF.setMinimumWidth(160)
         self.add_picker_button = CB.CustomButton(text='Add Button', height=24, radius=4,color='#5285a6')
 
         p_button_grid1 = QtWidgets.QGridLayout()
@@ -381,127 +429,176 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.add_button_EF.addWidget(self.add_picker_button)
         self.add_button_EF.addLayout(p_button_grid1)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
-        #-Buttons Edit EF
+        #- Button / Canvas Segment Control (Blender-style)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         self.button_selection_count = 0
-        self.edit_button_EF = EF.ExpandableFrame(title=f'Button <span style="color: #494949; font-size: 11px;">({self.button_selection_count})</span>', color='#222222', border=1, border_color='#333333') 
-        self.edit_button_EF.toggle_expand()
-        self.edit_button_EF.setFixedWidth(efw-20)
+
+        _CARD_STYLE = (
+            "QFrame { background: transparent; "
+            "border: 0px solid rgba(255,255,255,0.06); border-radius: 8px; }"
+            "QLabel { background: transparent; border: none; }"
+        )
+        _SECTION_LABEL = "color: #999999; font-size: 11px; font-weight: bold;"
+        _SUB_LABEL = "color: #777777; font-size: 10px;"
+
+        def add_divider(layout, spacing=8):
+            divider = QtWidgets.QFrame()
+            divider.setFixedHeight(1)
+            divider.setStyleSheet("background-color: rgba(255, 255, 255, 0.1);")
+            layout.addSpacing(spacing)
+            layout.addWidget(divider)
+
+        # Segment control to switch between Button and Canvas edit panels
+        self.edit_segment_control = CSC.TextSegmentControl(
+            ["Button", "Canvas"],
+            height=26, font_size=12, radius=10,
+            frame_radius=12, use_frame=True,
+            frame_bg="rgba(255, 255, 255, 0.1)",
+        )
+
+        # Stacked widget to hold button and canvas pages
+        self.edit_stack = QtWidgets.QStackedWidget()
+        self.edit_stack.setStyleSheet("QStackedWidget { background: transparent; border: none; }")
+        self.edit_segment_control.segment_changed.connect(self.edit_stack.setCurrentIndex)
+
+        # --- Button page (index 0) ---
+        self.edit_button_page = QtWidgets.QWidget()
+        self.edit_button_page.setStyleSheet("background: transparent;")
+        edit_button_page_layout = QtWidgets.QVBoxLayout(self.edit_button_page)
+        edit_button_page_layout.setAlignment(QtCore.Qt.AlignTop)
+        set_margin_space(edit_button_page_layout, 0, 4)
+
         self.edit_value_layout = QtWidgets.QVBoxLayout()
-        set_margin_space(self.edit_value_layout,0,4)
-        
-        #BEW.create_button_edit_widgets(self.edit_value_layout)
-        self.add_picker_button = CB.CustomButton(text='Add Button', height=24, radius=4,color='#5285a6',tooltip='Add Button to the current tab')
-        #self.edit_button_EF.addWidget(self.add_picker_button)
-        self.edit_button_EF.addLayout(self.edit_value_layout)
-        self.setup_edit_widgets()
-    
-        #------------------------------------------------------------------------------------------------------------------------------------------------------
-        #-Canvas EF
-        #------------------------------------------------------------------------------------------------------------------------------------------------------
-        self.edit_canvas_EF = EF.ExpandableFrame(title='Canvas', color='#222222', border=1, border_color='#333333') 
-        self.edit_canvas_EF.toggle_expand()
-        self.edit_canvas_EF.setFixedWidth(efw-20)
+        set_margin_space(self.edit_value_layout, 0, 4)
 
-        self.image_button_layout = QtWidgets.QHBoxLayout()
-        set_margin_space(self.image_button_layout, 0, 4)
-        self.add_image = CB.CustomButton(text='Add',icon=UT.get_icon('img.png', size=14), height=24, radius=4,color='#5c7918',tooltip='Add Image to the current tab')
-        self.remove_image = CB.CustomButton(text='Remove',icon=UT.get_icon('img.png', size=14), height=24, radius=4,color='#555555',tooltip='Remove Image from the current tab')
-        self.image_button_layout.addWidget(self.add_image)
-        self.image_button_layout.addWidget(self.remove_image)
-        #------------------------------------------------------------------------------------------------------------------------------------------------------
-        #Image Scale
-        self.image_scale_widget = QtWidgets.QWidget()
-        self.image_scale_widget.setStyleSheet(f"""QWidget {{background-color: {widget_color}; padding: 0px; border-radius: 3px; border: 0px solid #666666;}}
-        QLabel {{color: #aaaaaa; border: none}}
-        """)
-        image_scale_layout = QtWidgets.QVBoxLayout(self.image_scale_widget)
-        set_margin_space(image_scale_layout,6,6)
-        
-        image_scale_label = QtWidgets.QLabel("Image Scale")
-        image_scale_label.setStyleSheet(f"color: {label_color}; font-size: 11px;")
-        image_scale_layout.addWidget(image_scale_label)
-        
-        self.image_scale_layout = QtWidgets.QHBoxLayout()
-        self.image_scale_factor = CLE.IntegerLineEdit(min_value=.01, max_value=400, increment=.1, precision=2, width=None, height=18, label="")
-        self.image_scale_factor.setText('1.0')
-        self.image_scale_layout.addWidget(self.image_scale_factor)
-        image_scale_layout.addLayout(self.image_scale_layout)
-        #------------------------------------------------------------------------------------------------------------------------------------------------------
-        #Toggle Buttons
-        self.toggle_appearance_widget = QtWidgets.QWidget()
-        self.toggle_appearance_widget.setStyleSheet(f"""QWidget {{background-color: {widget_color}; padding: 0px; border-radius: 3px; border: 0px solid #666666;}}
-        QLabel {{color: #aaaaaa; border: none}}
-        """)
-        self.toggle_appearance_layout = QtWidgets.QVBoxLayout(self.toggle_appearance_widget)
-        set_margin_space(self.toggle_appearance_layout,6,6)
-        
-        self.toggle_axes = CB.CustomRadioButton('Toggle Axes', height=None,color='#5c7918',fill=False)
-        self.toggle_axes.setChecked(True)
+        self.add_picker_button = CB.CustomButton(text='Add Button', height=24, radius=4, color='#5285a6', tooltip='Add Button to the current tab')
+        edit_button_page_layout.addLayout(self.edit_value_layout)
+        # Controller widget is wired in setup_layout()
 
-        self.toggle_dots = CB.CustomRadioButton('Toggle Dots', height=None,color='#5c7918',fill=False)
-        self.toggle_dots.setChecked(True)
+        self.edit_stack.addWidget(self.edit_button_page)
 
-        self.toggle_grid = CB.CustomRadioButton('Toggle Grid', height=None,color='#5c7918',fill=False)
-        self.toggle_grid.setChecked(False)
+        # --- Canvas page (index 1) ---
+        self.edit_canvas_page = QtWidgets.QWidget()
+        self.edit_canvas_page.setStyleSheet("background: transparent;")
+        self.edit_canvas_page_layout = QtWidgets.QVBoxLayout(self.edit_canvas_page)
+        self.edit_canvas_page_layout.setAlignment(QtCore.Qt.AlignTop)
+        set_margin_space(self.edit_canvas_page_layout, 0, 6)
 
-        self.grid_size = CLE.IntegerLineEdit(min_value=1, max_value=500, increment=1, width=None, height=18, label="Grid Size")
-        self.grid_size.setText('50')
+        # ── Background Image Card ──
+        bg_card = QtWidgets.QFrame()
+        bg_card.setStyleSheet(_CARD_STYLE)
+        bg_card_layout = QtWidgets.QVBoxLayout(bg_card)
+        set_margin_space(bg_card_layout, 6, 6)
 
-        self.toggle_appearance_layout.addWidget(self.toggle_axes)
-        self.toggle_appearance_layout.addWidget(self.toggle_dots)
-        self.toggle_appearance_layout.addWidget(self.toggle_grid)
-        self.toggle_appearance_layout.addWidget(self.grid_size)
-        #------------------------------------------------------------------------------------------------------------------------------------------------------
-        # Opacity widget
-        self.opacity_bg_widget = QtWidgets.QWidget()
-        self.opacity_bg_widget.setStyleSheet(f"""QWidget {{background-color: {widget_color}; padding: 0px; border-radius: 3px; border: 0px solid #666666;}}
-        QLabel {{color: #aaaaaa; border: none}}
-        """)
-        opacity_layout = QtWidgets.QVBoxLayout(self.opacity_bg_widget)
-        set_margin_space(opacity_layout,6,6)
+        bg_title = QtWidgets.QLabel("Background Image")
+        bg_title.setStyleSheet(_SECTION_LABEL)
+        bg_card_layout.addWidget(bg_title)
 
-        opacity_label = QtWidgets.QLabel("Image Opacity")
-        opacity_label.setStyleSheet(f"color: {label_color}; font-size: 11px;")
-        opacity_layout.addWidget(opacity_label)
+        img_btn_layout = QtWidgets.QHBoxLayout()
+        img_btn_layout.setSpacing(4)
+        self.add_image = CB.CustomButton(
+            text='Import', icon=UT.get_icon('img.png', size=12),
+            height=24, radius=4, color='#1D65CA',
+            tooltip='Import background image')
+        self.remove_image = CB.CustomButton(
+            text='Remove', icon=UT.get_icon('delete_white.png', size=12),
+            height=24, radius=4, color='#555555',
+            tooltip='Remove background image')
+        img_btn_layout.addWidget(self.add_image)
+        img_btn_layout.addWidget(self.remove_image)
+        bg_card_layout.addLayout(img_btn_layout)
 
-        self.image_opacity_slider = CS.CustomSlider(min_value=0, max_value=100, float_precision=0, height=16, radius=8,prefix='',suffix='%', color='#5c7918')
+        # Opacity row
+        opacity_row = QtWidgets.QHBoxLayout()
+        opacity_row.setSpacing(4)
+        opacity_lbl = QtWidgets.QLabel("Opacity")
+        opacity_lbl.setStyleSheet(_SUB_LABEL)
+        opacity_lbl.setFixedWidth(42)
+        self.image_opacity_slider = CS.CustomSlider(
+            min_value=0, max_value=100, float_precision=0,
+            height=17, radius=3, prefix='', suffix='%', color='#1D65CA')
         self.image_opacity_slider.setValue(100)
+        opacity_row.addWidget(opacity_lbl)
+        opacity_row.addWidget(self.image_opacity_slider)
+        bg_card_layout.addLayout(opacity_row)
 
-        opacity_layout.addWidget(self.image_opacity_slider)
-        #------------------------------------------------------------------------------------------------------------------------------------------------------
-        #-Background Value Slider
-        self.bg_value_bg_widget = QtWidgets.QWidget()
-        self.bg_value_bg_widget.setStyleSheet(f"""QWidget {{background-color: {widget_color}; padding: 0px; border-radius: 3px; border: 0px solid #666666;}}
-        QLabel {{color: #aaaaaa; border: none}}
-        """)
-        bg_value_layout = QtWidgets.QVBoxLayout(self.bg_value_bg_widget)
-        set_margin_space(bg_value_layout,6,6)
+        # Scale row
+        scale_row = QtWidgets.QHBoxLayout()
+        scale_row.setSpacing(4)
+        scale_lbl = QtWidgets.QLabel("Scale")
+        scale_lbl.setStyleSheet(_SUB_LABEL)
+        scale_lbl.setFixedWidth(42)
+        self.image_scale_factor = CLE.IntegerLineEdit(
+            min_value=.01, max_value=400, increment=.1,
+            precision=2, width=None, height=18, label="")
+        self.image_scale_factor.setText('1.0')
+        scale_row.addWidget(scale_lbl)
+        scale_row.addWidget(self.image_scale_factor)
+        bg_card_layout.addLayout(scale_row)
 
-        bg_value_label = QtWidgets.QLabel("Background Value")
-        bg_value_label.setStyleSheet(f"color: {label_color}; font-size: 11px;")
-        bg_value_layout.addWidget(bg_value_label)
+        self.edit_canvas_page_layout.addWidget(bg_card)
+        add_divider(self.edit_canvas_page_layout)
 
-        self.bg_value_slider = CS.CustomSlider(min_value=0, max_value=100, float_precision=0, height=16, radius=8,prefix='',suffix='%', color='#5c7918')
+        # ── Canvas Appearance Card ──
+        canvas_card = QtWidgets.QFrame()
+        canvas_card.setStyleSheet(_CARD_STYLE)
+        canvas_card_layout = QtWidgets.QVBoxLayout(canvas_card)
+        set_margin_space(canvas_card_layout, 6, 6)
+
+        canvas_title = QtWidgets.QLabel("Canvas Appearance")
+        canvas_title.setStyleSheet(_SECTION_LABEL)
+        canvas_card_layout.addWidget(canvas_title)
+
+        # Background value row
+        bg_row = QtWidgets.QHBoxLayout()
+        bg_row.setSpacing(4)
+        bg_lbl = QtWidgets.QLabel("Value")
+        bg_lbl.setStyleSheet(_SUB_LABEL)
+        bg_lbl.setFixedWidth(64)
+        self.bg_value_slider = CS.CustomSlider(
+            min_value=0, max_value=100, float_precision=0,
+            height=17, radius=3, prefix='', suffix='%', color='#1D65CA')
         self.bg_value_slider.setValue(50)
+        bg_row.addWidget(bg_lbl)
+        bg_row.addWidget(self.bg_value_slider)
+        canvas_card_layout.addLayout(bg_row)
 
-        bg_value_layout.addWidget(self.bg_value_slider)
-        #------------------------------------------------------------------------------------------------------------------------------------------------------
-        self.edit_canvas_EF.addLayout(self.image_button_layout)
-        self.edit_canvas_EF.content_layout.addSpacing(4)
-        self.edit_canvas_EF.addWidget(self.opacity_bg_widget)
-        self.edit_canvas_EF.addWidget(self.image_scale_widget)
-        self.edit_canvas_EF.addWidget(self.bg_value_bg_widget)
-        
-        self.edit_canvas_EF.addWidget(self.toggle_appearance_widget)
-        
-        self.toggle_edit_mode_button = CB.CustomButton(text='Exit Edit Mode', height=24, width=efw, radius=4,color='#5e7b19', tooltip='Apply changes')
+        # Toggle row 1: Axes + Dots
+        toggle_row1 = QtWidgets.QHBoxLayout()
+        toggle_row1.setSpacing(6)
+        self.toggle_axes = CB.CustomRadioButton('Axes', height=None, color='#1D65CA', fill=False)
+        self.toggle_axes.setChecked(True)
+        self.toggle_dots = CB.CustomRadioButton('Dots', height=None, color='#1D65CA', fill=False)
+        self.toggle_dots.setChecked(True)
+        toggle_row1.addWidget(self.toggle_axes)
+        toggle_row1.addWidget(self.toggle_dots)
+        canvas_card_layout.addLayout(toggle_row1)
+
+        # Toggle row 2: Grid + Grid Size
+        toggle_row2 = QtWidgets.QHBoxLayout()
+        toggle_row2.setSpacing(6)
+        self.toggle_grid = CB.CustomRadioButton('Grid', height=None, color='#1D65CA', fill=False)
+        self.toggle_grid.setChecked(False)
+        self.grid_size = CLE.IntegerLineEdit(
+            min_value=1, max_value=500, increment=1,
+            width=None, height=18, label="Size")
+        self.grid_size.setText('50')
+        toggle_row2.addWidget(self.toggle_grid)
+        toggle_row2.addSpacing(12)
+        toggle_row2.addWidget(self.grid_size)
+        canvas_card_layout.addLayout(toggle_row2)
+
+        self.edit_canvas_page_layout.addWidget(canvas_card)
+
+        self.edit_stack.addWidget(self.edit_canvas_page)
+
+        # --- Wire segment + stack into edit_layout ---
+        self.toggle_edit_mode_button = CB.CustomButton(text='Exit Edit Mode', height=24, radius=4, color='#1D65CA', tooltip='Apply changes')
         self.toggle_edit_mode_button.clicked.connect(self.toggle_edit_mode)
-        #------------------------------------------------------------------------------------------------------------------------------------------------------
-        #------------------------------------------------------------------------------------------------------------------------------------------------------
-        #self.edit_layout.addWidget(self.add_button_EF) 
-        self.edit_layout.addWidget(self.edit_button_EF)
-        self.edit_layout.addWidget(self.edit_canvas_EF)
+
+        self.edit_layout.addSpacing(4)
+        self.edit_layout.addWidget(self.edit_segment_control)
+        self.edit_layout.addWidget(self.edit_stack)
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         
         # Version Label
@@ -509,10 +606,21 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.versionLabel.setStyleSheet(f'''QLabel {{ color:rgba(160, 160, 160, .5); background-color: transparent}},''')  
         #------------------------------------------------------------------------------------------------------------------------------------------------------
         #Tool Drawer
-        self.tools_EF = EF.ExpandableFrame(title='<span style="color: #777777; font-size: 11px;"> Animation Tools</span>', color='#282828',alpha=.8, border=1, border_color='#333333',margin=2) 
+        self.tools_EF = EF.ExpandableFrame(title='<span style="color: #777777; font-size: 11px;"> Animation Tools</span>', color='#282828',alpha=.8, border=1, border_color='#333333',margin=2)
         self.tools_EF.toggle_expand()
         self.tool_buttons = TF.animation_tool_layout()
         self.tools_EF.addLayout(self.tool_buttons.layout)
+
+        # Joint visibility toggle — sits to the left of the Animation Tools drawer
+        self._joints_visible_icon = UT.get_icon('visible.png', opacity=0.8, size=16)
+        self._joints_hidden_icon = UT.get_icon('invisible.png', opacity=0.8, size=16)
+        self.show_joints_button = CB.CustomButton(
+            icon=self._joints_visible_icon, color='#333333',
+            tooltip="Show/Hide Joints in Viewport", height=28, width=28,
+            alpha=0.8, radius=14, flat=False)
+        self.show_joints_button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.show_joints_button.clicked.connect(self._on_toggle_show_joints)
+        self._joints_visible = True
 
         # Resize Handle
         self.resize_handle = QtWidgets.QPushButton("◢")
@@ -525,35 +633,344 @@ class AnimPickerWindow(QtWidgets.QWidget):
         print('Funtion not assigned')
 
     def setup_layout(self):
-        # Add widgets to layouts
+        # --- Editor page (existing picker content) ---
         self.area_01_col.addWidget(self.canvas_frame)
 
         self.canvas_frame_layout.addLayout(self.picker_canvas_col1)
 
         self.picker_canvas_col1.addWidget(self.canvas_tab_frame_scroll_area)
         self.picker_canvas_col1.addWidget(self.namespace_dropdown)
-        
+
         self.canvas_frame_layout.addWidget(self.canvas_stack)
 
-        self.area_01_col.addLayout(self.edit_row)
+        # (edit_row removed — edit panel is now an overlay inside canvas_frame)
 
-        self.edit_row.addWidget(self.edit_scroll_area)
-        self.edit_scroll_area.setVisible(self.edit_mode)
+        # Wrap editor content in a page widget
+        self.editor_page = QtWidgets.QWidget()
+        self.editor_page.setStyleSheet("background: transparent;")
+        self.editor_page_layout = QtWidgets.QVBoxLayout(self.editor_page)
+        self.editor_page_layout.setContentsMargins(0, 0, 0, 0)
+        self.editor_page_layout.setSpacing(4)
+        # Wrap tools with joint visibility button in a row
+        self.tools_row = QtWidgets.QHBoxLayout()
+        self.tools_row.setContentsMargins(0, 0, 0, 0)
+        self.tools_row.setSpacing(4)
+        self.tools_row.addSpacing(4)
+        self.tools_row.addWidget(self.show_joints_button, 0, QtCore.Qt.AlignCenter)
+        self.tools_row.addSpacing(2)
+        self.tools_row.addWidget(self.tools_EF, 1)
+        self.tools_row.addSpacing(4)
 
-        self.edit_row.addWidget(self.toggle_edit_mode_button)
-        self.toggle_edit_mode_button.setVisible(self.edit_mode)
+        # Wrap tools_row in a widget so it can be reparented in minimal mode
+        self.tools_row_frame = QtWidgets.QWidget()
+        self.tools_row_frame.setStyleSheet("background: transparent;")
+        self.tools_row_frame.setLayout(self.tools_row)
 
-        # Add layouts to main layout
+        self.editor_page_layout.addLayout(self.area_01_col)
+        self.editor_page_layout.addWidget(self.tools_row_frame)
+
+        # --- Library page ---
+        self.library_page = QtWidgets.QWidget()
+        self.library_page.setStyleSheet("background: transparent;")
+        library_page_layout = QtWidgets.QVBoxLayout(self.library_page)
+        library_page_layout.setContentsMargins(4, 4, 4, 4)
+        library_page_layout.setSpacing(6)
+
+        _SCROLL_STYLE = """
+            QScrollArea { background: transparent; border: none; }
+            QScrollBar:vertical { background: rgba(30,30,30,0.3); width: 8px; border: none; }
+            QScrollBar::handle:vertical { background: rgba(100,100,100,0.5); min-height: 20px; border-radius: 4px; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+        """
+        _PILL_STYLE = """
+            QFrame { background: rgba(50,50,50,0.8); border: 1px solid #3a3a3a;
+                border-radius: 12px; padding: 2px; }
+            QLabel { color: #bbbbbb; font-size: 11px; background: transparent; border: none; }
+            QComboBox { background-color: rgba(0,0,0,0.2); color: #cccccc;
+                border-radius: 9px; padding: 4px 8px; font-size: 11px; }
+            QComboBox::drop-down { border: none; }
+            QComboBox::down-arrow { background: transparent; }
+        """
+        _SEARCH_STYLE = """
+            QLineEdit { background: rgba(50,50,50,0.8); color: #cccccc;
+                border: 1px solid #3a3a3a; border-radius: 4px;
+                padding: 4px 8px 4px 4px; font-size: 11px; }
+            QLineEdit:focus { border: 1px solid rgba(29,101,202,0.6); }
+        """
+        _BTN_STYLE = """
+            QPushButton { background: rgba(255,255,255,0); border: none;
+                border-radius: 4px; padding: 2px; }
+            QPushButton:hover { background: rgba(255,255,255,0.15); }
+        """
+
+        try:
+            from .library_manager import LibraryManager
+            LibraryManager.ensure_library_exists()
+
+            # ── Library tab segment: My Library | BGEN Library ──
+            self.library_segment = CSC.TextSegmentControl(
+                ["My Library", "BGEN Library"],
+                height=28, font_size=11, radius=10,
+                frame_radius=13, use_frame=True,
+                frame_bg="rgba(255, 255, 255, 0.1)",
+            )
+            library_page_layout.addWidget(self.library_segment)
+
+            self.library_stack = QtWidgets.QStackedWidget()
+            self.library_stack.setStyleSheet("QStackedWidget { background: transparent; border: none; }")
+            library_page_layout.addWidget(self.library_stack)
+
+            # ══════════════════════════════════════════════════════════
+            # [Index 0] My Library page
+            # ══════════════════════════════════════════════════════════
+            my_library_widget = QtWidgets.QWidget()
+            my_library_widget.setStyleSheet("background: transparent;")
+            my_library_layout = QtWidgets.QVBoxLayout(my_library_widget)
+            my_library_layout.setContentsMargins(4, 4, 4, 4)
+            my_library_layout.setSpacing(2)
+
+            # ── Toolbar row: sort + search ──
+            lib_toolbar = QtWidgets.QHBoxLayout()
+            lib_toolbar.setContentsMargins(0, 0, 0, 0)
+            lib_toolbar.setSpacing(4)
+            lib_toolbar.addStretch()
+
+            # Sort button
+            self.lib_filter_btn = QtWidgets.QPushButton()
+            self.lib_filter_btn.setFixedSize(24, 24)
+            self.lib_filter_btn.setIcon(QtGui.QIcon(UT.get_icon('preference_icon.png', size=14, opacity=0.7)))
+            self.lib_filter_btn.setStyleSheet(_BTN_STYLE)
+            self.lib_filter_btn.setToolTip("Sort")
+            self.lib_filter_btn.clicked.connect(self._on_library_filter_menu)
+            lib_toolbar.addWidget(self.lib_filter_btn)
+
+            # Search toggle button
+            self.lib_search_btn = QtWidgets.QPushButton()
+            self.lib_search_btn.setFixedSize(24, 24)
+            self.lib_search_btn.setIcon(QtGui.QIcon(UT.get_icon('search_icon.png', size=14, opacity=0.7)))
+            self.lib_search_btn.setStyleSheet(_BTN_STYLE)
+            self.lib_search_btn.setToolTip("Search")
+            self.lib_search_btn.clicked.connect(self._toggle_library_search)
+            lib_toolbar.addWidget(self.lib_search_btn)
+
+            my_library_layout.addLayout(lib_toolbar)
+
+            # ── Search bar (collapsed by default) ──
+            self.lib_search_container = QtWidgets.QWidget()
+            self.lib_search_container.setMaximumHeight(0)
+            _search_layout = QtWidgets.QHBoxLayout(self.lib_search_container)
+            _search_layout.setContentsMargins(0, 2, 0, 2)
+            self.lib_search_input = QtWidgets.QLineEdit()
+            self.lib_search_input.setPlaceholderText("Search pickers...")
+            self.lib_search_input.setFixedHeight(26)
+            self.lib_search_input.setStyleSheet(_SEARCH_STYLE)
+            self.lib_search_input.textChanged.connect(self._on_library_search_changed)
+            _search_layout.addWidget(self.lib_search_input)
+            my_library_layout.addWidget(self.lib_search_container)
+
+            # ── Local grid scroll area ──
+            self.my_library_grid_area = QtWidgets.QScrollArea()
+            self.my_library_grid_area.setWidgetResizable(True)
+            self.my_library_grid_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            self.my_library_grid_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+            self.my_library_grid_area.setStyleSheet(_SCROLL_STYLE)
+
+            self.my_library_grid_container = QtWidgets.QWidget()
+            self.my_library_grid_container.setStyleSheet("background: transparent;")
+            self.my_library_grid = QtWidgets.QGridLayout(self.my_library_grid_container)
+            self.my_library_grid.setSpacing(8)
+            self.my_library_grid.setContentsMargins(8, 8, 8, 8)
+            self.my_library_grid.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+            self.my_library_grid_area.setWidget(self.my_library_grid_container)
+
+            my_library_layout.addWidget(self.my_library_grid_area)
+
+            # ── Create New button ──
+            self.lib_create_btn = QtWidgets.QPushButton("Create New Picker")
+            self.lib_create_btn.setFixedHeight(28)
+            self.lib_create_btn.setStyleSheet("""
+                QPushButton { background-color: #1d65ca; color: #dddddd;
+                    border: none; border-radius: 6px; font-size: 12px; }
+                QPushButton:hover { background-color: rgba(29,101,202,0.8); }
+            """)
+            self.lib_create_btn.clicked.connect(self._on_library_plus_menu)
+            my_library_layout.addWidget(self.lib_create_btn)
+
+            self.library_stack.addWidget(my_library_widget)  # index 0
+
+            # ══════════════════════════════════════════════════════════
+            # [Index 1] BGEN Library (web marketplace via QWebEngineView)
+            # ══════════════════════════════════════════════════════════
+            self._marketplace_mgr = MarketplaceManager.get_instance()
+
+            from .marketplace_webview import MarketplaceWebView
+            self._mkt_webview = MarketplaceWebView(parent=self)
+            self._mkt_webview.set_managers(
+                AuthManager.get_instance(),
+                MarketplaceManager.get_instance(),
+            )
+
+            # Connect WebView bridge signals
+            self._mkt_webview.download_requested.connect(
+                lambda pid: self._marketplace_mgr.download_product(pid)
+            )
+            self._mkt_webview.checkout_requested.connect(
+                lambda pid: self._marketplace_mgr.initiate_purchase(pid)
+            )
+            self._mkt_webview.sign_in_requested.connect(
+                lambda: AuthManager.get_instance().start_sign_in()
+            )
+            self._mkt_webview.sign_in_google_requested.connect(
+                lambda: AuthManager.get_instance().sign_in_with_google()
+            )
+            self._mkt_webview.sign_out_requested.connect(
+                lambda: AuthManager.get_instance().sign_out()
+            )
+            self._mkt_webview.open_library_requested.connect(
+                lambda: self.library_segment.setCurrentIndex(0)
+            )
+
+            # Connect checkout_ready → open embedded Stripe checkout page
+            from .stripe_checkout_dialog import StripeCheckoutPage
+            self._stripe_checkout_page = StripeCheckoutPage(parent=self)
+
+            self._marketplace_mgr.checkout_ready.connect(self._on_checkout_ready)
+            self._stripe_checkout_page.payment_success.connect(
+                lambda pi_id: self._marketplace_mgr._on_stripe_success(
+                    pi_id, self._marketplace_mgr._checkout_product_id
+                )
+            )
+            self._stripe_checkout_page.back_requested.connect(
+                lambda: self.library_stack.setCurrentIndex(1)
+            )
+
+            # Push download progress/completion to WebView
+            self._marketplace_mgr.download_progress.connect(
+                lambda pid, done, total: self._mkt_webview.push_download_progress(pid, done, total)
+            )
+            self._marketplace_mgr.download_completed.connect(self._on_webview_download_completed)
+            self._marketplace_mgr.download_failed.connect(
+                lambda pid, err: self._mkt_webview.push_download_failed(pid, err)
+            )
+
+            # Push auth state changes to WebView
+            auth = AuthManager.get_instance()
+            auth.auth_state_changed.connect(
+                lambda is_signed_in: self._mkt_webview.push_auth_state_changed(is_signed_in)
+            )
+
+            self.library_stack.addWidget(self._mkt_webview)           # index 1
+            self.library_stack.addWidget(self._stripe_checkout_page)  # index 2
+
+            # ── Create library controller ──
+            self.library_controller = LibraryPageController(
+                self.my_library_grid, self.my_library_grid_container,
+                self.my_library_grid_area, self
+            )
+            self.library_controller.picker_open_requested.connect(self.open_picker_from_library)
+
+            # Deferred initial refresh
+            QtCore.QTimer.singleShot(200, self.library_controller.refresh)
+
+            # Connect library tab segment to stack
+            self.library_segment.segment_changed.connect(self._on_library_tab_changed)
+
+        except Exception as e:
+            library_page_layout.addWidget(QtWidgets.QLabel(f"Library not available: {e}"))
+            self.library_controller = None
+            import traceback; traceback.print_exc()
+
+        # --- Settings page ---
+        try:
+            self.settings_page = SettingsPage(
+                parent_window=self,
+                browse_callback=self._browse_library_path,
+                open_folder_callback=self._open_library_folder,
+                browse_downloads_callback=lambda: None,
+                open_downloads_callback=lambda: None,
+                parent=self,
+            )
+        except Exception:
+            self.settings_page = QtWidgets.QWidget()
+            import traceback; traceback.print_exc()
+
+        # --- Auth integration (account management is now in the web marketplace) ---
+        self._auth = AuthManager.get_instance()
+        self._auth.auth_state_changed.connect(self._on_auth_state_changed)
+        self._auth.profile_error.connect(
+            lambda msg: print(f"[BGEN Picker] Warning: {msg}")
+        )
+
+        # --- Page stack ---
+        self.page_stack = QtWidgets.QStackedWidget()
+        self.page_stack.setStyleSheet("QStackedWidget { background: transparent; border: none; }")
+        self.page_stack.addWidget(self.editor_page)      # index 0
+        self.page_stack.addWidget(self.library_page)      # index 1
+        self.page_stack.addWidget(self.settings_page)     # index 2
+        self.page_stack.setCurrentIndex(0)
+
+        # --- Page segment control (in title bar, before close button) ---
+        package_dir = Path(__file__).parent
+        icon_dir = package_dir / 'bgen_picker_icons'
+        page_icon_paths = [
+            str(icon_dir / 'bgen_editor_icon.png'),
+            str(icon_dir / 'bgen_library_icon.png'),
+            str(icon_dir / 'bgen_settings_icon.png'),
+        ]
+        page_names = ['Editor', 'Library', 'Settings']
+        self.page_segment = CSC.PageSegmentControl(page_icon_paths, page_names, button_size=18, icon_size=10)
+        self.page_segment.set_selected_index(0)
+        self.page_segment.page_changed.connect(self._on_page_changed)
+
+        self.page_segment_frame = QtWidgets.QFrame()
+        self.page_segment_frame.setObjectName("pageSegmentFrame")
+        self.page_segment_frame.setStyleSheet("""QFrame#pageSegmentFrame
+                                         {background: rgba(255, 255, 255, .10);
+                                         border: none;
+                                         padding: 3px;
+                                         border-radius: 13px;}""")
+        page_segment_layout = QtWidgets.QHBoxLayout(self.page_segment_frame)
+        page_segment_layout.setContentsMargins(0, 0, 0, 0)
+        page_segment_layout.addWidget(self.page_segment)
+
+        # Replace the placeholder in util_frame with the actual segment control
+        idx = self.util_frame_col.indexOf(self._page_segment_placeholder)
+        if idx >= 0:
+            self.util_frame_col.removeWidget(self._page_segment_placeholder)
+            self._page_segment_placeholder.deleteLater()
+            self.util_frame_col.insertWidget(idx, self.page_segment_frame)
+
+        # --- Assemble main layout ---
         self.top_col.addWidget(self.util_frame)
 
-        self.tool_col.addWidget(self.tools_EF)
-
-        self.main_frame_col.addLayout(self.top_col) 
-        self.main_frame_col.addLayout(self.area_01_col)
-        self.main_frame_col.addLayout(self.tool_col)
+        self.main_frame_col.addLayout(self.top_col)
+        self.main_frame_col.addWidget(self.page_stack)
         self.main_frame_col.addLayout(self.bottom_col)
 
         self.main_layout.addWidget(self.main_frame)
+
+        # --- Canvas edit panel overlay (inside canvas_frame, Blender-style) ---
+        self.canvas_edit_panel = PC.CanvasEditPanel(self.canvas_frame)
+
+        # Put the edit scroll area INSIDE the overlay panel
+        self.canvas_edit_panel.add_widget(self.edit_scroll_area)
+
+        # Put the "Exit Edit Mode" button at the bottom of the panel
+        toggle_btn_layout = QtWidgets.QHBoxLayout()
+        toggle_btn_layout.setContentsMargins(8, 2, 8, 10)
+        toggle_btn_layout.addWidget(self.toggle_edit_mode_button)
+        self.canvas_edit_panel.add_layout(toggle_btn_layout)
+
+        self.canvas_edit_panel.setVisible(False)
+        self.canvas_edit_panel.width_changed.connect(self._on_edit_panel_width_changed)
+
+        # Wire the controller's button-edit widget into the Button page
+        self.edit_value_layout.addWidget(self.edit_controller.get_button_page_widget())
+        self.edit_widgets = self.edit_controller.widgets
+
+        # Listen for canvas_frame resize to reposition the overlay panel
+        self.canvas_frame.installEventFilter(self)
 
     def setup_connections(self):
         self.close_button.clicked.connect(self.close)
@@ -587,11 +1004,30 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.redo_shortcut.activated.connect(self.redo_action)
 
         self.edit_mode_shortcut = QShortcut(QtGui.QKeySequence("Tab"), self)
-        self.edit_mode_shortcut.activated.connect(self.toggle_edit_mode) 
+        self.edit_mode_shortcut.activated.connect(self.toggle_edit_mode)
+
+        self.save_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+S"), self)
+        self.save_shortcut.activated.connect(self.save_current_picker)
     #----------------------------------------------------------------------------------------------------------------------------------------
+    def _get_active_canvas(self):
+        """Get the canvas for the currently active tab."""
+        if not self.tab_system.current_tab:
+            return None
+        tab_data = self.tab_system.tabs.get(self.tab_system.current_tab)
+        return tab_data['canvas'] if tab_data else None
+
     def undo_action(self):
         """Perform undo operation"""
         try:
+            # If curve editing is active, delegate to curve editor's internal undo
+            canvas = self._get_active_canvas()
+            if canvas and hasattr(canvas, 'curve_editor') and canvas.curve_editor.is_editing():
+                if canvas.curve_editor.state.undo():
+                    canvas.curve_editor.controls.set_mirror_enabled(
+                        canvas.curve_editor.state.mirror_state.enabled)
+                    canvas.curve_editor.update()
+                return
+
             result = DM.PickerDataManager.undo()
             if result[0]:  # operation_name
                 operation_name, selected_button_ids = result
@@ -606,6 +1042,15 @@ class AnimPickerWindow(QtWidgets.QWidget):
     def redo_action(self):
         """Perform redo operation"""
         try:
+            # If curve editing is active, delegate to curve editor's internal redo
+            canvas = self._get_active_canvas()
+            if canvas and hasattr(canvas, 'curve_editor') and canvas.curve_editor.is_editing():
+                if canvas.curve_editor.state.redo():
+                    canvas.curve_editor.controls.set_mirror_enabled(
+                        canvas.curve_editor.state.mirror_state.enabled)
+                    canvas.curve_editor.update()
+                return
+
             result = DM.PickerDataManager.redo()
             if result[0]:  # operation_name
                 operation_name, selected_button_ids = result
@@ -741,208 +1186,792 @@ class AnimPickerWindow(QtWidgets.QWidget):
             print(f"Error getting selected buttons: {e}")
             return []
     
-    #----------------------------------------------------------------------------------------------------------------------------------------   
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    def _on_edit_panel_width_changed(self, new_width):
+        """Handle edit panel width changes."""
+        pass  # Panel repositions itself via _update_position()
+
+    def _on_toggle_show_joints(self):
+        """Toggle joint and NURBS curve (controller) visibility in the active Maya viewport."""
+        try:
+            panel = cmds.getPanel(withFocus=True)
+            if cmds.getPanel(typeOf=panel) == 'modelPanel':
+                current_joints = cmds.modelEditor(panel, q=True, joints=True)
+                new_state = not current_joints
+                cmds.modelEditor(panel, e=True, joints=new_state)
+                cmds.modelEditor(panel, e=True, nurbsCurves=new_state)
+                self._joints_visible = new_state
+                icon = self._joints_visible_icon if self._joints_visible else self._joints_hidden_icon
+                self.show_joints_button.setIcon(QtGui.QIcon(icon))
+        except Exception:
+            pass
+
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    def _on_page_changed(self, index):
+        """Switch the visible page in the stacked widget."""
+        self.page_stack.setCurrentIndex(index)
+        if index == 1 and self.library_controller:
+            self.library_controller._last_col_count = 0
+            self.library_controller.catch_up_if_needed()
+            QtCore.QTimer.singleShot(0, self.library_controller._relayout)
+        elif index == 2 and hasattr(self, 'settings_page') and hasattr(self.settings_page, 'on_page_shown'):
+            self.settings_page.on_page_shown()
+
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    # [Library UI Handlers]
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    def _toggle_library_search(self):
+        """Toggle search bar visibility with animation."""
+        is_visible = self.lib_search_container.maximumHeight() > 0
+        anim = QPropertyAnimation(self.lib_search_container, b"maximumHeight")
+        anim.setDuration(150)
+        anim.setStartValue(self.lib_search_container.maximumHeight())
+        anim.setEndValue(0 if is_visible else 32)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start()
+        self._lib_search_anim = anim  # prevent GC
+        if is_visible:
+            self.lib_search_input.clear()
+        else:
+            QtCore.QTimer.singleShot(160, self.lib_search_input.setFocus)
+
+    def _on_library_search_changed(self, text):
+        """Forward search text to library controller."""
+        if self.library_controller:
+            self.library_controller.set_search_text(text)
+
+    def _on_library_filter_menu(self):
+        """Show sort mode popup menu."""
+        menu = QtWidgets.QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background-color: rgba(40,40,40,240); border: 1px solid rgba(80,80,80,200);
+                border-radius: 4px; padding: 4px; }
+            QMenu::item { padding: 4px 20px 4px 8px; border-radius: 2px; color: #cccccc; }
+            QMenu::item:selected { background-color: rgba(29,101,202,180); }
+        """)
+
+        current_sort = self.library_controller._sort_mode if self.library_controller else "modified"
+        sorts = [("Last Modified", "modified"), ("Date Created", "created"),
+                 ("Name (A→Z)", "az"), ("Name (Z→A)", "za")]
+        for label, mode in sorts:
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(current_sort == mode)
+            action.triggered.connect(lambda checked, m=mode: self._set_library_sort(m))
+
+        menu.exec_(self.lib_filter_btn.mapToGlobal(self.lib_filter_btn.rect().bottomLeft()))
+
+    def _set_library_sort(self, mode):
+        if self.library_controller:
+            self.library_controller.set_sort_mode(mode)
+
+    def _on_library_plus_menu(self):
+        """Show a menu from the Create button with New Picker, Import, and Convert options."""
+        from . import picker_io as PIO
+        menu = QtWidgets.QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background-color: #2a2a2a; color: #dddddd;
+                border: 1px solid #3a3a3a; border-radius: 4px; padding: 4px; }
+            QMenu::item { padding: 5px 20px; border-radius: 3px; }
+            QMenu::item:selected { background-color: rgba(29,101,202,0.4); }
+        """)
+
+        new_action = menu.addAction("New Picker")
+        import_action = menu.addAction("Import from File")
+        convert_action = None
+        if PIO.detect_legacy_scene_data():
+            menu.addSeparator()
+            convert_action = menu.addAction("Convert Scene Data to .bpicker")
+
+        action = menu.exec_(self.lib_create_btn.mapToGlobal(
+            QtCore.QPoint(0, -menu.sizeHint().height())
+        ))
+
+        if action == new_action:
+            self._on_library_create_new()
+        elif action == import_action:
+            self._on_library_import()
+        elif convert_action and action == convert_action:
+            self._convert_legacy_data()
+
+    def _on_library_create_new(self):
+        """Show dialog to name and create a new picker."""
+        dialog = CD.CustomDialog(self, title="New Picker", size=(280, 90))
+        name_input = QtWidgets.QLineEdit("Untitled Picker")
+        name_input.setStyleSheet(
+            "background: rgba(50,50,50,0.8); color: #dddddd; "
+            "border: 1px solid #3a3a3a; border-radius: 4px; padding: 4px;"
+        )
+        name_input.selectAll()
+        dialog.add_widget(name_input)
+
+        btn_layout = QtWidgets.QHBoxLayout()
+        ok_btn = CB.CustomButton("Create", color="#00749a")
+        cancel_btn = CB.CustomButton("Cancel", color="#444444")
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        dialog.add_layout(btn_layout)
+
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            name = name_input.text().strip() or "Untitled Picker"
+            self.create_new_picker(name)
+            if self.library_controller:
+                self.library_controller.refresh()
+
+    def _on_library_import(self):
+        """Import a .json or .bpicker file into the library and open it."""
+        from . import picker_io as PIO
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Import Picker",
+            os.path.expanduser("~"),
+            "Picker Files (*.bpicker *.json);;All Files (*.*)"
+        )
+        if not file_path:
+            return
+
+        try:
+            picker_uuid = None
+            if file_path.lower().endswith('.json'):
+                picker_uuid = PIO.import_legacy_json_to_bpicker(file_path)
+            elif file_path.lower().endswith('.bpicker'):
+                picker_uuid = PIO.import_bpicker_to_library(file_path)
+
+            if picker_uuid:
+                self.open_picker_from_library(picker_uuid)
+
+            if self.library_controller:
+                self.library_controller.refresh()
+        except Exception as e:
+            cmds.warning(f"Import failed: {e}")
+
+    def _convert_legacy_data(self):
+        """Convert embedded Maya scene data to a .bpicker and open it."""
+        from . import picker_io as PIO
+        dialog = CD.CustomDialog(self, title="Convert Scene Data", size=(280, 90))
+        name_input = QtWidgets.QLineEdit("Converted Picker")
+        name_input.setStyleSheet(
+            "background: rgba(50,50,50,0.8); color: #dddddd; "
+            "border: 1px solid #3a3a3a; border-radius: 4px; padding: 4px;"
+        )
+        name_input.selectAll()
+        dialog.add_widget(name_input)
+
+        btn_layout = QtWidgets.QHBoxLayout()
+        ok_btn = CB.CustomButton("Convert", color="#00749a")
+        cancel_btn = CB.CustomButton("Cancel", color="#444444")
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        dialog.add_layout(btn_layout)
+
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            name = name_input.text().strip() or "Converted Picker"
+            picker_uuid = PIO.convert_legacy_scene_to_bpicker(picker_name=name)
+            if picker_uuid:
+                self.open_picker_from_library(picker_uuid)
+                if self.library_controller:
+                    self.library_controller.refresh()
+
+    def _on_scene_opened(self):
+        """Called when a Maya scene is opened or a new scene is created.
+
+        Resets the current session and reloads data from the new scene,
+        then re-runs the launch-state check so the legacy-data popup
+        (or scene-link auto-open) can fire again.
+        """
+        try:
+            # Clear current session
+            if self.session:
+                self.session = None
+            DM.PickerDataManager.set_active_session(None)
+            DM.PickerDataManager._cached_data = None
+
+            # Clear undo/redo stacks for the old scene
+            DM.PickerDataManager._undo_stack.clear()
+            DM.PickerDataManager._redo_stack.clear()
+
+            # Rebuild tabs from new scene data
+            self.tab_system.clear_all_tabs()
+            data = DM.PickerDataManager.get_data()
+            tab_names = list(data.get('tabs', {}).keys())
+            if tab_names:
+                for tab_name in tab_names:
+                    self.tab_system.add_tab(tab_name)
+                    self.initialize_tab_data(tab_name)
+                self.tab_system.switch_tab(tab_names[0])
+                QtCore.QTimer.singleShot(50, self.create_buttons)
+            else:
+                # Empty scene — add a default tab
+                self.tab_system.add_tab("Tab 1")
+                self.initialize_tab_data("Tab 1")
+                DM.PickerDataManager.add_tab("Tab 1")
+
+            # Reset guard so the dialog can show for the new scene
+            self._launch_dialog_pending = False
+            # Re-run launch state check after a short delay
+            QtCore.QTimer.singleShot(300, self._check_launch_state)
+        except Exception as e:
+            print(f"[picker] Error handling scene change: {e}")
+
+    def _check_launch_state(self):
+        """Determine what to show on launch: existing session, legacy data, or prompt."""
+        from . import picker_io as PIO
+
+        # Prevent multiple concurrent launch-state checks from queuing
+        # duplicate dialogs (e.g. __init__ timer + SceneOpened callback).
+        if self._launch_dialog_pending:
+            return
+
+        # Invalidate stale class-level cache so we always read from the
+        # current scene (the cache may belong to a previous window).
+        DM.PickerDataManager._cached_data = None
+
+        # 1. Check for existing scene link (previously opened .bpicker)
+        link = DM.PickerDataManager.get_scene_link()
+        if link and link.get("bpicker_uuid"):
+            try:
+                self.open_picker_from_library(link["bpicker_uuid"])
+                # Verify the session was actually established
+                if self.session and self.session.uuid:
+                    return
+                print("[launch] Picker link found but session failed to open.")
+            except Exception as e:
+                print(f"[launch] Could not reopen linked picker: {e}")
+                # Clear the stale link so legacy detection can work
+                DM.PickerDataManager.clear_scene_link()
+
+        # 2. Legacy or no data — restore view state for the already-loaded tabs
+        #    (setup_tab_system loaded legacy data + buttons, now restore zoom/pan)
+        QtCore.QTimer.singleShot(100, self._restore_canvas_view_for_current_tab)
+
+        # 3. Check for legacy embedded data — show launch dialog with convert option
+        if PIO.detect_legacy_scene_data():
+            self._launch_dialog_pending = True
+            QtCore.QTimer.singleShot(300, self._show_launch_dialog)
+            return
+
+        # 4. No data at all — show launch dialog
+        self._launch_dialog_pending = True
+        QtCore.QTimer.singleShot(300, self._show_launch_dialog)
+
+    def _restore_canvas_view_for_current_tab(self):
+        """Restore saved zoom/pan for the current tab after the canvas has its real size."""
+        if self.tab_system.current_tab:
+            tab_name = self.tab_system.current_tab
+            canvas = self.tab_system.tabs.get(tab_name, {}).get('canvas')
+            if canvas and canvas.width() > 0:
+                tab_data = DM.PickerDataManager.get_tab_data(tab_name)
+                saved_zoom = tab_data.get('zoom_factor', 1.0)
+                saved_px = tab_data.get('pan_offset_x', 0.0)
+                saved_py = tab_data.get('pan_offset_y', 0.0)
+                canvas.zoom_factor = saved_zoom
+                canvas.pan_offset = QtCore.QPointF(saved_px, saved_py)
+                canvas.update_button_positions()
+                canvas.update()
+
+    def _browse_library_path(self):
+        """Browse for a new library folder location."""
+        from .library_manager import LibraryManager
+        current = str(LibraryManager.get_library_path())
+        new_path = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select Library Folder", current
+        )
+        if new_path:
+            LibraryManager.set_library_path(new_path)
+            if hasattr(self, 'settings_page') and hasattr(self.settings_page, 'preferences'):
+                self.settings_page.preferences.lib_path_label.setFullText(new_path)
+            if self.library_controller:
+                self.library_controller.refresh()
+
+    def _open_library_folder(self):
+        """Open the library folder in the OS file manager."""
+        from .library_manager import LibraryManager
+        import subprocess, sys
+        path = str(LibraryManager.get_library_path())
+        try:
+            if sys.platform == 'win32':
+                os.startfile(path)
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', path])
+            else:
+                subprocess.Popen(['xdg-open', path])
+        except Exception as e:
+            cmds.warning(f"Could not open folder: {e}")
+
+    def _show_launch_dialog(self):
+        """Show the Create New / Open From Library launch prompt."""
+        self._launch_dialog_pending = False
+        from . import picker_io as PIO
+        try:
+            from . import launch_dialog as LD
+            has_legacy = PIO.detect_legacy_scene_data()
+            dialog = LD.LaunchDialog(self, has_legacy_data=has_legacy)
+            result = dialog.get_result()
+
+            if result == "create_new":
+                self.create_new_picker()
+            elif result == "open_library":
+                if hasattr(self, 'page_segment'):
+                    self.page_segment.set_selected_index(1)
+                    self._on_page_changed(1)
+            elif result == "convert_legacy":
+                self._convert_legacy_data()
+        except Exception as e:
+            print(f"Launch dialog error: {e}")
+
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    # [Library / Session]
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    def open_picker_from_library(self, picker_uuid):
+        """Open a .bpicker from the library by UUID.
+
+        Raises FileNotFoundError if the UUID is not found in the library,
+        so callers (e.g. _check_launch_state) can fall back gracefully.
+        """
+        try:
+            # Close existing session
+            if self.session:
+                self.session.close()
+                DM.PickerDataManager.set_active_session(None)
+
+            self.session = PickerSession()
+            self.session.open_from_library(picker_uuid)
+            self.session.sync_to_scene()
+
+            # Invalidate cache so _rebuild reads the freshly synced data
+            DM.PickerDataManager._cached_data = None
+
+            # Rebuild tabs and buttons from the loaded data
+            self._rebuild_ui_from_data()
+
+            # Set canvas reference for preview capture
+            canvas = self._get_current_canvas()
+            if canvas:
+                self.session.set_canvas(canvas)
+            self._wire_session_callbacks()
+            self._update_window_title()
+
+            # Switch to editor page
+            if hasattr(self, 'page_segment'):
+                self.page_segment.set_selected_index(0)
+                self.page_stack.setCurrentIndex(0)
+
+        except FileNotFoundError:
+            raise  # Let callers handle missing-library entries
+        except Exception as e:
+            cmds.warning(f"Failed to open picker from library: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def create_new_picker(self, name="Untitled Picker"):
+        """Create a new .bpicker, add to library, and open it."""
+        try:
+            if self.session:
+                self.session.close()
+                DM.PickerDataManager.set_active_session(None)
+
+            self.session = PickerSession()
+            self.session.create_new(name=name)
+            self.session.sync_to_scene()
+
+            # Invalidate cache so _rebuild reads the freshly synced data
+            DM.PickerDataManager._cached_data = None
+
+            self._rebuild_ui_from_data()
+
+            canvas = self._get_current_canvas()
+            if canvas:
+                self.session.set_canvas(canvas)
+            self._wire_session_callbacks()
+            self._update_window_title()
+
+        except Exception as e:
+            cmds.warning(f"Failed to create new picker: {e}")
+
+    def _rebuild_ui_from_data(self):
+        """Rebuild tabs and buttons from current PickerDataManager data."""
+        data = DM.PickerDataManager.get_data()
+        tab_names = list(data.get('tabs', {}).keys())
+
+        if not tab_names:
+            return
+
+        # Clear existing tabs
+        self.tab_system.clear_all_tabs()
+
+        # Create tabs from data
+        for tab_name in tab_names:
+            self.tab_system.add_tab(tab_name)
+            self.initialize_tab_data(tab_name)
+
+        # Switch to first tab and load buttons
+        first_tab = tab_names[0]
+        self.tab_system.switch_tab(first_tab)
+        QtCore.QTimer.singleShot(50, self._create_buttons_and_update_session)
+
+    def _create_buttons_and_update_session(self):
+        """Create buttons then update session canvas reference for preview capture."""
+        self.create_buttons()
+        if self.session:
+            canvas = self._get_current_canvas()
+            if canvas:
+                self.session.set_canvas(canvas)
+                # Schedule initial preview after a short delay for canvas to render
+                QtCore.QTimer.singleShot(300, self.session.schedule_preview_update)
+
+    def _get_current_canvas(self):
+        """Get the active tab's canvas widget."""
+        if self.tab_system.current_tab and self.tab_system.current_tab in self.tab_system.tabs:
+            return self.tab_system.tabs[self.tab_system.current_tab].get('canvas')
+        return None
+
+    #----------------------------------------------------------------------------------------------------------------------------------------
     def info(self):
         # Opens link to Manual
         cmds.launch(web='https://munorr.com/tools/ft-anim-picker/')
-        print(f'Floating Tools Anim Picker {anim_picker_version}')
+        print(f'BGEN Picker {anim_picker_version}')
 
     def toggle_edit_mode(self):
-        self.edit_mode = not self.edit_mode
+        """Toggle edit mode — delegates to EditModeController."""
+        self.edit_controller.toggle()
+        self.edit_mode = self.edit_controller.is_active
 
-        # Store current window geometry
-        current_geometry = self.geometry()
-        edit_panel_width = self.edit_scroll_area.width()
+    def _animate_edit_mode_width(self):
+        """Expand/contract the window so the canvas stays usable in edit mode."""
+        panel_width = self.canvas_edit_panel.width()
+        canvas_width = self.canvas_frame.width()
+        geo = self.geometry()
 
-        # Update Edit mode UI Elements
-        self.edit_scroll_area.setVisible(self.edit_mode)
-        self.toggle_edit_mode_button.setVisible(self.edit_mode)
+        # The visible canvas area after the panel overlays
+        visible_canvas = canvas_width - panel_width
+        min_visible_ratio = 0.4
+        min_visible_px = canvas_width * min_visible_ratio
 
-        # Adjust window width based on edit mode
-        if self.edit_mode:
-            # Add edit panel width
-            self.setMinimumSize(400,200)
-            new_width = current_geometry.width() + edit_panel_width
-            self.setGeometry(
-                current_geometry.x(),
-                current_geometry.y(),
-                new_width,
-                current_geometry.height()
-            )
-            # Set active window to self
-            self.activateWindow()
-            self.raise_()
+        if self.edit_mode and visible_canvas < min_visible_px:
+            needed_extra = int(panel_width * 0.65)
+            target_width = geo.width() + needed_extra
+            self._edit_mode_width_delta = needed_extra
+        elif not self.edit_mode and getattr(self, '_edit_mode_width_delta', 0) > 0:
+            target_width = max(200, geo.width() - self._edit_mode_width_delta)
+            self._edit_mode_width_delta = 0
         else:
-            # Subtract edit panel width
-            self.setMinimumSize(200,200)
-            new_width = current_geometry.width() - edit_panel_width
-            self.setGeometry(
-                current_geometry.x(),
-                current_geometry.y(),
-                new_width,
-                current_geometry.height()
-            )
+            if self.edit_mode:
+                self._edit_mode_width_delta = 0
+            return
 
-        # Update the canvas for all tabs
-        for tab_name, tab_data in self.tab_system.tabs.items():
-            canvas = tab_data['canvas']
-            canvas.set_edit_mode(self.edit_mode)
-            
-            # Update cursor for all buttons
-            for button in canvas.buttons:
-                button.update_cursor()
-                
-        # Update the button state in the UI
-        if hasattr(self, 'edit_button'):
-            self.edit_button.setChecked(self.edit_mode)
+        self._run_width_animation(geo, target_width)
 
-        # Force update of the layout
-        self.update()
-        self.update_edit_widgets_delayed()
-        QtCore.QTimer.singleShot(0, self.update_buttons_for_current_tab)
+    def _run_width_animation(self, geo, target_width):
+        """Animate the window width from current to target.
+
+        Pan compensation happens in the canvas resizeEvent (checks
+        _programmatic_resize flag), so the scene content stays anchored.
+        """
+        if hasattr(self, '_width_anim') and self._width_anim is not None:
+            self._width_anim.stop()
+
+        start_w = geo.width()
+        if start_w == target_width:
+            return
+
+        self._programmatic_resize = True
+
+        anim = QtCore.QVariantAnimation(self)
+        anim.setStartValue(float(start_w))
+        anim.setEndValue(float(target_width))
+        anim.setDuration(250)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        x, y, h = geo.x(), geo.y(), geo.height()
+
+        def on_value_changed(val):
+            self.setGeometry(x, y, int(val), h)
+
+        def on_finished():
+            self._programmatic_resize = False
+            if hasattr(self, 'update_buttons_for_current_tab'):
+                self.update_buttons_for_current_tab()
+
+        anim.valueChanged.connect(on_value_changed)
+        anim.finished.connect(on_finished)
+        self._width_anim = anim
+        anim.start()
     #----------------------------------------------------------------------------------------------------------------------------------------
     def update_anim_picker(self):
-        UpdateWidget(self).show()
+        """Navigate to Settings > Updates section."""
+        if hasattr(self, 'page_segment') and hasattr(self, 'settings_page'):
+            self.page_segment.set_selected_index(2)
+            self._on_page_changed(2)
+            if hasattr(self.settings_page, 'set_section'):
+                self.settings_page.set_section(1)  # Updates section index
 
     def update_anim_picker_checker(self):
-        if not hasattr(self, '_update_widget'):
-            from .update_ui import UpdateWidget
-            self._update_widget = UpdateWidget(self)
-            self._update_widget.hide()
-        
-        latest_release = self._update_widget.parse_version(self._update_widget.get_latest_tag())
-        current_version = self._update_widget.parse_version(ft_anim_picker.src.__version__)
-        
-        #print(f'Latest Release: {latest_release}')
-        #print(f'Current Version: {current_version}')
-        
+        """Check for updates via UpdateManager."""
+        from .update_manager import UpdateManager
+        mgr = UpdateManager.get_instance()
+        # Connect signals if not already connected
+        if not hasattr(self, '_update_signals_connected'):
+            mgr.update_available.connect(self._on_update_available)
+            mgr.no_update.connect(self._on_no_update)
+            mgr.update_check_failed.connect(self._on_update_check_failed)
+            self._update_signals_connected = True
+        mgr.check_for_update()
+
+    def _on_update_available(self, release):
         try:
-            if latest_release and self._update_widget.is_newer_version(latest_release, current_version):
-                self.update_anim_picker_button.setVisible(True)
-                self.info_util.set_notification(state=True)
-                self.info_util.set_menu_item_notification("Update", state=True)
-                #print(f"Update available: {latest_release} > {current_version}")
+            self.info_util.set_notification(state=True)
+            self.info_util.set_menu_item_notification("Update", state=True)
+            if hasattr(self, 'page_segment'):
+                self.page_segment.set_notification(2, state=True, color="#1D65CA")
+            # Show banner (unless user dismissed this version during this session)
+            version = release.get("version", "")
+            is_critical = release.get("is_critical", False)
+            if is_critical or not self.update_banner.is_dismissed_this_session(version):
+                self.update_banner.show_update(release)
             else:
-                self.update_anim_picker_button.setVisible(False)
-                self.info_util.set_notification(state=False)
-                self.info_util.set_menu_item_notification("Update", state=False)
-                #print(f"No update needed: {latest_release} <= {current_version}")
+                self.update_banner.hide_banner()
         except Exception as e:
-            print(f"Error checking for updates: {e}")
-            self.update_anim_picker_button.setVisible(False) 
+            print(f"Error showing update notification: {e}")
+
+    def _on_no_update(self, current_version):
+        try:
+            self.info_util.set_notification(state=False)
+            self.info_util.set_menu_item_notification("Update", state=False)
+            if hasattr(self, 'page_segment'):
+                self.page_segment.set_notification(2, state=False)
+            self.update_banner.hide_banner()
+        except Exception as e:
+            print(f"Error clearing update notification: {e}")
+
+    def _on_update_check_failed(self, error_msg):
+        try:
+            if hasattr(self, 'page_segment'):
+                self.page_segment.set_notification(2, state=False)
+        except Exception:
+            pass
     #----------------------------------------------------------------------------------------------------------------------------------------
-    # [External Data Management]  
+    # [Save / Save As]
     #----------------------------------------------------------------------------------------------------------------------------------------
-    def store_picker(self):
-        """Enhanced store picker method with current tab vs all tabs option"""
-        import maya.cmds as cmds
-        
-        # First, show the dialog to choose save mode
-        from . import picker_io
-        save_mode = picker_io.get_save_mode_dialog()
-        
+    def save_current_picker(self):
+        """Save the current picker session to its .bpicker archive."""
+        if not self.session:
+            print("[FT Picker] No active session to save.")
+            return
+        self.session.save()
+        self._update_window_title()
+
+    def save_picker_as(self):
+        """Save current picker as a new .bpicker with a new name/UUID."""
+        if not self.session:
+            return
+
+        from . import custom_dialog as CD
+        dialog = CD.CustomDialog(self, title="Save As", size=(280, 90))
+        current_name = ""
+        if self.session.metadata:
+            current_name = self.session.metadata.get("picker_name", "")
+        name_input = QtWidgets.QLineEdit(current_name)
+        name_input.setStyleSheet(
+            "background: rgba(50,50,50,0.8); color: #dddddd; "
+            "border: 1px solid #3a3a3a; border-radius: 4px; padding: 4px;"
+        )
+        name_input.setPlaceholderText("Picker name...")
+        dialog.add_widget(name_input)
+
+        btn_layout = QtWidgets.QHBoxLayout()
+        ok_btn = CB.CustomButton("Save", color="#00749a")
+        cancel_btn = CB.CustomButton("Cancel", color="#444444")
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        dialog.add_layout(btn_layout)
+
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            new_name = name_input.text().strip()
+            if new_name:
+                self.session.save_as(new_name)
+                self._update_window_title()
+
+    def _update_window_title(self):
+        """Update the window title to show picker name and dirty state."""
+        if not self.session or not self.session.metadata:
+            return
+        name = self.session.metadata.get("picker_name", "Untitled")
+        dirty = " *" if self.session.is_dirty() else ""
+        self.setWindowTitle(f"BGEN Picker - {name}{dirty}")
+
+    def _wire_session_callbacks(self):
+        """Connect the active session's save/dirty callbacks to the UI."""
+        if self.session:
+            self.session._on_save_callback = self._on_picker_saved
+            self.session._on_dirty_callback = self._update_window_title
+
+    def _on_picker_saved(self, auto=False):
+        """Called after any save (auto or manual) to show the save indicator."""
+        canvas = self._get_current_canvas()
+        if canvas and hasattr(canvas, 'save_indicator'):
+            label = "Auto-saved \u2713" if auto else "Saved \u2713"
+            canvas.save_indicator.show_indicator(label)
+        self._update_window_title()
+
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    # [External Data Management]
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    def export_picker(self):
+        """Export current tab or all tabs as a .bpicker file to disk."""
+        from . import picker_io as PIO
+
+        save_mode = PIO.get_save_mode_dialog()
         if save_mode == 'cancel':
-            return  # User cancelled
-        
-        # Get the current tab name for potential current tab saving
+            return
+
         current_tab_name = self.tab_system.current_tab if hasattr(self, 'tab_system') else None
-        
-        # Validate that we have a current tab if user chose current tab mode
+
         if save_mode == 'current':
             if not current_tab_name:
                 QtWidgets.QMessageBox.warning(
-                    self, 
-                    "No Current Tab", 
-                    "No current tab is available to save. Please select a tab first."
+                    self, "No Current Tab",
+                    "No current tab is available to export. Please select a tab first.",
                 )
                 return
-        
-        # Set default filename based on save mode
-        if save_mode == 'current':
-            default_filename = f"{current_tab_name}_picker_data.json"
+            default_filename = f"{current_tab_name}.bpicker"
         else:
-            default_filename = "picker_data.json"
-        
-        # Get the appropriate directory for the file dialog
-        start_directory = picker_io.get_file_dialog_directory()
-        # Combine directory with default filename
+            name = "picker_data"
+            if self.session and self.session.metadata:
+                name = self.session.metadata.get('picker_name', name)
+            default_filename = f"{name}.bpicker"
+
+        start_directory = PIO.get_file_dialog_directory()
         default_path = os.path.join(start_directory, default_filename)
-        
-        # Show file save dialog
+
         file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Store Picker Data",
-            default_path,
-            "JSON Files (*.json)"
+            self, "Export Picker", default_path, "BPicker Files (*.bpicker)",
         )
-        
-        if file_path:
-            try:
-                # Call the enhanced store_picker_data function
-                picker_io.store_picker_data(
-                    file_path, 
-                    current_tab_name=current_tab_name, 
-                    save_mode=save_mode
+        if not file_path:
+            return
+
+        try:
+            if save_mode == 'current':
+                success = PIO.export_tab_as_bpicker(current_tab_name, file_path)
+            else:
+                success = PIO.export_all_as_bpicker(file_path)
+
+            if success:
+                cmds.inViewMessage(
+                    amg=f"Exported to {os.path.basename(file_path)}",
+                    pos='midCenter', fade=True,
                 )
-                
-                # Show success message
-                if save_mode == 'current':
-                    message = f"Current tab '{current_tab_name}' saved to {os.path.basename(file_path)}"
-                else:
-                    # Get tab count for the message
-                    data = picker_io.get_picker_data()
-                    tab_count = len(data.get('tabs', {}))
-                    message = f"All {tab_count} tab(s) saved to {os.path.basename(file_path)}"
-                
-                cmds.inViewMessage(amg=message, pos='midCenter', fade=True)
-                
-            except Exception as e:
-                QtWidgets.QMessageBox.critical(self, "Error", str(e))
-                
-    def load_picker(self):
-        from . import picker_io
-        # Get the appropriate directory for the file dialog
-        start_directory = picker_io.get_file_dialog_directory()
-        
+            else:
+                QtWidgets.QMessageBox.warning(self, "Export Failed", "No data to export.")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", str(e))
+
+    def import_picker(self):
+        """Import a .bpicker or legacy .json file, with merge or open-as-new."""
+        from . import picker_io as PIO
+
+        start_directory = PIO.get_file_dialog_directory()
+
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            "Load Picker Data",
-            start_directory,
-            "JSON Files (*.json)"
+            self, "Import Picker", start_directory,
+            "Picker Files (*.bpicker *.json);;BPicker Files (*.bpicker);;JSON Files (*.json)",
         )
-        if file_path:
-            try:
-                from . import data_management as DM
-                
-                # Load the picker data
-                picker_io.load_picker_data(file_path)
-                
-                # Force reload data from defaultObjectSet
-                DM.PickerDataManager.reload_data_from_maya()
-                
-                # Clear existing tabs first
-                self.tab_system.clear_all_tabs()
-                
-                # Refresh the UI to show the loaded data
-                self.tab_system.setup_tabs()
-                
-                # Switch to the first tab if available
-                if self.tab_system.tabs:
-                    first_tab = next(iter(self.tab_system.tabs))
-                    self.tab_system.switch_tab(first_tab)
-                    # Update the canvas for this tab
-                    self.update_canvas_for_tab(first_tab)
-                
-                # Create buttons for all tabs
-                self.create_buttons()
-                
-                # Force UI update
-                self.update()
-                
-                cmds.inViewMessage(amg=f"Picker data successfully Imported", pos='midCenter', fade=True)
-            except Exception as e:
-                QtWidgets.QMessageBox.critical(self, "Error", str(e))
-                print(f"Error loading picker data: {str(e)}")
+        if not file_path:
+            return
+
+        self._import_picker_file(file_path)
+
+    def _import_picker_file(self, file_path):
+        """Core import logic shared by import_picker() and drag-and-drop."""
+        from . import picker_io as PIO
+        from .library_manager import LibraryManager
+
+        ext = os.path.splitext(file_path)[1].lower()
+        picker_uuid = None
+
+        if ext == '.bpicker':
+            picker_uuid = PIO.import_bpicker_to_library(file_path)
+        elif ext == '.json':
+            picker_uuid = PIO.import_legacy_json_to_bpicker(file_path)
+
+        if not picker_uuid:
+            if ext == '.json':
+                # Fallback to legacy direct load
+                self._load_legacy_json(file_path)
+            else:
+                QtWidgets.QMessageBox.warning(
+                    self, "Import Failed",
+                    f"Could not import {os.path.basename(file_path)}.",
+                )
+            return
+
+        # Ask user: merge or open as new
+        import_mode = PIO.get_import_mode_dialog(has_session=bool(self.session))
+
+        if import_mode == 'cancel':
+            return
+
+        if import_mode == 'merge' and self.session:
+            lib_path = LibraryManager.get_picker_path(picker_uuid)
+            if lib_path:
+                imported_tabs = PIO.import_tabs_from_bpicker(str(lib_path))
+                if imported_tabs:
+                    self._rebuild_ui_from_data()
+                    cmds.inViewMessage(
+                        amg=f"Merged {len(imported_tabs)} tab(s) from {os.path.basename(file_path)}",
+                        pos='midCenter', fade=True,
+                    )
+                else:
+                    cmds.inViewMessage(
+                        amg="No tabs were imported.", pos='midCenter', fade=True,
+                    )
+            else:
+                QtWidgets.QMessageBox.warning(
+                    self, "Error", "Could not locate imported picker in library.",
+                )
+        else:
+            # Open as new session
+            self.open_picker_from_library(picker_uuid)
+            cmds.inViewMessage(
+                amg=f"Opened {os.path.basename(file_path)}",
+                pos='midCenter', fade=True,
+            )
+
+        # Refresh library grid
+        if self.library_controller:
+            self.library_controller.refresh()
+
+    def _load_legacy_json(self, file_path):
+        """Fallback: load a legacy .json picker file directly into the scene."""
+        try:
+            from . import picker_io
+
+            picker_io.load_picker_data(file_path)
+
+            DM.PickerDataManager.reload_data_from_maya()
+
+            self.tab_system.clear_all_tabs()
+            self.tab_system.setup_tabs()
+
+            if self.tab_system.tabs:
+                first_tab = next(iter(self.tab_system.tabs))
+                self.tab_system.switch_tab(first_tab)
+                self.update_canvas_for_tab(first_tab)
+
+            self.create_buttons()
+            self.update()
+
+            cmds.inViewMessage(amg="Picker data successfully imported", pos='midCenter', fade=True)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", str(e))
+            print(f"Error loading picker data: {str(e)}")
                 
     def open_mirror_preferences(self):
         """
@@ -1080,9 +2109,10 @@ class AnimPickerWindow(QtWidgets.QWidget):
             "label": button_label,
             "color": new_button.color,
             "opacity": new_button.opacity,
+            "rotation": new_button.rotation,
             "position": (new_button.scene_position.x(), new_button.scene_position.y())
         }
-        
+
         # Update the PickerDataManager
         tab_data = DM.PickerDataManager.get_tab_data(current_tab)
         tab_data['buttons'].append(button_data)
@@ -1110,13 +2140,22 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 return new_id
             i += 1
 
+    # --- Chunked button loading with overlay ---
+    _chunk_size = 40  # Buttons per chunk
+
     def create_buttons(self):
         if not self.tab_system.current_tab:
             return
 
+        self._cancel_button_load()
+
         current_tab = self.tab_system.current_tab
         self.initialize_tab_data(current_tab)
         canvas = self.tab_system.tabs[current_tab]['canvas']
+
+        # Show loading overlay immediately
+        canvas.loading_overlay.show_overlay()
+        canvas.setUpdatesEnabled(False)
 
         # Clear existing buttons
         for button in canvas.buttons[:]:
@@ -1124,71 +2163,163 @@ class AnimPickerWindow(QtWidgets.QWidget):
             button.deleteLater()
         canvas.buttons.clear()
 
-        # Get button data from PickerDataManager
         tab_data = DM.PickerDataManager.get_tab_data(current_tab)
-        for button_data in tab_data.get('buttons', []):
-            # Create button with basic properties
-            button = PB.PickerButton(
-                button_data["label"],
-                canvas,
-                unique_id=button_data["id"],
-                selectable=button_data.get("selectable", True),
-                color=button_data.get("color", "#444444"),
-                opacity=button_data.get("opacity", 1.0),
-                width=button_data.get("width", 80),
-                height=button_data.get("height", 30),
-                shape_type=button_data.get("shape_type", "rounded_rect"),
-                svg_path_data=button_data.get("svg_path_data", None),
-                svg_file_path=button_data.get("svg_file_path", None)
-            )
-            
-            # Set basic properties
-            button.radius = button_data.get("radius", [3, 3, 3, 3])
-            button.assigned_objects = button_data.get("assigned_objects", [])
-            button.mode = button_data.get("mode", "select")
-            
-            # Handle script data with language type
-            script_data = button_data.get("script_data", {})
-            if isinstance(script_data, dict):
-                button.script_data = script_data
-            else:
-                # Convert legacy script data to new format
-                button.script_data = {
-                    'code': str(script_data),
-                    'type': 'python'  # Default to python for legacy data
-                }
-                
-            # Load pose data if available
-            button.pose_data = button_data.get("pose_data", {})
-            
-            # Load thumbnail path if available
-            if button_data.get("thumbnail_path"):
-                button.thumbnail_path = button_data["thumbnail_path"]
-                # Load the thumbnail image if the file exists
-                if os.path.exists(button.thumbnail_path):
-                    try:
-                        button.thumbnail_pixmap = QtGui.QPixmap(button.thumbnail_path)
-                        if button.thumbnail_pixmap.isNull():
-                            #print(f"Warning: Thumbnail file exists but failed to load: {button.thumbnail_path}")
-                            button.thumbnail_pixmap = None
-                            # Keep the path for potential repath operation
-                    except Exception as e:
-                        #print(f"Warning: Error loading thumbnail {button.thumbnail_path}: {e}")
-                        button.thumbnail_pixmap = None
-                        # Keep the path for potential repath operation
-                else:
-                    #print(f"Warning: Thumbnail file not found: {button.thumbnail_path}")
-                    button.thumbnail_pixmap = None
-            
-            button.scene_position = QtCore.QPointF(*button_data["position"])
-            button.update_tooltip()
-            canvas.add_button(button)
+        button_data_list = tab_data.get('buttons', [])
 
+        # Restore saved zoom/pan BEFORE buttons are positioned
+        # so update_button_positions() uses the correct view state
+        canvas.zoom_factor = tab_data.get('zoom_factor', 1.0)
+        canvas.pan_offset = QtCore.QPointF(
+            tab_data.get('pan_offset_x', 0.0),
+            tab_data.get('pan_offset_y', 0.0)
+        )
+
+        if len(button_data_list) <= self._chunk_size:
+            # Small set — synchronous
+            self._create_buttons_sync(canvas, button_data_list, current_tab)
+        else:
+            # Large set — chunked with loading overlay
+            self._button_load_tab = current_tab
+            self._button_load_canvas = canvas
+            self._button_load_gen = self._button_chunk_generator(
+                canvas, button_data_list, current_tab)
+            canvas.setUpdatesEnabled(True)
+            self._process_next_button_chunk()
+
+    def _cancel_button_load(self):
+        """Cancel any in-progress chunked button load."""
+        if getattr(self, '_button_load_canvas', None) is not None:
+            try:
+                self._button_load_canvas.setUpdatesEnabled(True)
+                self._button_load_canvas.loading_overlay.hide_overlay()
+            except RuntimeError:
+                pass
+        self._button_load_gen = None
+        self._button_load_tab = None
+        self._button_load_canvas = None
+
+    def _button_chunk_generator(self, canvas, button_data_list, tab_name):
+        """Yield chunks of button data for progressive creation."""
+        for i in range(0, len(button_data_list), self._chunk_size):
+            yield button_data_list[i:i + self._chunk_size]
+
+    def _process_next_button_chunk(self):
+        """Process the next chunk of buttons from the generator."""
+        if self._button_load_gen is None:
+            return
+
+        if self._button_load_tab != self.tab_system.current_tab:
+            self._cancel_button_load()
+            return
+
+        canvas = self._button_load_canvas
+        if canvas is None:
+            self._cancel_button_load()
+            return
+
+        try:
+            chunk = next(self._button_load_gen)
+        except StopIteration:
+            self._finalize_button_load(canvas)
+            return
+
+        new_buttons = [
+            self._create_single_button(bd, canvas, self._button_load_tab)
+            for bd in chunk
+        ]
+        canvas.add_buttons_batch(new_buttons)
+        canvas.loading_overlay.raise_()
+
+        QtCore.QTimer.singleShot(0, self._process_next_button_chunk)
+
+    def _finalize_button_load(self, canvas):
+        """Called when all chunks are done."""
+        self._button_load_gen = None
+        self._button_load_tab = None
+        self._button_load_canvas = None
         canvas.update_button_positions()
         canvas.update()
+        canvas.loading_overlay.hide_overlay()
+
+    def _create_buttons_sync(self, canvas, button_data_list, tab_name):
+        """Synchronous path for small button sets."""
+        new_buttons = [
+            self._create_single_button(bd, canvas, tab_name)
+            for bd in button_data_list
+        ]
+        canvas.add_buttons_batch(new_buttons)
+        canvas.update_button_positions()
+        canvas.setUpdatesEnabled(True)
+        canvas.update()
+        canvas.loading_overlay.hide_overlay()
+
+    def _create_single_button(self, button_data, canvas, tab_name):
+        """Create and configure a single PickerButton from data dict."""
+        button = PB.PickerButton(
+            button_data["label"],
+            canvas,
+            unique_id=button_data["id"],
+            selectable=button_data.get("selectable", True),
+            color=button_data.get("color", "#444444"),
+            opacity=button_data.get("opacity", 1.0),
+            width=button_data.get("width", 80),
+            height=button_data.get("height", 30),
+            shape_type=button_data.get("shape_type", "rounded_rect"),
+            svg_path_data=button_data.get("svg_path_data", None),
+            svg_file_path=button_data.get("svg_file_path", None)
+        )
+
+        button.radius = button_data.get("radius", [3, 3, 3, 3])
+        button.rotation = button_data.get("rotation", 0)
+        button.assigned_objects = button_data.get("assigned_objects", [])
+        button.mode = button_data.get("mode", "select")
+
+        button.text_color = button_data.get("text_color", "#ffffff")
+
+        script_data = button_data.get("script_data", {})
+        if isinstance(script_data, dict):
+            button.script_data = script_data
+        else:
+            button.script_data = {'code': str(script_data), 'type': 'python'}
+
+        button.pose_data = button_data.get("pose_data", {})
+        button.animation_data = button_data.get("animation_data", {})
+        button.controller_data = button_data.get("controller_data", {})
+
+        # Start controller sync if mode is controller with a valid path
+        if button.mode == 'controller' and button.controller_data.get('data_path'):
+            val = button._read_controller_value()
+            if val is not None:
+                button._controller_value = val
+            else:
+                button._controller_value = button.controller_data.get('default_value', 0.0)
+            button._start_controller_sync()
+
+        if button_data.get("thumbnail_path"):
+            stored_thumb = button_data["thumbnail_path"]
+            button.thumbnail_path = stored_thumb
+            # Resolve bpicker:// or relative paths
+            resolved_thumb = DM.PickerDataManager.resolve_image_path(stored_thumb)
+            load_path = resolved_thumb if resolved_thumb else stored_thumb
+            if load_path and os.path.exists(load_path):
+                try:
+                    button.thumbnail_pixmap = QtGui.QPixmap(load_path)
+                    if button.thumbnail_pixmap.isNull():
+                        button.thumbnail_pixmap = None
+                except Exception:
+                    button.thumbnail_pixmap = None
+            else:
+                button.thumbnail_pixmap = None
+
+        button.scene_position = QtCore.QPointF(*button_data["position"])
+        button.update_tooltip()
+        return button
 
     def on_button_changed(self, button):
         self.update_button_data(button)
+        # Schedule live preview update for library card
+        if self.session:
+            self.session.schedule_preview_update()
 
     def update_button_data(self, button, deleted=False):
         """Enhanced update_button_data that uses direct data manager calls for proper undo recording"""
@@ -1219,6 +2350,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 "color": button.color,
                 "opacity": button.opacity,
                 "position": (button.scene_position.x(), button.scene_position.y()),
+                "rotation": button.rotation,
                 "width": button.width,
                 "height": button.height,
                 "radius": button.radius,
@@ -1226,12 +2358,14 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 "mode": getattr(button, 'mode', 'select'),
                 "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
                 "pose_data": getattr(button, 'pose_data', {}),
+                "animation_data": getattr(button, 'animation_data', {}),
+                "controller_data": getattr(button, 'controller_data', {}),
                 "thumbnail_path": getattr(button, 'thumbnail_path', ''),
                 "shape_type": button.shape_type,
                 "svg_path_data": button.svg_path_data,
                 "svg_file_path": button.svg_file_path
             }
-            
+
             # Use the data manager's update method for proper undo recording
             DM.PickerDataManager.update_button(current_tab, button.unique_id, button_data, "Update Button")
 
@@ -1244,7 +2378,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
             fields_to_update (list): List of field names to update. If None, updates all common fields.
                                     Possible fields: 'position', 'width', 'height', 'radius', 'shape_type', 
                                     'svg_path_data', 'svg_file_path', 'label', 'color', 'opacity', 
-                                    'assigned_objects', 'mode', 'script_data', 'pose_data', 'thumbnail_path'
+                                    'assigned_objects', 'mode', 'script_data', 'pose_data', 'animation_data', 'thumbnail_path'
         """
         if not buttons_to_update:
             return
@@ -1286,9 +2420,9 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 if fields_to_update is None:
                     # Update all fields
                     fields_to_update = [
-                        'position', 'width', 'height', 'radius', 'shape_type', 'label', 
-                        'color', 'opacity', 'assigned_objects', 'mode', 'script_data', 
-                        'pose_data', 'thumbnail_path', 'svg_path_data', 'svg_file_path', 'selectable'
+                        'position', 'width', 'height', 'radius', 'shape_type', 'label',
+                        'color', 'opacity', 'assigned_objects', 'mode', 'script_data',
+                        'pose_data', 'animation_data', 'thumbnail_path', 'svg_path_data', 'svg_file_path', 'selectable'
                     ]
                 
                 # Create a mapping of existing button IDs for faster lookup
@@ -1340,6 +2474,10 @@ class AnimPickerWindow(QtWidgets.QWidget):
                                 tab_data['buttons'][button_index]['pose_data'] = getattr(
                                     button, 'pose_data', {}
                                 )
+                            elif field == 'animation_data':
+                                tab_data['buttons'][button_index]['animation_data'] = getattr(
+                                    button, 'animation_data', {}
+                                )
                             elif field == 'thumbnail_path':
                                 tab_data['buttons'][button_index]['thumbnail_path'] = getattr(
                                     button, 'thumbnail_path', ''
@@ -1366,6 +2504,8 @@ class AnimPickerWindow(QtWidgets.QWidget):
                             "mode": getattr(button, 'mode', 'select'),
                             "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
                             "pose_data": getattr(button, 'pose_data', {}),
+                            "animation_data": getattr(button, 'animation_data', {}),
+                            "controller_data": getattr(button, 'controller_data', {}),
                             "thumbnail_path": getattr(button, 'thumbnail_path', ''),
                             "shape_type": button.shape_type,
                             "svg_path_data": button.svg_path_data,
@@ -1588,12 +2728,14 @@ class AnimPickerWindow(QtWidgets.QWidget):
                         "mode": getattr(button, 'mode', 'select'),
                         "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
                         "pose_data": getattr(button, 'pose_data', {}),
+                        "animation_data": getattr(button, 'animation_data', {}),
+                        "controller_data": getattr(button, 'controller_data', {}),
                         "thumbnail_path": getattr(button, 'thumbnail_path', ''),
                         "shape_type": button.shape_type,
                         "svg_path_data": button.svg_path_data,
                         "svg_file_path": button.svg_file_path
                     }
-                    
+
                     # Update existing button or add new one
                     if button.unique_id in existing_buttons_map:
                         # Update existing button
@@ -1703,6 +2845,8 @@ class AnimPickerWindow(QtWidgets.QWidget):
                     "mode": getattr(canvas_button, 'mode', 'select'),
                     "script_data": getattr(canvas_button, 'script_data', {'code': '', 'type': 'python'}),
                     "pose_data": getattr(canvas_button, 'pose_data', {}),
+                    "animation_data": getattr(canvas_button, 'animation_data', {}),
+                    "controller_data": getattr(canvas_button, 'controller_data', {}),
                     "thumbnail_path": getattr(canvas_button, 'thumbnail_path', ''),
                     "shape_type": canvas_button.shape_type,
                     "svg_path_data": canvas_button.svg_path_data,
@@ -1743,15 +2887,28 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.tab_system.tab_renamed.connect(self.on_tab_renamed)
         self.tab_system.tab_deleted.connect(self.on_tab_deleted)
         self.tab_system.tab_reordered.connect(self.on_tab_reordered)
-        
+
         self.tab_system.setup_tabs()
-        
+
         if not self.tab_system.tabs:
             self.tab_system.add_tab("Tab 1")
             self.initialize_tab_data("Tab 1")
             DM.PickerDataManager.add_tab("Tab 1")
-        
-        QtCore.QTimer.singleShot(50, self.create_buttons)
+
+        # Create buttons then restore canvas view state (zoom/pan)
+        QtCore.QTimer.singleShot(50, self._initial_load_tab)
+
+    def _initial_load_tab(self):
+        """Create buttons on startup. View state restore is deferred to _check_launch_state."""
+        self.create_buttons()
+        # Connect view_changed signal on the initial canvas (on_tab_switched only fires on switch)
+        if self.tab_system.current_tab and self.tab_system.current_tab in self.tab_system.tabs:
+            canvas = self.tab_system.tabs[self.tab_system.current_tab].get('canvas')
+            if canvas:
+                try:
+                    canvas.view_changed.connect(self._save_canvas_view_state)
+                except:
+                    pass
 
     def on_tab_reordered(self):
         # Update the UI if needed after tab reordering
@@ -1761,6 +2918,9 @@ class AnimPickerWindow(QtWidgets.QWidget):
             self.clear_canvas()
 
     def on_tab_switched(self, tab_name):
+        # Save current canvas view state before switching away
+        self._save_canvas_view_state()
+
         # Initialize tab data if needed
         self.initialize_tab_data(tab_name)
         
@@ -1787,12 +2947,14 @@ class AnimPickerWindow(QtWidgets.QWidget):
         try:
             current_canvas.button_selection_changed.disconnect()
             current_canvas.clicked.disconnect()
+            current_canvas.view_changed.disconnect()
         except:
             pass
         
         # Connect with the delayed update method
         current_canvas.button_selection_changed.connect(self.update_edit_widgets_delayed)
         current_canvas.clicked.connect(self.clear_line_edit_focus)
+        current_canvas.view_changed.connect(self._save_canvas_view_state)
         
         # Update image button state if available
         if hasattr(self, 'remove_image'):
@@ -1806,9 +2968,14 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self.update_namespace_dropdown()
         
         current_canvas.update()
+
+        # Update session canvas reference for preview capture
+        if self.session:
+            self.session.set_canvas(current_canvas)
+
         if self.edit_mode == False:
             UT.maya_main_window().activateWindow()
-        
+
     def on_tab_renamed(self, old_name, new_name):
         # Update the tab data in our local structure
         if old_name in self.tab_system.tabs:
@@ -1969,9 +3136,42 @@ class AnimPickerWindow(QtWidgets.QWidget):
         # Store the values in the tab system
         self.tab_system.tabs[tab_name]['image_scale'] = image_scale
         
+        # Restore saved camera (pan/zoom) state
+        saved_zoom = tab_data.get('zoom_factor', 1.0)
+        saved_px = tab_data.get('pan_offset_x', 0.0)
+        saved_py = tab_data.get('pan_offset_y', 0.0)
+        current_canvas.zoom_factor = saved_zoom
+        current_canvas.pan_offset = QtCore.QPointF(saved_px, saved_py)
+        current_canvas.update_button_positions()
+
         current_canvas.update()
     #----------------------------------------------------------------------------------------------------------------------------------------
-    # [Canvas Image]  
+    # [Canvas View State]
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    def _save_canvas_view_state(self):
+        """Save the current canvas pan/zoom to tab data and schedule preview update."""
+        tab_name = self.tab_system.current_tab
+        if not tab_name:
+            return
+        canvas = self.tab_system.tabs.get(tab_name, {}).get('canvas')
+        if not canvas:
+            return
+        data = DM.PickerDataManager.get_data()
+        if tab_name not in data.get('tabs', {}):
+            return
+        data['tabs'][tab_name]['pan_offset_x'] = canvas.pan_offset.x()
+        data['tabs'][tab_name]['pan_offset_y'] = canvas.pan_offset.y()
+        data['tabs'][tab_name]['zoom_factor'] = canvas.zoom_factor
+        # View state persists in Maya scene only — no need to repack
+        # the .bpicker archive, so skip session dirty notification.
+        DM.PickerDataManager.save_data(data, force_immediate=True, notify_session=False)
+
+        # Schedule a lightweight live preview update for the library card
+        if self.session:
+            self.session.schedule_preview_update()
+
+    #----------------------------------------------------------------------------------------------------------------------------------------
+    # [Canvas Image]
     #----------------------------------------------------------------------------------------------------------------------------------------   
     def select_image_for_current_tab(self):
         if self.tab_system.current_tab:
@@ -2245,19 +3445,9 @@ class AnimPickerWindow(QtWidgets.QWidget):
     # [Picker Button Edit Widgets]  
     #----------------------------------------------------------------------------------------------------------------------------------------
     def setup_edit_widgets(self):
-        """Enhanced setup_edit_widgets method with proper signal connections"""
-        widgets = BEW.create_button_edit_widgets(self)
-        
-        # Add widgets to layout
-        self.edit_value_layout.addWidget(widgets['rename_widget'])
-        self.edit_value_layout.addWidget(widgets['transform_widget'])
-        self.edit_value_layout.addWidget(widgets['radius_widget'])
-        self.edit_value_layout.addWidget(widgets['opacity_widget'])
-        self.edit_value_layout.addWidget(widgets['color_picker'])
-        self.edit_value_layout.addWidget(widgets['placement_widget'])
-        self.edit_value_layout.addWidget(widgets['thumbnail_dir_widget'])
-
+        """Deprecated — edit widgets are now managed by EditModeController."""
         self.is_updating_widgets = False
+        return
 
         # Connect signals with proper methods
         widgets['rename_edit'].textChanged.connect(self._queue_rename_change)
@@ -2541,13 +3731,17 @@ class AnimPickerWindow(QtWidgets.QWidget):
         self._update_edit_widgets_with_selection_optimized(widgets, selected_buttons, canvas)
 
     def update_edit_widgets_delayed(self):
+        """Delegate to edit mode controller for widget sync."""
+        if self.edit_mode and hasattr(self, 'edit_controller'):
+            self.edit_controller.on_selection_changed()
+            return
         if self.edit_mode:
-            # CRITICAL FIX: Clear pending widget changes when selection changes
+            # Fallback: Clear pending widget changes when selection changes
             if hasattr(self, 'widget_update_timer'):
                 self.widget_update_timer.stop()
             if hasattr(self, 'pending_widget_changes'):
                 self.pending_widget_changes.clear()
-                
+
             # Schedule update
             if hasattr(self, '_update_timer'):
                 self._update_timer.stop()
@@ -2722,16 +3916,16 @@ class AnimPickerWindow(QtWidgets.QWidget):
         if event.button() == QtCore.Qt.LeftButton:
             # Enhanced interactive widget detection using hierarchy traversal
             interactive_widget = self._is_interactive_widget(event.pos())
-            
+
             if interactive_widget:
                 # For interactive widgets, pass the event to the default handler
                 # and explicitly prevent window dragging by NOT setting oldPos
                 super().mousePressEvent(event)
                 return
-            
+
             # Check for resize operation first (before setting oldPos)
             resize_edge = self.get_resize_edge(event.pos())
-            
+
             if resize_edge:
                 # Handle resize operation
                 self.begin_resize(resize_edge, event.globalPos())
@@ -2739,7 +3933,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 # Only set oldPos for window dragging if we're not on an interactive widget
                 # and not resizing
                 self.oldPos = event.globalPos()
-                
+
             if self.edit_mode == False:
                 UT.maya_main_window().activateWindow()
 
@@ -2749,7 +3943,7 @@ class AnimPickerWindow(QtWidgets.QWidget):
             if not self.resize_state['active']:
                 # Re-check interactive widget status during move
                 interactive_widget = self._is_interactive_widget(event.pos())
-                
+
                 if interactive_widget:
                     # Let the interactive widget handle the move
                     super().mouseMoveEvent(event)
@@ -2763,11 +3957,11 @@ class AnimPickerWindow(QtWidgets.QWidget):
                 # Handle window dragging only if we have oldPos set
                 # Temporarily disable updates during window movement
                 self.setUpdatesEnabled(False)
-                
+
                 delta = event.globalPos() - self.oldPos
                 self.move(self.x() + delta.x(), self.y() + delta.y())
                 self.oldPos = event.globalPos()
-                
+
                 # Re-enable updates
                 self.setUpdatesEnabled(True)
         else:
@@ -2779,11 +3973,11 @@ class AnimPickerWindow(QtWidgets.QWidget):
             if self.resize_state['active']:
                 # End resize operation
                 self.end_resize()
-            
+
             # Always clean up oldPos reference to prevent accidental dragging
             if hasattr(self, 'oldPos'):
                 delattr(self, 'oldPos')  # Remove the attribute entirely
-            
+
             # Check if this is an interactive widget for proper event handling
             interactive_widget = self._is_interactive_widget(event.pos())
             
@@ -2830,97 +4024,60 @@ class AnimPickerWindow(QtWidgets.QWidget):
         
         return False
     #----------------------------------------------------------------------------------------------------------------------------------------
+    def _is_supported_picker_file(self, file_path):
+        """Check if a file path is a supported picker format."""
+        lower = file_path.lower()
+        return lower.endswith('.bpicker') or lower.endswith('.json')
+
     def dragEnterEvent(self, event):
-        # Check if the drag contains URLs (files)
         if event.mimeData().hasUrls():
-            # Get the first URL and check if it's a JSON file
             file_path = event.mimeData().urls()[0].toLocalFile()
-            if file_path.lower().endswith('.json'):
+            if self._is_supported_picker_file(file_path):
                 event.acceptProposedAction()
-                # Add visual feedback for drag
                 self.drag_highlight_active = True
-                self.util_frame.setStyleSheet(f'''QFrame {{border: 1px solid #3096bb;}}''')
+                self.util_frame.setStyleSheet('''QFrame {border: 1px solid #3096bb;}''')
                 return
         event.ignore()
-    
+
     def dragLeaveEvent(self, event):
-        # Reset visual feedback
         if self.drag_highlight_active:
             self.drag_highlight_active = False
-            self.util_frame.setStyleSheet(f'''QFrame {{border: 0px solid gray;}}''')
+            self.util_frame.setStyleSheet('''QFrame {border: 0px solid gray;}''')
         event.accept()
-    
+
     def dragMoveEvent(self, event):
-        # Continue accepting the drag if it's a JSON file
         if event.mimeData().hasUrls():
             file_path = event.mimeData().urls()[0].toLocalFile()
-            if file_path.lower().endswith('.json'):
+            if self._is_supported_picker_file(file_path):
                 event.acceptProposedAction()
                 return
         event.ignore()
-    
+
     def dropEvent(self, event):
-        # Reset visual feedback
         if self.drag_highlight_active:
             self.drag_highlight_active = False
-            self.util_frame.setStyleSheet(f'''QFrame {{border: 0px solid gray;}}''')
-        
-        # Process the dropped file
+            self.util_frame.setStyleSheet('''QFrame {border: 0px solid gray;}''')
+
         if event.mimeData().hasUrls():
             file_path = event.mimeData().urls()[0].toLocalFile()
-            if file_path.lower().endswith('.json'):
-                try:
-                    # Load the picker data using the same logic as in load_picker
-                    from . import picker_io
-                    from . import data_management as DM
-                    
-                    # Load the picker data
-                    picker_io.load_picker_data(file_path)
-                    
-                    # Force reload data from defaultObjectSet
-                    DM.PickerDataManager.reload_data_from_maya()
-                    
-                    # Clear existing tabs first
-                    self.tab_system.clear_all_tabs()
-                    
-                    # Refresh the UI to show the loaded data
-                    self.tab_system.setup_tabs()
-                    
-                    # Switch to the first tab if available
-                    if self.tab_system.tabs:
-                        first_tab = next(iter(self.tab_system.tabs))
-                        self.tab_system.switch_tab(first_tab)
-                        # Update the canvas for this tab
-                        self.update_canvas_for_tab(first_tab)
-                    
-                    # Create buttons for all tabs
-                    QtCore.QTimer.singleShot(10, self.create_buttons)
-                    
-                    # Force UI update
-                    self.update()
-                    
-                    cmds.inViewMessage(amg=f"Picker data successfully imported from {os.path.basename(file_path)}", pos='midCenter', fade=True)
-                except Exception as e:
-                    QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load picker data: {str(e)}")
-                    print(f"Error loading picker data: {str(e)}")
-                
+            if self._is_supported_picker_file(file_path):
+                self._import_picker_file(file_path)
                 event.acceptProposedAction()
                 return
         event.ignore()
     #----------------------------------------------------------------------------------------------------------------------------------------
     def eventFilter(self, obj, event):
+        # Reposition canvas edit panel overlay when canvas_frame resizes
+        if obj == self.canvas_frame and event.type() == QtCore.QEvent.Resize:
+            if hasattr(self, 'canvas_edit_panel') and self.canvas_edit_panel.isVisible():
+                self.canvas_edit_panel._update_position()
+
         if event.type() == QtCore.QEvent.MouseButtonDblClick and obj == self.main_frame:
             # Reset window to original size when double-clicked
-            if self.edit_mode:
-                new_width = 350 + self.edit_scroll_area.width()
-                self.resize(new_width, 450)
-                self.update_buttons_for_current_tab()
-            else:
-                self.resize(350, 450)
-                self.update_buttons_for_current_tab()
-                UT.maya_main_window()
+            self.resize(350, 450)
+            self.update_buttons_for_current_tab()
             return True
-        
+
         # Continue with other event handling
         return super().eventFilter(obj, event)
     
@@ -2941,8 +4098,25 @@ class AnimPickerWindow(QtWidgets.QWidget):
     
     def closeEvent(self, event):
         """Enhanced close event with comprehensive cleanup"""
-        #print("AnimPickerWindow closeEvent triggered")
-        
+        # Save canvas view state (zoom/pan) before closing
+        self._save_canvas_view_state()
+
+        # Save any unsaved changes before closing
+        if self.session and self.session.is_dirty():
+            try:
+                self.session.save()
+            except Exception:
+                pass
+
+        # Close .bpicker session (flushes preview + auto-save)
+        if self.session:
+            try:
+                self.session.close()
+            except Exception:
+                pass
+            self.session = None
+            DM.PickerDataManager.set_active_session(None)
+
         # Exit rename mode for any button in rename mode in the active canvas
         if hasattr(self, 'tab_system') and self.tab_system and self.tab_system.current_tab:
             canvas = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
@@ -3054,21 +4228,14 @@ class AnimPickerWindow(QtWidgets.QWidget):
 
     def _update_cursor_for_position(self, pos):
         """Centralized cursor update logic"""
-        # Check if the mouse is over the canvas frame
-        canvas_frame_geo = self.canvas_frame.geometry()
-        if canvas_frame_geo.contains(pos):
-            # Always use default cursor over canvas
-            if self.cursor().shape() != QtCore.Qt.ArrowCursor:
-                self.unsetCursor()
-            return
-        
-        # Check if we're in resize range
+        # Check resize range first — edges take priority over canvas
         if self.is_in_resize_range(pos):
             self.update_cursor(pos)
-        else:
-            # Ensure cursor is reset when not over resize edges
-            if self.cursor().shape() != QtCore.Qt.ArrowCursor:
-                self.unsetCursor()
+            return
+
+        # Reset cursor when not over resize edges
+        if self.cursor().shape() != QtCore.Qt.ArrowCursor:
+            self.unsetCursor()
 
     def begin_resize(self, edge, global_pos):
         """Start a resize operation with the given edge and position"""
@@ -3191,7 +4358,16 @@ class AnimPickerWindow(QtWidgets.QWidget):
     def cleanup_resources(self):
         """Comprehensive cleanup of all resources to prevent memory leaks"""
         #print("Starting AnimPickerWindow cleanup...")
-        
+
+        # 0. Kill scene-change scriptJobs
+        for job_id in getattr(self, '_scene_script_jobs', []):
+            try:
+                if cmds.scriptJob(exists=job_id):
+                    cmds.scriptJob(kill=job_id)
+            except Exception:
+                pass
+        self._scene_script_jobs = []
+
         # 1. Stop and cleanup all timers
         timer_list = [
             'batch_update_timer', 'widget_update_timer', 'resize_timer', 
@@ -3309,6 +4485,52 @@ class AnimPickerWindow(QtWidgets.QWidget):
         except:
             pass  # Ignore errors during destruction
 
+    # ------------------------------------------------------------------
+    # BGEN Marketplace UI Handlers
+    # ------------------------------------------------------------------
+
+    def _on_library_tab_changed(self, index):
+        """Handle My Library / BGEN Library tab switch."""
+        self.library_stack.setCurrentIndex(index)
+        if index == 1:
+            # Lazy-load the marketplace WebView on first visit
+            if hasattr(self, '_mkt_webview'):
+                self._mkt_webview.load_marketplace()
+
+    def _on_checkout_ready(self, stripe_data, product_id):
+        """Open the embedded Stripe checkout page when a PaymentIntent is ready."""
+        self._stripe_checkout_page.load_checkout(
+            publishable_key=stripe_data.get("publishable_key", ""),
+            client_secret=stripe_data.get("client_secret", ""),
+            customer_session_secret=stripe_data.get("customer_session_secret", ""),
+            product_name=stripe_data.get("product_name", ""),
+            price_cents=stripe_data.get("price_cents", 0),
+        )
+        self.library_stack.setCurrentIndex(2)
+
+    def _on_webview_download_completed(self, product_id, path):
+        """Handle download completion — notify webview and refresh library."""
+        if hasattr(self, '_mkt_webview'):
+            self._mkt_webview.push_download_complete(product_id, path)
+        if hasattr(self, 'library_controller') and self.library_controller:
+            self.library_controller.refresh()
+
+    def _on_feature_flags_loaded(self, flags):
+        """Handle feature flag updates (logging only — web marketplace handles gating)."""
+        pass
+
+    # ------------------------------------------------------------------
+    # Auth state handlers
+    # ------------------------------------------------------------------
+
+    def _on_auth_state_changed(self, signed_in):
+        """Handle auth state transitions — web marketplace handles account UI."""
+        # Push auth state to webview
+        if hasattr(self, '_mkt_webview'):
+            self._mkt_webview.push_auth_state_changed(signed_in)
+
+    # ------------------------------------------------------------------
+
     def periodic_cleanup(self):
         """Periodic cleanup to prevent memory accumulation during long sessions"""
         
@@ -3351,5 +4573,37 @@ class AnimPickerWindow(QtWidgets.QWidget):
         if hasattr(self, 'cleanup_timer') and self.cleanup_timer:
             self.cleanup_timer.stop()
             self.cleanup_timer = None
+    
+    def closeEvent(self, event):
+        """Handle window close event with sync cleanup"""
+        try:
+            # Cleanup selection synchronization
+            SSM.cleanup_selection_sync()
+            print("Selection sync cleanup completed (Maya)")
+        except Exception as e:
+            print(f"Error cleaning up selection sync (Maya): {e}")
+
+        # End periodic cleanup
+        self.end_periodic_cleanup()
+
+        # Cleanup webview resources
+        if hasattr(self, '_mkt_webview'):
+            self._mkt_webview.cleanup()
+
+        # Invalidate marketplace cache so next window-open fetches fresh data
+        if hasattr(self, '_marketplace_mgr'):
+            self._marketplace_mgr.invalidate_all_caches()
+
+        # Kill scene-change scriptJobs so they don't fire after the window is gone
+        for job_id in getattr(self, '_scene_script_jobs', []):
+            try:
+                if cmds.scriptJob(exists=job_id):
+                    cmds.scriptJob(kill=job_id)
+            except Exception:
+                pass
+        self._scene_script_jobs = []
+
+        # Accept the close event
+        event.accept()
 
             
