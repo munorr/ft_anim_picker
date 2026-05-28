@@ -63,109 +63,180 @@ class FadeAway(QObject):
     def toggle_minimal_mode(self):
         self.minimal_mode_enabled = not self.minimal_mode_enabled
         opacity = 0.05 if self.minimal_mode_enabled else 1.0
-        
+
         # Set canvas minimal mode
         if hasattr(self.parent, 'tab_system'):
             current_tab = self.parent.tab_system.current_tab
             if current_tab:
                 canvas = self.parent.tab_system.tabs[current_tab]['canvas']
                 canvas.set_minimal_mode(self.minimal_mode_enabled)
-                
+
                 # Handle canvas_stack reparenting
                 if self.minimal_mode_enabled:
                     # Store original layout for restoration
                     self.parent.canvas_stack.original_parent = self.parent.canvas_stack.parent()
                     self.parent.canvas_stack.original_layout = self.parent.canvas_frame_layout
-                    
+
                     # Remove canvas_stack from the canvas frame layout
                     self.parent.canvas_frame_layout.removeWidget(self.parent.canvas_stack)
-                    
+
                     # Add the canvas_stack to the main_frame_body_layout at the beginning
                     self.parent.main_frame_body_layout.insertWidget(0, self.parent.canvas_stack)
-                    
+
                     # Make sure the canvas is in minimal mode
                     canvas.set_minimal_mode(True)
-                    
-                    # Hide the canvas frame
+
+                    # Hide the canvas frame and page_stack so canvas_stack fills the body
                     self.parent.canvas_frame.hide()
+                    self.parent.page_stack.hide()
+
+                    # Hide page segment control (no page switching in minimal mode)
+                    self.parent.page_segment_frame.hide()
+
+                    # Reparent tools_row_frame to main_frame_layout so it stays visible
+                    if hasattr(self.parent, 'tools_row_frame'):
+                        self.parent.main_frame_layout.addWidget(self.parent.tools_row_frame)
+                        self.parent.tools_row_frame.show()
+
+                    # Reparent edit panel to main_frame so it stays visible
+                    if hasattr(self.parent, 'canvas_edit_panel'):
+                        panel = self.parent.canvas_edit_panel
+                        panel.setParent(self.parent.main_frame)
+                        # Defer position update so canvas_stack's new geometry settles first
+                        QTimer.singleShot(0, panel._update_position)
+                        if panel.isVisible():
+                            panel.raise_()
                 else:
+                    # Reparent edit panel back to canvas_frame before restoring layout
+                    if hasattr(self.parent, 'canvas_edit_panel'):
+                        self.parent.canvas_edit_panel.setParent(self.parent.canvas_frame)
+
                     # Restore canvas_stack to original layout
                     # First remove from main_frame_body_layout
                     self.parent.main_frame_body_layout.removeWidget(self.parent.canvas_stack)
-                    
+
                     # Then add back to its original location
                     if hasattr(self.parent.canvas_stack, 'original_layout'):
                         self.parent.canvas_stack.original_layout.addWidget(self.parent.canvas_stack)
-                    
+
                     # Make sure the canvas is not in minimal mode
                     canvas.set_minimal_mode(False)
-                    
-                    # Show the canvas frame again
+
+                    # Restore tools_row_frame back to editor_page_layout
+                    if hasattr(self.parent, 'tools_row_frame'):
+                        self.parent.main_frame_layout.removeWidget(self.parent.tools_row_frame)
+                        self.parent.editor_page_layout.insertWidget(2, self.parent.tools_row_frame)
+
+                    # Show the canvas frame, page_stack and page segment again
                     self.parent.canvas_frame.show()
-        
+                    self.parent.page_stack.show()
+                    self.parent.page_segment_frame.show()
+
+                    # Reposition edit panel in restored canvas_frame
+                    if hasattr(self.parent, 'canvas_edit_panel'):
+                        panel = self.parent.canvas_edit_panel
+                        QTimer.singleShot(0, panel._update_position)
+                        if panel.isVisible():
+                            panel.raise_()
+
         for widget in self.minimal_affected_widgets:
             if isinstance(widget, dict):
                 # Handle widget dictionary with 'widget' and 'exclude' keys
                 target_widget = widget['widget']
                 exclude_elements = widget.get('exclude', [])
-                
+
                 # Skip if the widget should be completely hidden in minimal mode
                 if widget.get('hide_in_minimal', False):
                     target_widget.setVisible(not self.minimal_mode_enabled)
                     continue
 
+                # Keep widget visible in minimal mode with reduced opacity
+                if widget.get('show_in_minimal', False):
+                    target_widget.setVisible(True)
+                    if self.minimal_mode_enabled:
+                        effect = QtWidgets.QGraphicsOpacityEffect(target_widget)
+                        effect.setOpacity(0.4)
+                        target_widget.setGraphicsEffect(effect)
+                    else:
+                        target_widget.setGraphicsEffect(None)
+                    target_widget.raise_()
+                    continue
+
                 # Handle special case for canvas frame
                 if target_widget == self.parent.canvas_frame:
-                    # Make the canvas frame completely transparent in minimal mode
-                    target_widget.setStyleSheet(f'''
-                        QFrame {{
-                            border: 0px solid transparent; 
-                            border-radius: 3px; 
-                            background-color: {'rgba(30, 30, 30, 0)' if self.minimal_mode_enabled else 'rgba(40, 40, 40, .8)'};
-                        }}
-                    ''')
+                    if self.minimal_mode_enabled:
+                        target_widget.setStyleSheet('''
+                            QFrame {
+                                border: 0px solid transparent;
+                                border-radius: 4px;
+                                background-color: rgba(40, 40, 40, 0);
+                            }
+                        ''')
+                    else:
+                        target_widget.setStyleSheet('''
+                            QFrame {
+                                border: 0px solid gray;
+                                border-radius: 4px;
+                                background-color: rgba(40, 40, 40, 0);
+                            }
+                        ''')
                     continue
 
                 # Handle special case for main frame
                 if target_widget == self.parent.main_frame:
-                    # Make the main frame completely transparent in minimal mode
-                    target_widget.setStyleSheet(f'''
-                        QFrame {{
-                            border: 0px solid transparent; 
-                            border-radius: 4px; 
-                            background-color: {'rgba(36, 36, 36, 0.01)' if self.minimal_mode_enabled else 'rgba(36, 36, 36, .6)'};
-                        }}
-                    ''')
+                    if self.minimal_mode_enabled:
+                        target_widget.setStyleSheet('''
+                            QFrame {
+                                border: 0px solid transparent;
+                                border-radius: 8px;
+                                background-color: rgba(29, 29, 29, 0.01);
+                            }
+                        ''')
+                    else:
+                        target_widget.setStyleSheet('''
+                            QFrame {
+                                border: 0px solid gray;
+                                border-radius: 8px;
+                                background-color: #1D1D1D;
+                            }
+                        ''')
                     continue
-
 
                 # Handle special case for util frame
                 if target_widget == self.parent.util_frame:
-                    # Make the util frame partialy transparent in minimal mode
-                    target_widget.setStyleSheet(f'''
-                        QFrame {{
-                            border: 0px solid transparent; 
-                            border-radius: 4px; 
-                            background-color: {'rgba(40, 40, 40, 0)' if self.minimal_mode_enabled else 'rgba(40, 40, 40, .8)'};
-                        }}
-                    ''')
-                
+                    if self.minimal_mode_enabled:
+                        target_widget.setStyleSheet('''
+                            QFrame {
+                                border: 0px solid transparent;
+                                border-radius: 4px;
+                                background-color: rgba(40, 40, 40, 0);
+                                padding: 0px;
+                            }
+                        ''')
+                    else:
+                        target_widget.setStyleSheet('''
+                            QFrame {
+                                border: 0px solid gray;
+                                border-radius: 4px;
+                                background-color: rgba(40, 40, 40, 0);
+                                padding: 0px;
+                            }
+                        ''')
+
                 # Handle special case for tools EF
                 if target_widget == self.parent.tools_EF:
-                    # Make the util frame partialy transparent in minimal mode
                     target_widget.set_alpha(0.0 if self.minimal_mode_enabled else 0.8)
-
 
                 # Set opacity for the main widget
                 if hasattr(target_widget, 'setWindowOpacity'):
                     target_widget.setWindowOpacity(opacity)
-                
+
                 # Handle excluded elements
                 for element in exclude_elements:
                     if hasattr(element, 'setWindowOpacity'):
                         element.setWindowOpacity(1.0)
                     element.setVisible(True)
-                    
+
             else:
                 # Handle simple widget
                 if hasattr(widget, 'setWindowOpacity'):
@@ -190,20 +261,17 @@ class FadeAway(QObject):
     
     def show_frame_context_menu(self, pos):
         self.context_menu_open = True
-        menu = QtWidgets.QMenu(self.parent)
-        
-        # Remove background and shadow
-        menu.setWindowFlags(menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
-        menu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        menu.setStyleSheet('''
+        menu = UT.create_styled_menu(parent=self.parent, stylesheet='''
         QMenu {
-            background-color: rgba(40, 40, 40, 1);
+            background-color: rgba(40, 40, 40, 255);
+            color: #ffffff;
             border-radius: 3px;
             padding: 5px;
             border: 1px solid rgba(255,255,255,.2);
         }
         QMenu::item {
             background-color: #222222;
+            color: #ffffff;
             padding: 6px;
             border: 1px solid #00749a;
             border-radius: 3px;
@@ -231,6 +299,63 @@ class FadeAway(QObject):
         toggle_minimal_action.setCheckable(True)
         toggle_minimal_action.setChecked(self.minimal_mode_enabled)
         
+        # Add separator
+        menu.addSeparator()
+        
+        # Create window size buttons widget
+        size_buttons_widget = QtWidgets.QWidget()
+        size_buttons_layout = QtWidgets.QHBoxLayout(size_buttons_widget)
+        size_buttons_layout.setContentsMargins(3, 3, 3, 3)
+        size_buttons_layout.setSpacing(4)
+        
+        # Common button style
+        button_style = '''
+            QPushButton {
+                background-color: #333333;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                color: #cccccc;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                background-color: #444444;
+                border: 1px solid #00749a;
+            }
+            QPushButton:pressed {
+                background-color: #222222;
+            }
+        '''
+        
+        # Minimum size button
+        min_btn = QtWidgets.QPushButton("Min")
+        min_btn.setFixedSize(36, 24)
+        min_btn.setStyleSheet(button_style)
+        min_btn.setToolTip("Minimum window size (200x200)")
+        min_btn.clicked.connect(lambda: self._resize_and_close_menu(menu, 'min'))
+        
+        # Default/Medium size button
+        mid_btn = QtWidgets.QPushButton("Def")
+        mid_btn.setFixedSize(36, 24)
+        mid_btn.setStyleSheet(button_style)
+        mid_btn.setToolTip("Default window size (350x450)")
+        mid_btn.clicked.connect(lambda: self._resize_and_close_menu(menu, 'mid'))
+        
+        # Full screen button
+        full_btn = QtWidgets.QPushButton("Full")
+        full_btn.setFixedSize(36, 24)
+        full_btn.setStyleSheet(button_style)
+        full_btn.setToolTip("Toggle full screen")
+        full_btn.clicked.connect(lambda: self._resize_and_close_menu(menu, 'full'))
+        
+        size_buttons_layout.addWidget(min_btn)
+        size_buttons_layout.addWidget(mid_btn)
+        size_buttons_layout.addWidget(full_btn)
+        
+        # Create QWidgetAction for size buttons
+        size_buttons_action = QtWidgets.QWidgetAction(menu)
+        size_buttons_action.setDefaultWidget(size_buttons_widget)
+        menu.addAction(size_buttons_action)
+        
         # Use the parent's mapToGlobal method
         action = menu.exec_(self.parent.mapToGlobal(pos))
         
@@ -243,3 +368,18 @@ class FadeAway(QObject):
             self.toggle_minimal_mode()
 
         UT.blender_main_window()
+    
+    def _resize_and_close_menu(self, menu, size_type):
+        """Helper to resize window and close the context menu"""
+        menu.close()
+        self.context_menu_open = False
+        
+        if size_type == 'min':
+            self.parent.resize_window_min()
+        elif size_type == 'mid':
+            self.parent.resize_window_mid()
+        elif size_type == 'full':
+            self.parent.resize_window_full()
+        
+        if self.fade_away_enabled:
+            self.fade_timer.start(10)

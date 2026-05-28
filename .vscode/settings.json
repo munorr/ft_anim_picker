@@ -1,16 +1,38 @@
 {
-    "workbench.colorTheme": "Default Dark Modern",
-    "workbench.preferredLightColorTheme": "Cursor Dark",
-    "workbench.preferredDarkColorTheme": "Cursor Dark",
-    "editor.semanticHighlighting.enabled": true,  
-    "editor.inlineSuggest.syntaxHighlightingEnabled": false,
-    "editor.copyWithSyntaxHighlighting": true,
-    "zenMode.showTabs": "multiple",
-    "zenMode.silentNotifications": true,
-    "zenMode.restore": true,
-    "zenMode.hideStatusBar": true,
-    "zenMode.hideLineNumbers": true,
-    "zenMode.hideActivityBar": true,
-    "zenMode.fullScreen": true,
-    "python.languageServer": "None"
+  "[typescript]": {
+    "editor.defaultFormatter": "denoland.vscode-deno"
+  },
+  "deno.enablePaths": [
+    "supabase/functions"
+  ],
+  "deno.lint": true,
+  "deno.unstable": [
+    "bare-node-builtins",
+    "byonm",
+    "sloppy-imports",
+    "unsafe-proto",
+    "webgpu",
+    "broadcast-channel",
+    "worker-options",
+    "cron",
+    "kv",
+    "ffi",
+    "fs",
+    "http",
+    "net"
+  ],
+  "editor.copyWithSyntaxHighlighting": true,
+  "editor.inlineSuggest.syntaxHighlightingEnabled": false,
+  "editor.semanticHighlighting.enabled": true,
+  "python.languageServer": "None",
+  "workbench.colorTheme": "Dark Modern",
+  "workbench.preferredDarkColorTheme": "Cursor Dark",
+  "workbench.preferredLightColorTheme": "Cursor Dark",
+  "zenMode.fullScreen": true,
+  "zenMode.hideActivityBar": true,
+  "zenMode.hideLineNumbers": true,
+  "zenMode.hideStatusBar": true,
+  "zenMode.restore": true,
+  "zenMode.showTabs": "multiple",
+  "zenMode.silentNotifications": true
 }

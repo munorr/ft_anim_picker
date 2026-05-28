@@ -32,100 +32,87 @@ class SelectionManagerWidget(QtWidgets.QWidget):
             manager = MAIN.PickerWindowManager.get_instance()
             parent = manager._picker_widgets[0] if manager._picker_widgets else None
         super(SelectionManagerWidget, self).__init__(parent)
-        self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint)
+        self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint | QtCore.Qt.Tool)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        
+
         # Setup main layout
         self.main_layout = QtWidgets.QVBoxLayout(self)
         self.main_layout.setContentsMargins(4, 4, 4, 4)
         self.main_layout.setSpacing(4)
-        
+
         # Create main frame
         self.frame = QtWidgets.QFrame()
         self.frame.setFixedWidth(200)
         self.frame.setStyleSheet("""
             QFrame {
-                background-color: rgba(36, 36, 36, .9);
-                border: 1px solid #444444;
-                border-radius: 4px;
+                background-color: #1d1d1d;
+                border: 0px solid #444444;
+                border-radius: 10px;
             }
         """)
         self.frame_layout = QtWidgets.QVBoxLayout(self.frame)
-        self.frame_layout.setContentsMargins(6, 6, 6, 6)
+        self.frame_layout.setContentsMargins(8, 8, 8, 8)
         self.frame_layout.setSpacing(6)
-        
+
         # Title bar with draggable area and close button
         self.title_bar = QtWidgets.QWidget()
-        self.title_bar.setFixedHeight(30)
-        self.title_bar.setStyleSheet("background: rgba(30, 30, 30, .9); border: none; border-radius: 3px;")
+        self.title_bar.setFixedHeight(32)
+        self.title_bar.setStyleSheet("background: rgba(30, 30, 30, 0); border: none; border-radius: 3px;")
         title_layout = QtWidgets.QHBoxLayout(self.title_bar)
         title_layout.setContentsMargins(6, 6, 6, 6)
         title_layout.setSpacing(6)
-        
+
         self.title_label = QtWidgets.QLabel("Selection Manager")
-        self.title_label.setStyleSheet("color: #dddddd; background: transparent;")
+        self.title_label.setStyleSheet("color: #dddddd; background: transparent; font-weight: bold;")
         title_layout.addWidget(self.title_label)
-        
-        self.close_button = QtWidgets.QPushButton("✕")
-        self.close_button.setFixedSize(16, 16)
-        self.close_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(200, 0, 0, 0.6);
-                color: #ff9393;
-                border: none;
-                border-radius: 2px;
-                padding: 0px 0px 2px 0px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 0, 0, 0.6);
-            }
-        """)
+
+        self.close_button = CB.CustomButton(icon=UT.get_icon('close_01.png', size=16, opacity=1), height=24, width=24, radius=12, color='#db2525', tooltip='Close')
         title_layout.addWidget(self.close_button)
-        
+
         # Selection buttons
         self.button_layout = QtWidgets.QHBoxLayout()
         self.add_selection_btn = QtWidgets.QPushButton("Add")
-        self.add_selection_btn.setFixedHeight(20)
+        self.add_selection_btn.setFixedHeight(24)
         self.add_selection_btn.setStyleSheet("""
             QPushButton {
-                background-color: #5285a6;
+                background-color: #1D65CA;
                 color: white;
                 border: none;
-                border-radius: 3px;
+                border-radius: 12px;
             }
             QPushButton:hover {
                 background-color: #619ac2;
             }
         """)
-        
+
         self.remove_selection_btn = QtWidgets.QPushButton("Remove")
-        self.remove_selection_btn.setFixedHeight(20)
+        self.remove_selection_btn.setFixedHeight(24)
         self.remove_selection_btn.setStyleSheet("""
             QPushButton {
                 background-color: #494949;
                 color: white;
                 border: none;
-                border-radius: 3px;
+                border-radius: 12px;
             }
             QPushButton:hover {
                 background-color: #5a5a5a;
             }
         """)
-        
+
         self.button_layout.addWidget(self.add_selection_btn)
         self.button_layout.addWidget(self.remove_selection_btn)
-        
+
         # Selection list
         self.list_frame = QtWidgets.QFrame()
         self.list_frame.setStyleSheet("""
             QFrame {
-                background-color: #1e1e1e;
-                border-radius: 2px;
+                background-color: #333333;
+                border-radius: 8px;
             }
         """)
         self.list_layout = QtWidgets.QVBoxLayout(self.list_frame)
         self.list_layout.setContentsMargins(2, 2, 2, 2)
-        
+
         self.selection_list = QtWidgets.QListWidget()
         self.selection_list.setFixedHeight(200)
         self.selection_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
@@ -136,9 +123,9 @@ class SelectionManagerWidget(QtWidgets.QWidget):
                 color: #dddddd;
                 outline: 0;
             }
-                QListWidget::item:focus {
-                border: none;  /* Remove focus border */
-                outline: none;  /* Remove focus outline */
+            QListWidget::item:focus {
+                border: none;
+                outline: none;
             }
             QListWidget::item {
                 padding: 3px;
@@ -150,6 +137,14 @@ class SelectionManagerWidget(QtWidgets.QWidget):
             QListWidget::item:hover {
                 background-color: rgba(44, 71, 89, 0.5);
             }
+            QScrollBar:vertical { border: none; background: transparent; width: 6px; }
+            QScrollBar::handle:vertical { background: rgba(100,100,100,0.4); border-radius: 3px; min-height: 20px; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+            QScrollBar:horizontal { border: none; background: transparent; height: 6px; }
+            QScrollBar::handle:horizontal { background: rgba(100,100,100,0.4); border-radius: 3px; min-width: 20px; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
         """)
         self.list_layout.addWidget(self.selection_list)
         

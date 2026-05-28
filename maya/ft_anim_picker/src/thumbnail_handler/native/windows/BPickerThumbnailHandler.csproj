@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <OutputType>Library</OutputType>
+    <EnableComHosting>true</EnableComHosting>
+    <AssemblyTitle>BGEN Picker Thumbnail Handler</AssemblyTitle>
+    <Description>Windows Shell thumbnail provider for .bpicker files</Description>
+    <Company>BGEN</Company>
+    <Product>BGEN Picker</Product>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Drawing.Common" Version="6.0.0" />
+  </ItemGroup>
+
+  <!--
+    Build:
+      dotnet build -c Release
+
+    Register (admin required, one time):
+      regsvr32 bin\Release\net6.0-windows\BPickerThumbnailHandler.comhost.dll
+
+    Unregister:
+      regsvr32 /u bin\Release\net6.0-windows\BPickerThumbnailHandler.comhost.dll
+  -->
+
+</Project>

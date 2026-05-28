@@ -15,7 +15,7 @@ def get_qt_app():
     try:
         from PySide6 import QtWidgets, QtCore
     except ImportError:
-        raise ImportError("PySide6 is required to use FT Animation Picker. Please install it to use this addon.")
+        raise ImportError("PySide6 is required to use BGEN Picker. Please install it to use this addon.")
     
     # Create Qt application if it doesn't exist
     if _qt_app is None:
@@ -32,11 +32,13 @@ class PickerVisibilityManager:
     """FIXED: Centralized visibility manager for all picker instances"""
     _instance = None
     _registered_pickers = []
-    _registered_child_widgets = {} 
+    _registered_child_widgets = {}
     _visibility_timer = None
     _should_be_visible = True
     _last_check_time = 0
     _state_lock = False
+    _always_on_top_cache = None
+    _always_on_top_cache_time = 0
     
     @classmethod
     def get_instance(cls):
@@ -98,8 +100,8 @@ class PickerVisibilityManager:
             from PySide6.QtCore import QTimer
             self._visibility_timer = QTimer()
             self._visibility_timer.timeout.connect(self._check_all_windows_visibility)
-            self._visibility_timer.start(150)  # Slower check - 150ms to reduce conflicts
-            #print("Started centralized visibility timer")
+            self._visibility_timer.start(300)  # OPTIMIZED: 300ms instead of 150ms to reduce CPU usage
+            #print("Started centralized visibility timer (optimized 300ms)")
     
     def _stop_visibility_timer(self):
         """ENHANCED: Stop the centralized visibility timer with proper cleanup"""
@@ -149,13 +151,37 @@ class PickerVisibilityManager:
     def _check_all_windows_visibility(self):
         """FIXED: Check if any picker windows should be visible and apply to all"""
         try:
+            # If "Always on Top" is enabled, never auto-hide
+            # Cache the pref check to avoid reading disk every 300ms
+            import time as _time
+            _now = _time.time()
+            if self._always_on_top_cache is None or (_now - self._always_on_top_cache_time) > 2.0:
+                from .local_file_manager import LocalFileManager
+                self._always_on_top_cache = LocalFileManager.get_always_on_top()
+                self._always_on_top_cache_time = _now
+            if self._always_on_top_cache:
+                # Ensure windows stay visible and skip all hide logic
+                if not self._should_be_visible:
+                    self._should_be_visible = True
+                    self._apply_visibility_to_all(True)
+                return
+
+            # On macOS, Qt.Tool windows automatically hide/show with the app.
+            # The visibility manager should not actively hide them.
+            import sys
+            if sys.platform == "darwin":
+                if not self._should_be_visible:
+                    self._should_be_visible = True
+                    self._apply_visibility_to_all(True)
+                return
+
             # CRITICAL FIX: Prevent rapid state changes with lock
             if self._state_lock:
                 return
-            
+
             import time
             current_time = time.time()
-            
+
             # CRITICAL FIX: Minimum interval between state changes (200ms)
             if current_time - self._last_check_time < 0.2:
                 return
@@ -339,52 +365,80 @@ class PickerVisibilityManager:
             return False
 
     def _is_blender_active_macos_centralized(self):
-        """ENHANCED macOS: Check if Blender application is frontmost (not picker)"""
+        """ENHANCED macOS: Check if Blender's window is the key window (not picker).
+
+        Uses ObjC runtime via ctypes instead of AppleScript subprocess to avoid
+        spawning a process every 300ms which causes significant lag.
+        """
         try:
-            import subprocess
-            
-            # CRITICAL FIX: First check if any Qt windows are active (our pickers)
+            # Quick check: if a Qt picker window is active, Blender is not
             from PySide6.QtWidgets import QApplication
             app = QApplication.instance()
             if app:
                 active_window = app.activeWindow()
                 if active_window:
-                    # If a Qt window is active, let picker detection handle it
                     for picker in self._registered_pickers:
                         if active_window == picker:
                             return False
-                        # Check parent hierarchy
                         parent = active_window.parent()
                         while parent:
                             if parent == picker:
                                 return False
                             parent = parent.parent()
-            
-            # Check if Blender itself is frontmost
-            applescript = '''
-            tell application "System Events"
-                set frontApp to first application process whose frontmost is true
-                set frontAppName to name of frontApp
-                if frontAppName contains "Blender" then
-                    return true
-                else
-                    return false
-                end if
-            end tell
-            '''
-            
-            result = subprocess.run(
-                ['osascript', '-e', applescript],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
-            
-            if result.returncode == 0:
-                return "true" in result.stdout.strip().lower()
-            
+
+            # Check via ObjC runtime if the key window belongs to Blender
+            import ctypes
+            import ctypes.util
+
+            lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library('objc'))
+
+            lib.objc_getClass.restype = ctypes.c_void_p
+            lib.objc_getClass.argtypes = [ctypes.c_char_p]
+            lib.sel_registerName.restype = ctypes.c_void_p
+            lib.sel_registerName.argtypes = [ctypes.c_char_p]
+
+            def msg(obj, sel_name, *args, res=ctypes.c_void_p, extra_types=None):
+                lib.objc_msgSend.restype = res
+                lib.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + (extra_types or [])
+                return lib.objc_msgSend(obj, lib.sel_registerName(sel_name.encode()), *args)
+
+            NSApp = msg(lib.objc_getClass(b'NSApplication'), 'sharedApplication')
+
+            def _check_window_title(window):
+                """Check if a window's title indicates it belongs to Blender."""
+                title_ns = msg(window, 'title')
+                if not title_ns:
+                    return False
+                title_bytes = msg(title_ns, 'UTF8String', res=ctypes.c_char_p)
+                if not title_bytes:
+                    return False
+                title = title_bytes.decode('utf-8', errors='ignore')
+                return 'Blender' in title or '.blend' in title
+
+            # Get the current key window (the one receiving keyboard input)
+            key_window = msg(NSApp, 'keyWindow')
+            if key_window:
+                if _check_window_title(key_window):
+                    return True
+
+            # Fallback: check mainWindow when keyWindow is None (during transitions)
+            main_window = msg(NSApp, 'mainWindow')
+            if main_window:
+                if _check_window_title(main_window):
+                    return True
+
+            # Fallback: check if our process is the frontmost application
+            import os
+            NSWorkspace = lib.objc_getClass(b'NSWorkspace')
+            workspace = msg(NSWorkspace, 'sharedWorkspace')
+            frontmost = msg(workspace, 'frontmostApplication')
+            if frontmost:
+                frontmost_pid = msg(frontmost, 'processIdentifier', res=ctypes.c_int)
+                if frontmost_pid == os.getpid():
+                    return True
+
             return False
-            
+
         except Exception as e:
             print(f"Error checking macOS Blender state: {e}")
             return False
@@ -482,28 +536,28 @@ class PickerVisibilityManager:
         # Use the first picker's task switcher detection method
         return self._registered_pickers[0]._is_task_switcher_active()
     
-    def _apply_visibility_to_all(self, should_be_visible, focus=False):
+    def _apply_visibility_to_all(self, should_be_visible, focus=False, force=False):
         """ENHANCED: Apply visibility state to all registered picker windows with safety checks"""
         #print(f"Applying visibility {should_be_visible} to {len(self._registered_pickers)} windows")
-        
+
         successful_updates = 0
         for picker in self._registered_pickers[:]:  # Use copy to avoid modification during iteration
             try:
                 # Double-check picker is still valid
                 if not picker or not hasattr(picker, 'isVisible'):
                     continue
-                    
+
                 # Skip if already in correct state to avoid unnecessary operations
                 current_visible = picker.isVisible()
                 if (should_be_visible and current_visible) or (not should_be_visible and not current_visible):
                     successful_updates += 1
                     continue
-                
+
                 # Apply visibility change
                 if should_be_visible:
                     picker._ensure_window_visible()
                 else:
-                    picker._ensure_window_hidden()
+                    picker._ensure_window_hidden(force=force)
                     
                 successful_updates += 1
 
@@ -554,8 +608,8 @@ class PickerVisibilityManager:
         new_visibility = not any_visible
         print(f"Toggling picker visibility from {any_visible} to {new_visibility}")
         
-        # Apply the new visibility state
-        self._apply_visibility_to_all(new_visibility, focus=True)
+        # Apply the new visibility state (force=True for explicit user action)
+        self._apply_visibility_to_all(new_visibility, focus=True, force=True)
         return new_visibility
 
     def show_all_pickers(self):
@@ -574,8 +628,43 @@ class PickerVisibilityManager:
             return
         
         print("Hiding all picker instances")
-        self._apply_visibility_to_all(False, focus=True)
-                       
+        self._apply_visibility_to_all(False, focus=True, force=True)
+
+    def is_any_picker_visible(self):
+        """Fast check: is any registered picker currently visible (not hidden, not minimized)?
+
+        Used by Blender handlers (depsgraph, frame_change) to short-circuit scene
+        queries when the picker UI is not actually on screen.
+        """
+        if not self._registered_pickers:
+            return False
+        try:
+            from PySide6.QtCore import Qt
+            minimized = Qt.WindowMinimized
+        except Exception:
+            minimized = 0x1
+        for picker in self._registered_pickers:
+            try:
+                if not picker.isVisible():
+                    continue
+                if picker.windowState() & minimized:
+                    continue
+                return True
+            except (RuntimeError, AttributeError):
+                continue
+        return False
+
+
+def is_any_picker_visible():
+    """Module-level fast gate used by Blender handlers to skip scene-query work
+    when no picker is on screen. Returns False if no pickers are registered at all.
+    """
+    mgr = PickerVisibilityManager._instance
+    if mgr is None:
+        return False
+    return mgr.is_any_picker_visible()
+
+
 class PickerWindowManager:
     _instance = None
     _picker_widgets = []
@@ -595,7 +684,7 @@ class PickerWindowManager:
         
         # Create new picker widget
         picker_widget = UI.BlenderAnimPickerWindow()
-        picker_widget.setObjectName(f"floatingTool_{len(self._picker_widgets)}")
+        picker_widget.setObjectName(f"bgenPicker_{len(self._picker_widgets)}")
         
         # Store reference to widget
         self._picker_widgets.append(picker_widget)
@@ -673,7 +762,7 @@ class PickerWindowManager:
 
 def _check_shortcuts_installed():
     """Check if the addon shortcuts are already installed"""
-    addon_keymaps = bpy.app.driver_namespace.get('ft_picker_keymaps', [])
+    addon_keymaps = bpy.app.driver_namespace.get('bgen_picker_keymaps', [])
     return len(addon_keymaps) > 0
 
 def _install_shortcuts():
@@ -692,7 +781,7 @@ def _install_shortcuts():
         # Add keymap for toggle visibility (Ctrl+Shift+P)
         km = kc.keymaps.new(name='3D View', space_type='VIEW_3D')
         kmi = km.keymap_items.new(
-            ANIM_OT_toggle_ft_picker_visibility.bl_idname,
+            ANIM_OT_toggle_bgen_picker_visibility.bl_idname,
             type='P',
             value='PRESS',
             ctrl=True,
@@ -702,7 +791,7 @@ def _install_shortcuts():
         
         # Add keymap for show picker (Ctrl+Shift+Up)
         kmi_show = km.keymap_items.new(
-            ANIM_OT_show_ft_picker.bl_idname,
+            ANIM_OT_show_bgen_picker.bl_idname,
             type='UP_ARROW',
             value='PRESS',
             ctrl=True,
@@ -712,7 +801,7 @@ def _install_shortcuts():
         
         # Add keymap for hide picker (Ctrl+Shift+Down)
         kmi_hide = km.keymap_items.new(
-            ANIM_OT_hide_ft_picker.bl_idname,
+            ANIM_OT_hide_bgen_picker.bl_idname,
             type='DOWN_ARROW',
             value='PRESS',
             ctrl=True,
@@ -721,16 +810,31 @@ def _install_shortcuts():
         addon_keymaps.append((km, kmi_hide))
     
     # Store keymaps for cleanup
-    bpy.app.driver_namespace['ft_picker_keymaps'] = addon_keymaps
-    print("FT Animation Picker shortcuts installed")
+    bpy.app.driver_namespace['bgen_picker_keymaps'] = addon_keymaps
+    print("BGEN Picker shortcuts installed")
 
 def open():
     """Create a new instance of the animation picker window"""
     # Check and install shortcuts if needed
     _install_shortcuts()
-    
+
     manager = PickerWindowManager.get_instance()
     return manager.create_window()
+
+
+def import_bpicker_file(filepath):
+    """Import a .bpicker file, creating a picker window if needed.
+
+    Called by the Blender import operator in __init__.py to handle
+    File > Import and drag-drop from the OS file browser.
+    """
+    _install_shortcuts()
+    manager = PickerWindowManager.get_instance()
+    picker = manager.get_active_window()
+    if picker is None:
+        picker = manager.create_window()
+    picker._import_picker_file(filepath)
+    return picker
 
 def toggle_all_pickers_visibility():
     """Toggle visibility of all picker instances"""
@@ -748,69 +852,79 @@ def hide_all_pickers():
     visibility_manager.hide_all_pickers()
 
 # Blender operator to open the picker
-class ANIM_OT_open_ft_picker(bpy.types.Operator):
-    bl_idname = "anim.open_ft_picker"
-    bl_label = "FT Animation Picker"
-    bl_description = "Open the FT Animation Picker"
+class ANIM_OT_open_bgen_picker(bpy.types.Operator):
+    bl_idname = "anim.open_bgen_picker"
+    bl_label = "BGEN Picker"
+    bl_description = "Open the BGEN Picker"
     
     def execute(self, context):
         open()
         return {'FINISHED'}
 
 # Blender operator to toggle picker visibility
-class ANIM_OT_toggle_ft_picker_visibility(bpy.types.Operator):
-    bl_idname = "anim.toggle_ft_picker_visibility"
-    bl_label = "Toggle FT Animation Picker Visibility"
-    bl_description = "Toggle visibility of all FT Animation Picker windows"
-    
+class ANIM_OT_toggle_bgen_picker_visibility(bpy.types.Operator):
+    bl_idname = "anim.toggle_bgen_picker_visibility"
+    bl_label = "Toggle BGEN Picker Visibility"
+    bl_description = "Toggle visibility of all BGEN Picker windows"
+
     def execute(self, context):
         new_state = toggle_all_pickers_visibility()
         if new_state:
-            self.report({'INFO'}, "FT Animation Picker windows shown")
+            self.report({'INFO'}, "BGEN Picker windows shown")
         else:
-            self.report({'INFO'}, "FT Animation Picker windows hidden")
+            self.report({'INFO'}, "BGEN Picker windows hidden")
         return {'FINISHED'}
 
 # Blender operator to show all pickers
-class ANIM_OT_show_ft_picker(bpy.types.Operator):
-    bl_idname = "anim.show_ft_picker"
-    bl_label = "Show FT Animation Picker"
-    bl_description = "Show all FT Animation Picker windows"
-    
+class ANIM_OT_show_bgen_picker(bpy.types.Operator):
+    bl_idname = "anim.show_bgen_picker"
+    bl_label = "Show BGEN Picker"
+    bl_description = "Show all BGEN Picker windows"
+
     def execute(self, context):
         show_all_pickers()
-        self.report({'INFO'}, "FT Animation Picker windows shown")
+        self.report({'INFO'}, "BGEN Picker windows shown")
         return {'FINISHED'}
 
 # Blender operator to hide all pickers
-class ANIM_OT_hide_ft_picker(bpy.types.Operator):
-    bl_idname = "anim.hide_ft_picker"
-    bl_label = "Hide FT Animation Picker"
-    bl_description = "Hide all FT Animation Picker windows"
-    
+class ANIM_OT_hide_bgen_picker(bpy.types.Operator):
+    bl_idname = "anim.hide_bgen_picker"
+    bl_label = "Hide BGEN Picker"
+    bl_description = "Hide all BGEN Picker windows"
+
     def execute(self, context):
         hide_all_pickers()
-        self.report({'INFO'}, "FT Animation Picker windows hidden")
+        self.report({'INFO'}, "BGEN Picker windows hidden")
         return {'FINISHED'}
 
 # Registration
+_registered = False
+
 def register():
-    bpy.utils.register_class(ANIM_OT_open_ft_picker)
-    bpy.utils.register_class(ANIM_OT_toggle_ft_picker_visibility)
-    bpy.utils.register_class(ANIM_OT_show_ft_picker)
-    bpy.utils.register_class(ANIM_OT_hide_ft_picker)
+    global _registered
+    if _registered:
+        return
+    bpy.utils.register_class(ANIM_OT_open_bgen_picker)
+    bpy.utils.register_class(ANIM_OT_toggle_bgen_picker_visibility)
+    bpy.utils.register_class(ANIM_OT_show_bgen_picker)
+    bpy.utils.register_class(ANIM_OT_hide_bgen_picker)
+    _registered = True
 
 def unregister():
+    global _registered
+    if not _registered:
+        return
     # Unregister keymaps
-    addon_keymaps = bpy.app.driver_namespace.get('ft_picker_keymaps', [])
+    addon_keymaps = bpy.app.driver_namespace.get('bgen_picker_keymaps', [])
     for km, kmi in addon_keymaps:
         km.keymap_items.remove(kmi)
-    bpy.app.driver_namespace.pop('ft_picker_keymaps', None)
-    
-    bpy.utils.unregister_class(ANIM_OT_open_ft_picker)
-    bpy.utils.unregister_class(ANIM_OT_toggle_ft_picker_visibility)
-    bpy.utils.unregister_class(ANIM_OT_show_ft_picker)
-    bpy.utils.unregister_class(ANIM_OT_hide_ft_picker)
+    bpy.app.driver_namespace.pop('bgen_picker_keymaps', None)
+
+    bpy.utils.unregister_class(ANIM_OT_open_bgen_picker)
+    bpy.utils.unregister_class(ANIM_OT_toggle_bgen_picker_visibility)
+    bpy.utils.unregister_class(ANIM_OT_show_bgen_picker)
+    bpy.utils.unregister_class(ANIM_OT_hide_bgen_picker)
+    _registered = False
 
 if __name__ == "__main__":
     register()

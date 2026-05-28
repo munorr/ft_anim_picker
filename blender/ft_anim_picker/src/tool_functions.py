@@ -194,6 +194,30 @@ class animation_tool_layout:
         self.layout.addWidget(self.tools_scroll_area)
         #---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 #---------------------------------------------------------------------------------------------------------------
+def get_show_bones_state():
+    """Read show_bones overlay state from the first VIEW_3D area."""
+    try:
+        with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+            for area in bpy.context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    return area.spaces.active.overlay.show_bones
+    except Exception:
+        pass
+    return True
+
+def toggle_show_bones():
+    """Toggle bone overlay visibility for all 3D viewports."""
+    try:
+        with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+            current = get_show_bones_state()
+            for area in bpy.context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.spaces.active.overlay.show_bones = not current
+                    area.tag_redraw()
+    except Exception:
+        pass
+
+#---------------------------------------------------------------------------------------------------------------
 def reset_move():
     with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
         if bpy.context.mode == 'POSE':
@@ -265,7 +289,9 @@ def selected_bones():
     with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
         active_object = bpy.context.view_layer.objects.active
         if active_object.type == 'ARMATURE':
-            selected_bones = [bone.name for bone in active_object.data.bones if bone.select]
+            # Use version-compatible function from utils
+            from . import utils as UT
+            selected_bones = UT.get_selected_bone_names(active_object)
             #print(selected_bones)
             return selected_bones
         else:
@@ -680,14 +706,18 @@ def _mirror_selected_bones(armature_obj: bpy.types.Object,
     try:
         # Get selected pose bones
         selected_pose_bones = []
-        context_bones = getattr(bpy.context, 'selected_pose_bones', None)
+        # Handle Blender version compatibility for selected pose bones
+        context_bones = getattr(bpy.context, 'selected_pose_bones_from_active_object', None)
+        if not context_bones:
+            context_bones = getattr(bpy.context, 'selected_pose_bones', None)
         if context_bones:
             selected_pose_bones = list(context_bones)
         
         # Fallback: check bone selection manually
         if not selected_pose_bones and armature_obj.pose:
+            from . import utils as UT
             for pose_bone in armature_obj.pose.bones:
-                if pose_bone.bone.select:
+                if UT.is_bone_selected(pose_bone):
                     selected_pose_bones.append(pose_bone)
         
         # Build bone mirror cache for this armature (only if not forcing in-place)
@@ -937,6 +967,7 @@ def _select_mirrored_items(results: Dict[str, Any], mirror_mode: str) -> None:
                     # Clear selection and select only the result bones
                     bpy.ops.pose.select_all(action='DESELECT')
                     
+                    from . import utils as UT
                     for bone_info in results['mirrored_bones']:
                         mirrored_name = bone_info['mirrored']
                         
@@ -944,11 +975,11 @@ def _select_mirrored_items(results: Dict[str, Any], mirror_mode: str) -> None:
                         if mirrored_name.endswith(' (in-place)'):
                             original_name = bone_info['original']
                             if original_name in armature_obj.pose.bones:
-                                armature_obj.pose.bones[original_name].bone.select = True
+                                UT.set_bone_selected(armature_obj.pose.bones[original_name], True)
                         else:
                             # If it has a counterpart, select the counterpart
                             if mirrored_name in armature_obj.pose.bones:
-                                armature_obj.pose.bones[mirrored_name].bone.select = True
+                                UT.set_bone_selected(armature_obj.pose.bones[mirrored_name], True)
                     bpy.context.object.data.bones.active = bpy.context.object.data.bones[mirrored_name]
                             
             elif mirror_mode == 'objects' and results['mirrored_objects']:
@@ -1026,7 +1057,9 @@ def button_appearance(text="", color="", opacity="", selectable="", source_butto
     
     # Process and validate appearance parameters
     validated_params = _process_appearance_parameters(text, color, opacity, selectable)
-    if not any(validated_params.values()):
+    # Use `is not None` so legit values like selectable=False or opacity=0.0
+    # are counted as intended changes (a plain truthy check treats them as "no change").
+    if not any(v is not None for v in validated_params.values()):
         print("No changes were made. Please provide at least one parameter (text, color, opacity, or selectable).")
         return
     
@@ -1306,25 +1339,7 @@ def _persist_appearance_changes(modified_buttons, context, validated_params):
             
             # Update database with modified button data
             for button in modified_buttons:
-                button_data = {
-                    "id": button.unique_id,
-                    "label": button.label,
-                    "color": button.color,
-                    "opacity": button.opacity,
-                    "selectable": button.selectable,
-                    "position": (button.scene_position.x(), button.scene_position.y()),
-                    "width": getattr(button, 'width', 80),
-                    "height": getattr(button, 'height', 30),
-                    "radius": getattr(button, 'radius', [3, 3, 3, 3]),
-                    "assigned_objects": getattr(button, 'assigned_objects', []),
-                    "mode": getattr(button, 'mode', 'select'),
-                    "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
-                    "pose_data": getattr(button, 'pose_data', {}),
-                    "thumbnail_path": getattr(button, 'thumbnail_path', ''),
-                    "shape_type": getattr(button, 'shape_type', 'rect'),
-                    "svg_path_data": getattr(button, 'svg_path_data', None),
-                    "svg_file_path": getattr(button, 'svg_file_path', None)
-                }
+                button_data = picker_widget._create_button_data(button)
                 
                 # Update existing button data or add new one
                 if button.unique_id in button_map:
@@ -1861,3 +1876,345 @@ def print_buttons():
     print("-" * 60)
     for button in buttons:
         print(f"ID: {button['id']:<20} | Label: {button['label']:<15} | Color: {button['color']:<8} | Opacity: {button['opacity']:<4} | Mode: {button['mode']}")
+
+#---------------------------------------------------------------------------------------
+# Animation / FCurve Helpers
+#---------------------------------------------------------------------------------------
+
+def _get_fcurves(action, armature_obj=None):
+    """Get fcurves from an action, compatible with Blender 4.x and 5.0+.
+
+    Blender 5.0 removed action.fcurves — fcurves now live on a channelbag.
+    """
+    # Blender 5.0+ (slotted actions / channelbag API)
+    if not hasattr(action, 'fcurves'):
+        try:
+            from bpy_extras import anim_utils
+            # Get the action slot from the armature's animation data
+            if armature_obj and armature_obj.animation_data:
+                slot = armature_obj.animation_data.action_slot
+                if slot:
+                    channelbag = anim_utils.action_get_channelbag_for_slot(action, slot)
+                    if channelbag:
+                        return channelbag.fcurves
+            # Fallback: try first slot
+            if hasattr(action, 'slots') and action.slots:
+                slot = action.slots[0]
+                channelbag = anim_utils.action_get_channelbag_for_slot(action, slot)
+                if channelbag:
+                    return channelbag.fcurves
+        except Exception as e:
+            print(f"FT fcurves: channelbag access failed: {e}")
+        return []
+    # Blender 4.x (legacy direct access)
+    return action.fcurves
+
+
+def _get_or_create_fcurves(action, armature_obj):
+    """Get fcurves container that supports find() and new(), compatible with Blender 4.x and 5.0+."""
+    if not hasattr(action, 'fcurves'):
+        try:
+            from bpy_extras import anim_utils
+            slot = armature_obj.animation_data.action_slot
+            if slot:
+                channelbag = anim_utils.action_ensure_channelbag_for_slot(action, slot)
+                if channelbag:
+                    return channelbag.fcurves
+        except Exception as e:
+            print(f"FT fcurves: ensure channelbag failed: {e}")
+        return None
+    return action.fcurves
+
+
+def get_selected_keyframe_range(action, bone_names, armature_obj=None):
+    """Get the frame range of selected keyframes for the given bones.
+
+    Returns (frame_start, frame_end, selected_frames_set) or (None, None, None)
+    if no keyframes are selected.
+    """
+    selected_frames = set()
+    fcurves = _get_fcurves(action, armature_obj)
+
+    for fcurve in fcurves:
+        match = re.match(r'pose\.bones\["(.+?)"\]', fcurve.data_path)
+        if not match:
+            continue
+        bone_name = match.group(1)
+        if bone_name not in bone_names:
+            continue
+
+        for kp in fcurve.keyframe_points:
+            if kp.select_control_point:
+                selected_frames.add(kp.co[0])
+
+    if not selected_frames:
+        return None, None, None
+
+    return min(selected_frames), max(selected_frames), selected_frames
+
+
+def read_fcurve_keyframes(action, bone_names, frame_start, frame_end, selected_frames=None, armature_obj=None):
+    """Read keyframe data from fcurves for specified bones within a frame range.
+
+    Args:
+        action: Blender action to read from
+        bone_names: set of bone names to capture
+        frame_start: start frame of the range
+        frame_end: end frame of the range
+        selected_frames: optional set of frame numbers - if provided, only capture
+                         keyframes at these exact frames
+        armature_obj: Blender armature object (needed for Blender 5.0+ channelbag API)
+
+    Returns dict: {bone_name: {channels: {channel: {index: {keyframes: [...]}}}}}
+    """
+    bones_anim_data = {}
+    fcurves = _get_fcurves(action, armature_obj)
+
+    for fcurve in fcurves:
+        # Parse data_path: pose.bones["BoneName"].channel or pose.bones["BoneName"]["custom_prop"]
+        match = re.match(r'pose\.bones\["(.+?)"\]\.(.+)', fcurve.data_path)
+        custom_match = None
+        if not match:
+            custom_match = re.match(r'pose\.bones\["(.+?)"\](\[".+?"\])', fcurve.data_path)
+            if not custom_match:
+                continue
+
+        if match:
+            bone_name = match.group(1)
+            channel = match.group(2)
+        else:
+            bone_name = custom_match.group(1)
+            channel = custom_match.group(2)
+
+        if bone_name not in bone_names:
+            continue
+
+        # Initialize bone entry
+        if bone_name not in bones_anim_data:
+            bones_anim_data[bone_name] = {"channels": {}}
+
+        if channel not in bones_anim_data[bone_name]["channels"]:
+            bones_anim_data[bone_name]["channels"][channel] = {}
+
+        idx = str(fcurve.array_index)
+        keyframes = []
+
+        for kp in fcurve.keyframe_points:
+            frame = kp.co[0]
+            if frame < frame_start or frame > frame_end:
+                continue
+
+            # If selected_frames filter is active, only include keyframes at those frames
+            if selected_frames is not None and frame not in selected_frames:
+                continue
+
+            frame_offset = frame - frame_start
+            value = kp.co[1]
+            interp = kp.interpolation  # 'BEZIER', 'LINEAR', 'CONSTANT'
+
+            handle_left = None
+            handle_right = None
+            if interp == 'BEZIER':
+                handle_left = [kp.handle_left[0] - frame_start, kp.handle_left[1]]
+                handle_right = [kp.handle_right[0] - frame_start, kp.handle_right[1]]
+
+            keyframes.append([frame_offset, value, interp, handle_left, handle_right])
+
+        if keyframes:
+            bones_anim_data[bone_name]["channels"][channel][idx] = {
+                "keyframes": keyframes
+            }
+
+    return bones_anim_data
+
+
+def write_fcurve_keyframes(armature_obj, bones_data, frame_count, base_frame, apply_mode='replace'):
+    """Write animation keyframe data to fcurves on an armature.
+
+    Args:
+        armature_obj: Blender armature object
+        bones_data: dict of {bone_name: {channels: {...}, rotation_mode: ...}}
+        frame_count: total number of frames in the animation range
+        base_frame: Current frame (playhead position) to offset keyframes to
+        apply_mode: 'replace', 'merge', or 'add'
+    """
+    # Ensure action exists
+    if not armature_obj.animation_data:
+        armature_obj.animation_data_create()
+    if not armature_obj.animation_data.action:
+        armature_obj.animation_data.action = bpy.data.actions.new(
+            name=f"{armature_obj.name}_Action"
+        )
+    action = armature_obj.animation_data.action
+    fcurves_container = _get_or_create_fcurves(action, armature_obj)
+    if fcurves_container is None:
+        print("FT write_fcurve: could not access fcurves on action")
+        return
+    total_keys_written = 0
+
+    for bone_name, bone_data in bones_data.items():
+        if bone_name not in armature_obj.pose.bones:
+            print(f"FT write_fcurve: bone '{bone_name}' not found, skipping")
+            continue
+
+        for channel, indices in bone_data.get('channels', {}).items():
+            # Build data_path
+            if channel.startswith('['):
+                # Custom property
+                data_path = f'pose.bones["{bone_name}"]{channel}'
+            else:
+                data_path = f'pose.bones["{bone_name}"].{channel}'
+
+            for idx_str, idx_data in indices.items():
+                idx = int(idx_str)
+                keyframes = idx_data.get('keyframes', [])
+                if not keyframes:
+                    continue
+
+                # Find or create fcurve
+                fcurve = fcurves_container.find(data_path, index=idx)
+
+                if apply_mode == 'replace':
+                    if fcurve:
+                        # Remove keyframes in target range
+                        target_start = base_frame
+                        target_end = base_frame + frame_count
+                        points_to_remove = []
+                        for i, kp in enumerate(fcurve.keyframe_points):
+                            if target_start <= kp.co[0] <= target_end:
+                                points_to_remove.append(i)
+                        for i in reversed(points_to_remove):
+                            fcurve.keyframe_points.remove(fcurve.keyframe_points[i])
+                    else:
+                        fcurve = fcurves_container.new(data_path, index=idx)
+                elif apply_mode in ('merge', 'add'):
+                    if not fcurve:
+                        fcurve = fcurves_container.new(data_path, index=idx)
+
+                # Insert keyframes
+                for kf_data in keyframes:
+                    frame_offset, value, interp, handle_left, handle_right = kf_data
+                    target_frame = base_frame + frame_offset
+
+                    if apply_mode == 'add':
+                        existing_val = fcurve.evaluate(target_frame)
+                        value = existing_val + value
+
+                    fcurve.keyframe_points.insert(target_frame, value, options={'FAST'})
+                    total_keys_written += 1
+
+                    # Find the inserted point to set interpolation and handles
+                    kp = None
+                    for point in fcurve.keyframe_points:
+                        if abs(point.co[0] - target_frame) < 0.001:
+                            kp = point
+                            break
+
+                    if kp:
+                        kp.interpolation = interp
+                        if interp == 'BEZIER' and handle_left and handle_right:
+                            kp.handle_left_type = 'FREE'
+                            kp.handle_right_type = 'FREE'
+                            kp.handle_left = (
+                                base_frame + handle_left[0],
+                                handle_left[1]
+                            )
+                            kp.handle_right = (
+                                base_frame + handle_right[0],
+                                handle_right[1]
+                            )
+
+                fcurve.update()
+
+    print(f"FT write_fcurve: {total_keys_written} keyframes written to '{armature_obj.name}' (mode={apply_mode})")
+
+def get_current_scene_selection(namespace=None):
+    """Return the current Blender selection as a normalized list for button creation.
+
+    Prefers pose bones from the active armature; falls back to selected objects.
+    Click order is preserved via SelectionSyncManager's history tracker; falls
+    back to active-first ordering when the history is empty (e.g. script-driven
+    selection that bypassed the depsgraph). Each item:
+    {'label': short_name, 'assigned_object': <dict matching assigned_objects schema>}
+    """
+    try:
+        from . selection_sync_manager import SelectionSyncManager
+        ssm = SelectionSyncManager.get_instance()
+    except Exception:
+        ssm = None
+
+    items = []
+    active = bpy.context.view_layer.objects.active
+    if active and active.type == 'ARMATURE' and active.mode == 'POSE':
+        ordered_bones = ssm.get_ordered_selected_bones() if ssm else []
+        bone_names = []
+        if ordered_bones:
+            # Filter to bones whose armature matches the active object — current
+            # button-from-selection flow is single-armature scoped (uses `active`
+            # as the source). Multi-rig selection still works downstream.
+            active_name = active.name
+            bone_names = [bn for (arm, bn) in ordered_bones if arm == active_name]
+
+        if not bone_names:
+            try:
+                bone_names = UT.get_selected_bone_names(active)
+            except Exception:
+                bone_names = []
+                context_bones = getattr(bpy.context, 'selected_pose_bones_from_active_object', None)
+                if not context_bones:
+                    context_bones = getattr(bpy.context, 'selected_pose_bones', None)
+                if context_bones:
+                    bone_names = [b.name for b in context_bones]
+            # Active-first fallback: promote the active pose bone to the end so
+            # the most-recently-clicked bone reads as "last" in placement order.
+            try:
+                apb = getattr(bpy.context, 'active_pose_bone', None)
+                if apb is not None and apb.name in bone_names and bone_names[-1] != apb.name:
+                    bone_names = [n for n in bone_names if n != apb.name] + [apb.name]
+            except Exception:
+                pass
+
+        if bone_names:
+            fallback_armature = active.name
+            target_armature = namespace if namespace and namespace != 'None' else fallback_armature
+            for name in bone_names:
+                items.append({
+                    'label': name,
+                    'assigned_object': {
+                        'name': name,
+                        'is_bone': True,
+                        'armature': target_armature,
+                        'source_armature': fallback_armature,
+                    }
+                })
+            return items
+
+    ordered_objects = ssm.get_ordered_selected_objects() if ssm else []
+    if ordered_objects:
+        # Validate against current selection (history may briefly outlive a change).
+        current = {obj.name for obj in bpy.context.view_layer.objects if obj.select_get()}
+        for name in ordered_objects:
+            if name in current:
+                items.append({
+                    'label': name,
+                    'assigned_object': {'name': name, 'is_bone': False}
+                })
+        if items:
+            return items
+
+    for obj in bpy.context.view_layer.objects:
+        if obj.select_get():
+            items.append({
+                'label': obj.name,
+                'assigned_object': {'name': obj.name, 'is_bone': False}
+            })
+    # Active-first fallback for object mode.
+    try:
+        if active is not None and items:
+            active_name = active.name
+            if any(it['label'] == active_name for it in items) and items[-1]['label'] != active_name:
+                items = [it for it in items if it['label'] != active_name] + \
+                        [it for it in items if it['label'] == active_name]
+    except Exception:
+        pass
+    return items

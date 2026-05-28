@@ -28,12 +28,27 @@ except ImportError:
 from . import utils as UT
 from .utils import get_icon
 
+
+class _HexLineEdit(QLineEdit):
+    """QLineEdit that commits, re-applies, and releases focus when Enter/Return is pressed.
+    Emits ``applyRequested`` on Enter so the current color can be re-applied to all
+    selected buttons even when the hex text was not changed."""
+    applyRequested = Signal()
+
+    def keyPressEvent(self, event):
+        super().keyPressEvent(event)
+        if event.key() in (Qt.Key_Enter, Qt.Key_Return):
+            self.applyRequested.emit()
+            self.clearFocus()
+
+
 #-----------------------------------------------------------------------------------------------------------------------------------------------
 class ColorPickerMode(Enum):
     HSV = "hsv"
-    HEX = "hex" 
+    HEX = "hex"
     PALETTE = "palette"
     SQUARE = "square"
+    COLOR_POPUP = "color-popup"
 
 class CursorPreviewWidget(QWidget):
     """A small widget that follows the cursor and shows the sampled color"""
@@ -43,37 +58,75 @@ class CursorPreviewWidget(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedSize(60, 60)
         self.current_color = QColor(255, 255, 255)
-        
+
     def set_color(self, color):
         self.current_color = color
         self.update()
-        
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        
+
         # Draw outer ring
         painter.setPen(QPen(QColor(0, 0, 0), 3))
         painter.setBrush(QColor(255, 255, 255))
         painter.drawEllipse(5, 5, 50, 50)
-        
+
         # Draw color circle
         painter.setPen(QPen(QColor(60, 60, 60), 2))
         painter.setBrush(self.current_color)
         painter.drawEllipse(10, 10, 40, 40)
-        
+
         # Draw crosshair
         painter.setPen(QPen(QColor(255, 255, 255), 2))
         painter.drawLine(30, 15, 30, 25)
         painter.drawLine(30, 35, 30, 45)
         painter.drawLine(15, 30, 25, 30)
         painter.drawLine(35, 30, 45, 30)
-        
+
         painter.setPen(QPen(QColor(0, 0, 0), 1))
         painter.drawLine(30, 15, 30, 25)
         painter.drawLine(30, 35, 30, 45)
         painter.drawLine(15, 30, 25, 30)
         painter.drawLine(35, 30, 45, 30)
+
+#-----------------------------------------------------------------------------------------------------------------------------------------------
+class ScreenOverlay(QWidget):
+    """Transparent fullscreen overlay that captures mouse clicks for color sampling.
+    On macOS, grabMouse/eventFilter cannot intercept clicks outside the Qt window,
+    so this overlay covers all screens to block and capture the click."""
+
+    clicked = Signal()
+    cancelled = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(
+            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setCursor(Qt.CrossCursor)
+
+        # Span across all screens
+        virtual_rect = QtCore.QRect()
+        for screen in QApplication.screens():
+            virtual_rect = virtual_rect.united(screen.geometry())
+        self.setGeometry(virtual_rect)
+
+    def paintEvent(self, event):
+        # Paint a nearly invisible fill so macOS doesn't pass clicks through
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        elif event.button() == Qt.RightButton:
+            self.cancelled.emit()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Escape, Qt.Key_Return, Qt.Key_Enter):
+            self.cancelled.emit()
 #-----------------------------------------------------------------------------------------------------------------------------------------------
 class ColorSlider(QSlider):
     def __init__(self, vertical=False, radius=7, width=None, height=14, handle_size=16):
@@ -374,6 +427,7 @@ class ColorSlider(QSlider):
 class ColorSquareWidget(QWidget):
     """2D Saturation-Brightness picker widget"""
     colorChanged = Signal()
+    dragFinished = Signal()
     
     def __init__(self, width=None, height=80, radius=6):
         super().__init__()
@@ -528,7 +582,13 @@ class ColorSquareWidget(QWidget):
         """Handle mouse drag to select color"""
         if event.buttons() & Qt.LeftButton:
             self._update_from_mouse(event.pos())
-            
+
+    def mouseReleaseEvent(self, event):
+        """Emit dragFinished when mouse drag ends"""
+        if event.button() == Qt.LeftButton:
+            self.dragFinished.emit()
+        super().mouseReleaseEvent(event)
+
     def _update_from_mouse(self, pos):
         """Update color from mouse position"""
         # Clamp position to widget bounds
@@ -547,8 +607,9 @@ class ColorSquareWidget(QWidget):
 #-----------------------------------------------------------------------------------------------------------------------------------------------
 class ColorPicker(QWidget):
     colorChanged = Signal(QColor)
-    
-    def __init__(self, mode='hsv'):
+    dragFinished = Signal()
+
+    def __init__(self, mode='hsv', size=None):
         super().__init__()
         
         # Parse mode input
@@ -556,11 +617,14 @@ class ColorPicker(QWidget):
             try:
                 self.mode = ColorPickerMode(mode.lower())
             except ValueError:
-                raise ValueError(f"Invalid mode: {mode}. Must be one of: hsv, hex, palette, square")
+                raise ValueError(f"Invalid mode: {mode}. Must be one of: hsv, hex, palette, square, color-popup")
         elif isinstance(mode, ColorPickerMode):
             self.mode = mode
         else:
             raise ValueError(f"Mode must be string or ColorPickerMode enum, got {type(mode)}")
+        
+        # Store size for palette mode
+        self.button_size = size if size is not None else 18
         
         # Initialize state
         self.current_color = QColor(186, 24, 24)
@@ -570,7 +634,8 @@ class ColorPicker(QWidget):
         self.sliders_visible = False
         self.square_picker_visible = False  # Add this for square mode
         self.color_palette_widget = None
-        
+        self.color_popup_widget = None
+
         self.setup_ui()
         self.update_all_from_color()
         
@@ -584,6 +649,8 @@ class ColorPicker(QWidget):
         # Create UI based on mode
         if self.mode == ColorPickerMode.PALETTE:
             self._setup_palette_mode()
+        elif self.mode == ColorPickerMode.COLOR_POPUP:
+            self._setup_color_popup_mode()
         else:
             self._setup_frame_based_mode()
         
@@ -595,7 +662,7 @@ class ColorPicker(QWidget):
         self._set_margin_space(top_layout, 0, 4)
         
         self.color_display = QPushButton()
-        self.color_display.setFixedSize(18, 18)
+        self.color_display.setFixedSize(self.button_size, self.button_size)
         self.color_display.setStyleSheet(f"border: 1px solid {UT.rgba_value(self.current_color,1.2)}; border-radius: 3px;")
         self.color_display.setToolTip("Click to show color palette")
         self.color_display.clicked.connect(self.show_color_palette)
@@ -603,6 +670,247 @@ class ColorPicker(QWidget):
         top_layout.addWidget(self.color_display)
         self.main_layout.addLayout(top_layout)
     
+    def _setup_color_popup_mode(self):
+        """Setup UI for color-popup mode - color swatch + hex inline, popup with full picker"""
+        self.color_popup_widget = None
+
+        # Primary widget: rounded color swatch + hex QLineEdit
+        primary_frame = QFrame()
+        primary_frame.setStyleSheet(
+            "background-color: rgba(255, 255, 255, .1); border: 0px solid #555; border-radius: 3px; padding: 2px;"
+        )
+        primary_layout = QHBoxLayout(primary_frame)
+        self._set_margin_space(primary_layout, 0, 4)
+
+        # Color swatch button
+        self.color_display = QPushButton()
+        self.color_display.setStyleSheet(f"border-radius: 3px;")
+        self.color_display.setFixedSize(self.button_size - 2, self.button_size - 2)
+        self.color_display.setCursor(Qt.PointingHandCursor)
+        self.color_display.setToolTip("Click to open color picker")
+        self.color_display.clicked.connect(self._toggle_color_popup)
+
+        # Hex input inline (no # prefix, letters/numbers only)
+        self.hex_input = _HexLineEdit()
+        self.hex_input.setStyleSheet(
+            "background-color: transparent; border: 0px solid #444444; border-radius: 3px; "
+            "color: #cccccc; padding: 2px 4px; font-size: 11px;"
+        )
+        self.hex_input.setAlignment(Qt.AlignLeft)
+        self.hex_input.setFixedHeight(self.button_size - 2)
+        self.hex_input.setMaxLength(6)
+        if PYSIDE_VERSION == 6:
+            self.hex_input.setValidator(QRegularExpressionValidator(QRegularExpression("^[0-9A-Fa-f]{0,6}$")))
+        else:
+            self.hex_input.setValidator(QRegExpValidator(QRegExp("^[0-9A-Fa-f]{0,6}$")))
+        self.hex_input.textChanged.connect(self.on_hex_changed)
+        self.hex_input.applyRequested.connect(self._emit_apply)
+
+        primary_layout.addWidget(self.color_display)
+        primary_layout.addWidget(self.hex_input)
+        self.main_layout.addWidget(primary_frame)
+
+    def _toggle_color_popup(self):
+        """Toggle the color popup open/closed"""
+        if self.color_popup_widget and self.color_popup_widget.isVisible():
+            self.color_popup_widget.close()
+            self.color_popup_widget = None
+            return
+
+        self._show_color_popup()
+
+    def _show_color_popup(self):
+        """Show the color picker popup with gradient, hue slider, hex, and palette"""
+        if self.color_popup_widget and self.color_popup_widget.isVisible():
+            self.color_popup_widget.close()
+
+        self.color_popup_widget = QWidget()
+        self.color_popup_widget.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+        self.color_popup_widget.setStyleSheet(
+            "background-color: #1d1d1d; border: 0px solid #555; border-radius: 3px;"
+        )
+        self.color_popup_widget.setFixedWidth(180)
+
+        popup_layout = QVBoxLayout(self.color_popup_widget)
+        popup_layout.setContentsMargins(8, 8, 8, 8)
+        popup_layout.setSpacing(6)
+
+        # Gradient square picker
+        self.color_square = ColorSquareWidget(height=100, radius=6)
+        self.color_square.colorChanged.connect(self._on_popup_square_changed)
+        self.color_square.dragFinished.connect(self.dragFinished.emit)
+        popup_layout.addWidget(self.color_square)
+
+        # Hue slider
+        self.popup_hue_slider = ColorSlider(height=12, radius=4, vertical=False, handle_size=14)
+        self.popup_hue_slider.setMaximum(360)
+        self.popup_hue_slider.setValue(0)
+        hue_colors = [(255, 0, 0), (255, 255, 0), (0, 255, 0),
+                      (0, 255, 255), (0, 0, 255), (255, 0, 255), (255, 0, 0)]
+        self.popup_hue_slider.set_gradient_colors(hue_colors)
+        self.popup_hue_slider.valueChanged.connect(self._on_popup_hue_changed)
+        self.popup_hue_slider.sliderReleased.connect(self.dragFinished.emit)
+        popup_layout.addWidget(self.popup_hue_slider)
+
+        # Eyedropper + hex input row
+        hex_row = QHBoxLayout()
+        hex_row.setContentsMargins(0, 0, 0, 0)
+        hex_row.setSpacing(4)
+
+        self.picker_btn = QPushButton("")
+        self.picker_btn.setIcon(QtGui.QIcon(get_icon('color_picker.png', opacity=0.8, size=18)))
+        self.picker_btn.setFixedSize(28, 28)
+        self.picker_btn.setStyleSheet(
+            "border: 0px solid #666; border-radius: 3px; background-color: #333333;"
+        )
+        self.picker_btn.setToolTip("Pick color from screen")
+        self.picker_btn.clicked.connect(self.toggle_color_sampling)
+
+        self.popup_hex_input = _HexLineEdit()
+        self.popup_hex_input.setStyleSheet(
+            "background-color: #404040; border: 1px solid #555; border-radius: 3px; "
+            "color: #cccccc; padding: 4px; font-size: 12px;"
+        )
+        self.popup_hex_input.setAlignment(Qt.AlignCenter)
+        self.popup_hex_input.setFixedHeight(28)
+        self.popup_hex_input.setMaxLength(6)
+        if PYSIDE_VERSION == 6:
+            hex_validator = QRegularExpressionValidator(QRegularExpression("^[0-9A-Fa-f]{0,6}$"))
+        else:
+            hex_validator = QRegExpValidator(QRegExp("^[0-9A-Fa-f]{0,6}$"))
+        self.popup_hex_input.setValidator(hex_validator)
+        self.popup_hex_input.textChanged.connect(self._on_popup_hex_changed)
+        self.popup_hex_input.applyRequested.connect(self._emit_apply)
+
+        hex_row.addWidget(self.picker_btn)
+        hex_row.addWidget(self.popup_hex_input)
+        popup_layout.addLayout(hex_row)
+
+        # Color palette swatches
+        palette_grid = QtWidgets.QGridLayout()
+        palette_grid.setSpacing(4)
+        palette_grid.setContentsMargins(0, 2, 0, 0)
+
+        color_palette = [
+            "#66B2FF", "#C299FF", "#d8ecaa", "#edea8e", "#e6e6e6",
+            "#3399FF", "#A366FF", "#a5d631", "#fbdc0e", "#b3b3b3",
+            "#007FFF", "#8033FF", "#a0a617", "#fba70b", "#808080",
+            "#0059B2", "#5C00B2", "#708622", "#e06202", "#4d4d4d",
+            "#002F80", "#2A004D", "#3d7218", "#ec2d2d", "#000000"
+        ]
+
+        for i, color in enumerate(color_palette):
+            btn = QPushButton()
+            btn.setFixedSize(24, 24)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {color};
+                    border: 0px solid #444;
+                    border-radius: 4px;
+                }}
+                QPushButton:hover {{
+                    border: 2px solid #aaa;
+                }}
+            """)
+            palette_grid.addWidget(btn, i // 5, i % 5)
+            try:
+                btn.clicked.connect(lambda checked, c=color: self._on_popup_palette_color(c))
+            except:
+                from functools import partial
+                btn.clicked.connect(partial(self._on_popup_palette_color, color))
+
+        popup_layout.addLayout(palette_grid)
+
+        # Sync popup state from current color
+        self._sync_popup_from_color()
+
+        # Position below the color swatch
+        global_pos = self.color_display.mapToGlobal(QtCore.QPoint(0, 0))
+        self.color_popup_widget.move(global_pos.x(), global_pos.y() + self.color_display.height() + 4)
+        self.color_popup_widget.show()
+
+    def _sync_popup_from_color(self):
+        """Sync popup widgets from current_color"""
+        self._updating_sliders = True
+        color = self.current_color
+        h, s, v = colorsys.rgb_to_hsv(color.red() / 255.0, color.green() / 255.0, color.blue() / 255.0)
+
+        if hasattr(self, 'popup_hue_slider'):
+            self.popup_hue_slider.setValue(int(h * 360))
+        if hasattr(self, 'color_square'):
+            self.color_square.set_hue(int(h * 360))
+            self.color_square.set_saturation_brightness(int(s * 100), int(v * 100))
+        if hasattr(self, 'popup_hex_input'):
+            self.popup_hex_input.setText(color.name().upper().lstrip('#'))
+        self._updating_sliders = False
+
+    def _on_popup_hue_changed(self):
+        """Handle hue slider change in popup"""
+        if self._updating_sliders:
+            return
+        hue = self.popup_hue_slider.value()
+        self.color_square.set_hue(hue)
+        self._update_color_from_popup()
+
+    def _on_popup_square_changed(self):
+        """Handle color square change in popup"""
+        if self._updating_sliders:
+            return
+        self._update_color_from_popup()
+
+    def _update_color_from_popup(self):
+        """Update current color from popup square + hue"""
+        h = self.popup_hue_slider.value() / 360.0
+        s = self.color_square.get_saturation() / 100.0
+        v = self.color_square.get_brightness() / 100.0
+
+        rgb = colorsys.hsv_to_rgb(h, s, v)
+        self.current_color = QColor(int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255))
+
+        self.update_color_display()
+        self.update_hex_input()
+
+        # Update popup hex
+        self._updating_sliders = True
+        if hasattr(self, 'popup_hex_input'):
+            self.popup_hex_input.setText(self.current_color.name().upper().lstrip('#'))
+        self._updating_sliders = False
+
+        self.colorChanged.emit(self.current_color)
+
+    def _on_popup_hex_changed(self):
+        """Handle hex input change in popup"""
+        if self._updating_sliders:
+            return
+        hex_text = self.popup_hex_input.text().strip()
+        if not hex_text.startswith('#'):
+            hex_text = '#' + hex_text
+        if len(hex_text) == 7:
+            color = QColor(hex_text)
+            if color.isValid():
+                self.current_color = color
+                self._updating_sliders = True
+                h, s, v = colorsys.rgb_to_hsv(color.red() / 255.0, color.green() / 255.0, color.blue() / 255.0)
+                self.popup_hue_slider.setValue(int(h * 360))
+                self.color_square.set_hue(int(h * 360))
+                self.color_square.set_saturation_brightness(int(s * 100), int(v * 100))
+                self._updating_sliders = False
+                self.update_color_display()
+                self.update_hex_input()
+                self.colorChanged.emit(self.current_color)
+                self.dragFinished.emit()
+
+    def _on_popup_palette_color(self, color_hex):
+        """Handle palette color selection in popup"""
+        color = QColor(color_hex)
+        if color.isValid():
+            self.current_color = color
+            self._sync_popup_from_color()
+            self.update_color_display()
+            self.update_hex_input()
+            self.colorChanged.emit(self.current_color)
+            self.dragFinished.emit()
+
     def _setup_frame_based_mode(self):
         """Setup UI for HSV, HEX, and SQUARE modes using frame container"""
         self.frame = QFrame()
@@ -639,7 +947,7 @@ class ColorPicker(QWidget):
         h = 16
         
         # Hex input
-        self.hex_input = QLineEdit()
+        self.hex_input = _HexLineEdit()
         self.hex_input.setStyleSheet("border: 1px solid #444444; border-radius: 3px; color: #777777; padding: 1px;")
         self.hex_input.setAlignment(Qt.AlignCenter)
         self.hex_input.setFixedSize(60, h)
@@ -647,6 +955,7 @@ class ColorPicker(QWidget):
         self.hex_input.setToolTip("Color Hex code")
         self._setup_hex_validator()
         self.hex_input.textChanged.connect(self.on_hex_changed)
+        self.hex_input.applyRequested.connect(self._emit_apply)
         
         # Color display
         self.color_display = QPushButton()
@@ -766,13 +1075,14 @@ class ColorPicker(QWidget):
         self.sliders_layout.addLayout(val_layout)
         
         # Hex input for HSV mode
-        self.hex_input = QLineEdit()
+        self.hex_input = _HexLineEdit()
         self.hex_input.setStyleSheet("border: 1px solid #444444; border-radius: 3px; color: #777777;")
         self.hex_input.setAlignment(Qt.AlignCenter)
         self.hex_input.setFixedHeight(24)
         self.hex_input.setMaxLength(7)
         self._setup_hex_validator()
         self.hex_input.textChanged.connect(self.on_hex_changed)
+        self.hex_input.applyRequested.connect(self._emit_apply)
         self.sliders_layout.addWidget(self.hex_input)
         
         self.sliders_widget.hide()  # Initially hidden
@@ -1021,13 +1331,14 @@ class ColorPicker(QWidget):
         self.square_picker_layout.addWidget(self.square_hue_slider)
         
         # Hex input
-        self.hex_input = QLineEdit()
+        self.hex_input = _HexLineEdit()
         self.hex_input.setStyleSheet("border: 1px solid #444444; border-radius: 3px; color: #777777;")
         self.hex_input.setAlignment(Qt.AlignCenter)
         self.hex_input.setFixedHeight(24)
         self.hex_input.setMaxLength(7)
         self._setup_hex_validator()
         self.hex_input.textChanged.connect(self.on_hex_changed)
+        self.hex_input.applyRequested.connect(self._emit_apply)
         self.square_picker_layout.addWidget(self.hex_input)
         
         self.square_picker_widget.hide()  # Initially hidden
@@ -1099,6 +1410,12 @@ class ColorPicker(QWidget):
 
     #---------------------------------------------------------------------------------------------------------------------------------------
     # Common methods for all modes
+    def _emit_apply(self):
+        """Re-emit the current color so callers can apply it to all selected buttons.
+        Used when the user presses Enter on a hex input without changing the text."""
+        self.colorChanged.emit(self.current_color)
+        self.dragFinished.emit()
+
     def on_hex_changed(self):
         """Handle hex input change"""
         if self._updating_sliders:
@@ -1106,32 +1423,37 @@ class ColorPicker(QWidget):
         hex_text = self.hex_input.text().strip()
         if not hex_text.startswith('#'):
             hex_text = '#' + hex_text
-            
-        if len(hex_text) == 7:
+
+        if len(hex_text) == 7:  # 6 chars + prepended #
             try:
                 color = QColor(hex_text)
                 if color.isValid():
                     self.current_color = color
                     if self.mode == ColorPickerMode.HSV:
                         self.update_sliders_from_color()
+                    elif self.mode == ColorPickerMode.COLOR_POPUP:
+                        if self.color_popup_widget and self.color_popup_widget.isVisible():
+                            self._sync_popup_from_color()
                     self.update_color_display()
                     self.colorChanged.emit(self.current_color)
+                    self.dragFinished.emit()
             except:
                 pass
-    
+
     def update_color_display(self):
         """Update color display button"""
         color = self.current_color
-        
-        if self.mode == ColorPickerMode.HEX:
+
+        if self.mode == ColorPickerMode.COLOR_POPUP:
+            radius = 3 #max(4, (self.button_size + 8) // 5)
             style = f"""
                 QPushButton {{
                     background-color: rgb({color.red()}, {color.green()}, {color.blue()});
                     border: 1px solid rgba(255, 255, 255, .1);
-                    border-radius: 3px;
+                    border-radius: {radius}px;
                 }}
                 QPushButton:hover {{
-                    border: 2px solid {UT.rgba_value(self.current_color,1.2)};
+                    border: 1px solid {UT.rgba_value(self.current_color, 1.2)};
                 }}
             """
         else:
@@ -1142,16 +1464,18 @@ class ColorPicker(QWidget):
                     border-radius: 3px;
                 }}
                 QPushButton:hover {{
-                    border: 2px solid {UT.rgba_value(self.current_color,1.2)};
+                    border: 1px solid {UT.rgba_value(self.current_color, 1.2)};
                 }}
             """
-        
+
         self.color_display.setStyleSheet(style)
     
     def update_hex_input(self):
         """Update hex input field"""
         if hasattr(self, 'hex_input'):
             hex_color = self.current_color.name().upper()
+            if self.mode == ColorPickerMode.COLOR_POPUP:
+                hex_color = hex_color.lstrip('#')
             if self.hex_input.text() != hex_color:
                 self._updating_sliders = True
                 self.hex_input.setText(hex_color)
@@ -1163,7 +1487,10 @@ class ColorPicker(QWidget):
             self.update_sliders_from_color()
         elif self.mode == ColorPickerMode.SQUARE:
             self.update_square_from_color()
-            
+        elif self.mode == ColorPickerMode.COLOR_POPUP:
+            if self.color_popup_widget and self.color_popup_widget.isVisible():
+                self._sync_popup_from_color()
+
         self.update_color_display()
         self.update_hex_input()
         
@@ -1263,35 +1590,38 @@ class ColorPicker(QWidget):
                 color: white;
             }
         """)
-        
+
         self.cursor_preview = CursorPreviewWidget()
         self.cursor_preview.show()
-        
-        self.original_cursor = QApplication.overrideCursor()
-        QApplication.instance().installEventFilter(self)
-        self.grabMouse()
-        
+
+        # Use a transparent fullscreen overlay to capture clicks (macOS compatible)
+        self._screen_overlay = ScreenOverlay()
+        self._screen_overlay.clicked.connect(self.stop_sampling)
+        self._screen_overlay.cancelled.connect(self.stop_sampling)
+        self._screen_overlay.show()
+        self._screen_overlay.raise_()
+
         self.sample_timer = QTimer()
         self.sample_timer.timeout.connect(self.sample_color_under_cursor)
         self.sample_timer.start(50)
-        
+
     def sample_color_under_cursor(self):
         """Sample color under cursor position"""
         if not self.sampling:
             return
-            
+
         screen = QApplication.primaryScreen()
         if screen:
             cursor_pos = QCursor.pos()
-            
+
             if self.cursor_preview:
                 self.cursor_preview.move(cursor_pos.x() + 20, cursor_pos.y() + 20)
-            
+
             if PYSIDE_VERSION == 6:
                 pixmap = screen.grabWindow(0, cursor_pos.x(), cursor_pos.y(), 1, 1)
             else:
                 pixmap = screen.grabWindow(0, cursor_pos.x(), cursor_pos.y(), 1, 1)
-            
+
             if not pixmap.isNull():
                 image = pixmap.toImage()
                 if not image.isNull():
@@ -1302,64 +1632,54 @@ class ColorPicker(QWidget):
                     if color.isValid():
                         self.current_color = color
                         self.update_all_from_color()
-                        
+
                         if self.cursor_preview:
                             self.cursor_preview.set_color(color)
-    
-    def eventFilter(self, obj, event):
-        """Global event filter for color sampling"""
-        if self.sampling:
-            if event.type() == QtCore.QEvent.MouseButtonPress:
-                if event.button() == Qt.LeftButton:
-                    self.stop_sampling()
-                    return True
-            elif event.type() == QtCore.QEvent.KeyPress:
-                if event.key() in (Qt.Key_Escape, Qt.Key_Return, Qt.Key_Enter):
-                    self.stop_sampling()
-                    return True
-        return False
-                        
-    def keyPressEvent(self, event):
-        """Handle key press events during sampling"""
-        if self.sampling:
-            if event.key() in (Qt.Key_Escape, Qt.Key_Return, Qt.Key_Enter):
-                self.stop_sampling()
-        super().keyPressEvent(event)
-        
+
     def stop_sampling(self):
         """Stop color sampling mode"""
         if hasattr(self, 'sample_timer'):
             self.sample_timer.stop()
-        
-        self.releaseMouse()
-        QApplication.instance().removeEventFilter(self)
-        
+
+        # Do a final sample at the exact click position
+        self.sample_color_under_cursor()
+
+        if hasattr(self, '_screen_overlay') and self._screen_overlay:
+            self._screen_overlay.close()
+            self._screen_overlay = None
+
         if self.cursor_preview:
             self.cursor_preview.close()
             self.cursor_preview = None
-        
-        QApplication.restoreOverrideCursor()
-        if hasattr(self, 'original_cursor') and self.original_cursor:
-            QApplication.setOverrideCursor(self.original_cursor)
-        
+
         self.sampling = False
-        
+
         if hasattr(self, 'picker_btn'):
             self.picker_btn.setIcon(QtGui.QIcon(get_icon('color_picker.png', opacity=0.8)))
             self.picker_btn.setStyleSheet("border: 0px solid #666; border-radius: 3px; background-color: #333333;")
 
+        # Emit final color and update all UI to persist the picked color
+        self.update_all_from_color()
+
         # Copy color hex to clipboard
         clipboard = QApplication.clipboard()
         clipboard.setText(self.current_color.name())
+
+        # Return focus to the picker window
+        self.activateWindow()
+        self.raise_()
     
     def closeEvent(self, event):
         """Clean up on widget close"""
         if self.color_palette_widget and self.color_palette_widget.isVisible():
             self.color_palette_widget.close()
-        
+
+        if self.color_popup_widget and self.color_popup_widget.isVisible():
+            self.color_popup_widget.close()
+
         if self.sampling:
             self.stop_sampling()
-            
+
         super().closeEvent(event)
 #-----------------------------------------------------------------------------------------------------------------------------------------------
 class MainWindow(QWidget):

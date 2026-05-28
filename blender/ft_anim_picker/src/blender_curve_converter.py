@@ -2326,9 +2326,15 @@ def _get_selected_bones_with_shapes():
         if bpy.context.mode == 'POSE':
             armature_obj = bpy.context.active_object
             if armature_obj and armature_obj.type == 'ARMATURE':
-                for bone in bpy.context.selected_pose_bones:
-                    if bone.custom_shape:
-                        bones_with_shapes.append((bone, bone.custom_shape, armature_obj))
+                # Handle Blender version compatibility for selected pose bones
+                selected_bones = getattr(bpy.context, 'selected_pose_bones_from_active_object', None)
+                if not selected_bones:
+                    selected_bones = getattr(bpy.context, 'selected_pose_bones', None)
+                
+                if selected_bones:
+                    for bone in selected_bones:
+                        if bone.custom_shape:
+                            bones_with_shapes.append((bone, bone.custom_shape, armature_obj))
         
         # Also check if we have armature objects selected and look at their bones
         elif bpy.context.mode == 'OBJECT':

@@ -19,7 +19,48 @@ from . import tool_functions as TF
 from . import custom_dialog as CD
 from . import blender_main as MAIN
 from . import custom_color_picker as CCP
+from . import custom_segment_control as CSC
 from . utils import undoable
+
+
+# Shared editor styling — reused by TogglePanel's per-state code editor so
+# both editors match visually (transparent background, rounded scrollbars).
+CODE_EDITOR_STYLE = """
+    QPlainTextEdit {
+        background-color: transparent;
+        color: #dddddd;
+        border: None;
+        padding: 5px 5px 5px 15px;
+        font-family: Consolas, Monaco, monospace;
+        selection-background-color: #264f78;
+    }
+    QScrollBar:vertical {
+        border: none; background: transparent; width: 8px; margin: 0px;
+    }
+    QScrollBar::handle:vertical {
+        background: rgba(100, 100, 100, 0.5); min-height: 20px; border-radius: 4px;
+    }
+    QScrollBar::handle:vertical:hover { background: rgba(120, 120, 120, 0.7); }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+    QScrollBar:horizontal {
+        border: none; background: transparent; height: 8px; margin: 0px;
+    }
+    QScrollBar::handle:horizontal {
+        background: rgba(100, 100, 100, 0.5); min-width: 20px; border-radius: 4px;
+    }
+    QScrollBar::handle:horizontal:hover { background: rgba(120, 120, 120, 0.7); }
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
+"""
+
+CODE_EDITOR_CONTAINER_STYLE = """
+    QFrame {
+        background-color: #252525;
+        border-radius: 8px;
+        border: 0px solid #333333;
+    }
+"""
 
 class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
     def __init__(self, parent=None):
@@ -390,10 +431,10 @@ class CodeEditor(QtWidgets.QPlainTextEdit):
     def line_number_area_paint_event(self, event):
         painter = QtGui.QPainter(self.line_number_area)
         # Use a color that matches the editor background but is slightly different
-        painter.fillRect(event.rect(), QtGui.QColor('#1e1e1e'))  # Match editor background
+        #painter.fillRect(event.rect(), QtGui.QColor('#222222'))  # Match editor background
         
         # Draw a subtle separator line
-        painter.setPen(QtGui.QColor('#2d2d2d'))
+        painter.setPen(QtGui.QColor('#373737'))
         painter.drawLine(event.rect().topRight(), event.rect().bottomRight())
         
         block = self.firstVisibleBlock()
@@ -419,7 +460,7 @@ class CodeEditor(QtWidgets.QPlainTextEdit):
         
         if not self.isReadOnly():
             selection = QtWidgets.QTextEdit.ExtraSelection()
-            line_color = QtGui.QColor('#222222')  # Current line highlight color
+            line_color = QtGui.QColor('#333333')  # Current line highlight color
             
             selection.format.setBackground(line_color)
             selection.format.setProperty(QtGui.QTextFormat.FullWidthSelection, True)
@@ -894,17 +935,18 @@ class ScriptManagerWidget(QtWidgets.QWidget):
             manager = MAIN.PickerWindowManager.get_instance()
             parent = manager._picker_widgets[0] if manager._picker_widgets else None
         super(ScriptManagerWidget, self).__init__(parent)
-        self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint)
+        from . import utils as UT
+        self.setWindowFlags(UT.picker_window_flags())
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setAttribute(QtCore.Qt.WA_AlwaysShowToolTips, True)
         # Setup resizing parameters
         self.resizing = False
         self.resize_edge = None
-        self.resize_range = 8  # Pixels from edge where resizing is active
+        self.resize_range = 15  # Pixels from edge where resizing is active
         
-        self.br = 4
+        self.br = 8  # Border radius for styling
         # Set minimum size
-        self.setGeometry(0,0,500,300)
+        self.setGeometry(0, 0, 500, 300)
         self.setMinimumSize(305, 300)
 
         # Track our visibility state
@@ -919,15 +961,15 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         #--------------------------------------------------------------------------------------------------------------------------
         # Setup main layout
         self.main_layout = QtWidgets.QVBoxLayout(self)
-        self.main_layout.setContentsMargins(4, 4, 4, 4)
-        self.main_layout.setSpacing(4)
+        self.main_layout.setContentsMargins(8, 8, 8, 8)
+        self.main_layout.setSpacing(6)
         
         # Create main frame
         self.frame = QtWidgets.QFrame()
         self.frame.setMinimumWidth(300)
         self.frame.setStyleSheet(f"""
             QFrame {{
-                background-color: rgba(36, 36, 36, .95);
+                background-color: #1d1d1d;
                 border: 1px solid #444444;
                 border-radius: {self.br}px;
             }}
@@ -939,8 +981,8 @@ class ScriptManagerWidget(QtWidgets.QWidget):
                 padding: 4px;
             }}""")
         self.frame_layout = QtWidgets.QVBoxLayout(self.frame)
-        self.frame_layout.setContentsMargins(6, 6, 6, 6)
-        self.frame_layout.setSpacing(6)
+        self.frame_layout.setContentsMargins(10, 10, 10, 10)
+        self.frame_layout.setSpacing(8)
         #--------------------------------------------------------------------------------------------------------------------------
         # Title bar with draggable area and close button
         self.title_bar = QtWidgets.QWidget()
@@ -965,20 +1007,7 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         title_layout.addSpacing(4)
         #title_layout.addLayout(self.title_label_layout)
         #--------------------------------------------------------------------------------------------------------------------------
-        self.close_button = QtWidgets.QPushButton("✕")
-        self.close_button.setFixedSize(16, 16)
-        self.close_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(200, 0, 0, 0.6);
-                color: #ff9393;
-                border: none;
-                border-radius: 2px;
-                padding: 0px 0px 2px 0px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 0, 0, 0.6);
-            }
-        """)
+        self.close_button = CB.CustomButton(icon=UT.get_icon('close_01.png',size=16,opacity=1), height=26, width=26, radius=26/2,color='#db2525',tooltip='Close')
         title_layout.addStretch(1)
         #title_layout.addWidget(self.close_button)
         #--------------------------------------------------------------------------------------------------------------------------
@@ -986,8 +1015,18 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.preset_layout = QtWidgets.QHBoxLayout()
         self.preset_layout.setAlignment(QtCore.Qt.AlignLeft)
         #--------------------------------------------------------------------------------------------------------------------------
-        self.python_label = QtWidgets.QLabel("Python")
-        self.python_label.setStyleSheet(f"color: #eeeeee; padding: 4px; font-size: 12px; border-radius: {self.br}px; background-color: #222222;")
+        self.mode_segment = CSC.TextSegmentControl(
+            ["Python", "Toggle"],
+            height=28,
+            font_size=11,
+            radius=6,
+            frame_radius=6,
+            use_frame=True,
+            frame_bg="rgba(255, 255, 255, 0.06)",
+            selected_color="#1D65CA",
+            expand=False,
+        )
+        self.mode_segment.segment_changed.connect(self._on_mode_changed)
 
         self.color_sample = CCP.ColorPicker(mode='hex')
 
@@ -1011,7 +1050,7 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.function_preset_button.addToMenu('Button Appearance', self.ppf_button_appearance, position=(1,0))
         self.function_preset_button.addToMenu('Add Selected Button IDs', self.ppf_get_selected_button_ids, position=(2,0))
 
-        self.preset_layout.addWidget(self.python_label)
+        self.preset_layout.addWidget(self.mode_segment)
         self.preset_layout.addLayout(self.title_label_layout)
         self.preset_layout.addStretch(1)
         #self.preset_layout.addWidget(self.color_sample)
@@ -1019,66 +1058,21 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.preset_layout.addWidget(self.close_button)
         self.preset_layout.addSpacing(2)
         #--------------------------------------------------------------------------------------------------------------------------
-        editor_style = f"""
-            QPlainTextEdit {{
-                background-color: #1b1b1b;
-                color: #dddddd;
-                border: None;
-                border-radius: {self.br}px;
-                padding: 5px 5px 5px 15px;
-                font-family: Consolas, Monaco, monospace;
-                selection-background-color: #264f78;
-            }}
-            QScrollBar:vertical {{
-                border: none;
-                background: transparent;
-                width: 8px;
-                margin: 0px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: rgba(100, 100, 100, 0.5);
-                min-height: 20px;
-                border-radius: 4px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background: rgba(120, 120, 120, 0.7);
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                height: 0px;
-            }}
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
-                background: transparent;
-            }}
-            QScrollBar:horizontal {{
-                border: none;
-                background: transparent;
-                height: 8px;
-                margin: 0px;
-            }}
-            QScrollBar::handle:horizontal {{
-                background: rgba(100, 100, 100, 0.5);
-                min-width: 20px;
-                border-radius: 4px;
-            }}
-            QScrollBar::handle:horizontal:hover {{
-                background: rgba(120, 120, 120, 0.7);
-            }}
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
-                width: 0px;
-            }}
-            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
-                background: transparent;
-            }}
-
-        """
-        #--------------------------------------------------------------------------------------------------------------------------
         # Create single editor for Python code
+        self.editor_container = QtWidgets.QFrame()
+        self.editor_container.setStyleSheet(CODE_EDITOR_CONTAINER_STYLE)
+        editor_container_layout = QtWidgets.QVBoxLayout(self.editor_container)
+        editor_container_layout.setContentsMargins(0, 0, 0, 0)
+        editor_container_layout.setSpacing(0)
+
         self.code_editor = CodeEditor()
-        self.code_editor.setStyleSheet(editor_style)
+        self.code_editor.setStyleSheet(CODE_EDITOR_STYLE)
+        editor_container_layout.addWidget(self.code_editor)
+
         self.python_highlighter = ScriptSyntaxHighlighter(self.code_editor.document())
         # Force document margin to create space for line numbers
         self.code_editor.document().setDocumentMargin(5)
-        
+
         # Set tab width for the editor
         font = self.code_editor.font()
         font_metrics = QtGui.QFontMetrics(font)
@@ -1090,7 +1084,7 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.apply_button.setFixedHeight(24)
         self.apply_button.setStyleSheet(f"""
             QPushButton {{
-                background-color: #5285a6;
+                background-color: #1D65CA;
                 color: white;
                 border: none;
                 border-radius: {self.br}px;
@@ -1101,10 +1095,15 @@ class ScriptManagerWidget(QtWidgets.QWidget):
             }}
         """)
         
+        # Stacked content area: page 0 = Python editor, page 1 = Toggle panel (built lazily)
+        self.content_stack = QtWidgets.QStackedWidget()
+        self.content_stack.addWidget(self.editor_container)
+        self.toggle_panel = None  # lazily created on first switch into Toggle mode
+
         # Add widgets to layout
         #self.frame_layout.addWidget(self.title_bar)
         self.frame_layout.addLayout(self.preset_layout)
-        self.frame_layout.addWidget(self.code_editor)
+        self.frame_layout.addWidget(self.content_stack)
         self.frame_layout.addWidget(self.apply_button)
         self.main_layout.addWidget(self.frame)
         
@@ -1124,6 +1123,40 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.frame.installEventFilter(self)
         
         self.picker_button = None
+    #--------------------------------------------------------------------------------------------------------------------
+    # Mode (Python / Toggle) handling
+    #--------------------------------------------------------------------------------------------------------------------
+    def _ensure_toggle_panel(self):
+        """Create the TogglePanel on first use and insert it into the stack."""
+        if self.toggle_panel is not None:
+            return
+        from . import pb_toggle_panel as PTP
+        self.toggle_panel = PTP.TogglePanel(parent=self)
+        self.content_stack.addWidget(self.toggle_panel)
+        # Populate from existing script_data if available
+        if self.picker_button is not None:
+            script_data = self.picker_button.script_data if isinstance(self.picker_button.script_data, dict) else {}
+            toggle_data = script_data.get('toggle_data') or self._default_toggle_data()
+            self.toggle_panel.set_toggle_data(toggle_data, self.picker_button)
+
+    @staticmethod
+    def _default_toggle_data():
+        return {
+            'state_count': 2,
+            'current_state': 0,
+            'state_labels': ['State 1', 'State 2', 'State 3'],
+            'appearances': [],
+            'state_1_code': '',
+            'state_2_code': '',
+            'state_3_code': '',
+        }
+
+    def _on_mode_changed(self, index):
+        if index == 1:
+            self._ensure_toggle_panel()
+            self.content_stack.setCurrentWidget(self.toggle_panel)
+        else:
+            self.content_stack.setCurrentWidget(self.editor_container)
     #--------------------------------------------------------------------------------------------------------------------
     # Preset Functions
     #--------------------------------------------------------------------------------------------------------------------
@@ -1190,10 +1223,28 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         # Set the editor's content from button-specific data
         python_code = script_data.get('python_code', script_data.get('code', ''))
         self.code_editor.setPlainText(python_code)
-        
+
         # Make sure to update the button's script data
         button.script_data = script_data
         self.button_id_label.setText(f"[{self.picker_button.unique_id}]")
+
+        # Restore segment mode based on stored type
+        is_toggle = script_data.get('type') == 'toggle'
+        self.mode_segment.blockSignals(True)
+        self.mode_segment.set_selected_index(1 if is_toggle else 0)
+        self.mode_segment.blockSignals(False)
+        if is_toggle:
+            self._ensure_toggle_panel()
+            toggle_data = script_data.get('toggle_data') or self._default_toggle_data()
+            self.toggle_panel.set_toggle_data(toggle_data, button)
+            self.content_stack.setCurrentWidget(self.toggle_panel)
+        else:
+            # If a toggle panel was previously built, refresh it from this button's data too
+            if self.toggle_panel is not None:
+                toggle_data = script_data.get('toggle_data') or self._default_toggle_data()
+                self.toggle_panel.set_toggle_data(toggle_data, button)
+            self.content_stack.setCurrentWidget(self.editor_container)
+
         self.position_window()
 
     def _find_parent_picker(self):
@@ -1220,49 +1271,72 @@ class ScriptManagerWidget(QtWidgets.QWidget):
                 
                 self.move(global_pos)
             
+    @staticmethod
+    def _extract_tooltip(code):
+        tooltip_patterns = [
+            r'@TF\.tool_tip\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
+            r'@tool_tip\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
+            r'@tt\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
+        ]
+        for pattern in tooltip_patterns:
+            m = re.search(pattern, code, flags=re.IGNORECASE)
+            if m:
+                header = m.group(1)
+                body = m.group(2) if m.lastindex and m.lastindex >= 2 else None
+                return header, body
+        return None, None
+
     def execute_code(self):
         """Save the script data to the button and close the manager"""
-        if self.picker_button:
-            # Get the current code
-            current_code = self.code_editor.toPlainText()
-            
-            # Extract tooltip from the code if present
-            custom_tooltip_header = None
-            custom_tooltip = None
-            tooltip_patterns = [
-                r'@TF\.tool_tip\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
-                r'@tool_tip\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
-                r'@tt\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
-            ]
-            for pattern in tooltip_patterns:
-                tooltip_match = re.search(pattern, current_code, flags=re.IGNORECASE)
-                if tooltip_match:
-                    custom_tooltip_header = tooltip_match.group(1)
-                    custom_tooltip = tooltip_match.group(2) if tooltip_match.lastindex >= 2 else None
-                    break
-            
-            # Create script data
+        if not self.picker_button:
+            return
+
+        mode_is_toggle = self.mode_segment.selected_index == 1
+
+        # Preserve the existing Python code so toggling modes doesn't lose it
+        existing = self.picker_button.script_data if isinstance(self.picker_button.script_data, dict) else {}
+        python_code = self.code_editor.toPlainText()
+
+        if mode_is_toggle:
+            # Serialize TogglePanel into toggle_data
+            if self.toggle_panel is None:
+                self._ensure_toggle_panel()
+            toggle_data = self.toggle_panel.get_toggle_data()
+            # Preserve runtime current_state from existing data if present
+            prev = existing.get('toggle_data') or {}
+            toggle_data['current_state'] = prev.get('current_state', 0)
+
+            # Tooltip extraction runs against the active state's code
+            active_state = toggle_data.get('current_state', 0)
+            active_code = toggle_data.get(f'state_{active_state + 1}_code', '')
+            header, body = self._extract_tooltip(active_code)
+
+            script_data = {
+                'type': 'toggle',
+                'python_code': python_code,  # kept so user can switch back
+                'code': python_code,
+                'toggle_data': toggle_data,
+            }
+        else:
+            header, body = self._extract_tooltip(python_code)
             script_data = {
                 'type': 'python',
-                'python_code': current_code,
-                'code': current_code  # For backwards compatibility
+                'python_code': python_code,
+                'code': python_code,
             }
-            
-            # Add custom tooltip to script data if found
-            if custom_tooltip_header:
-                script_data['custom_tooltip_header'] = custom_tooltip_header
-            if custom_tooltip:
-                script_data['custom_tooltip'] = custom_tooltip
-            
-            # Update the button's script data
-            self.picker_button.script_data = script_data
-            
-            # Update the tooltip immediately
-            self.picker_button.update_tooltip()
-            
-            # Emit changed signal and close
-            self.picker_button.changed.emit(self.picker_button)
-            self.close()
+            # Preserve toggle_data if present so switching back to Toggle restores it
+            if 'toggle_data' in existing:
+                script_data['toggle_data'] = existing['toggle_data']
+
+        if header:
+            script_data['custom_tooltip_header'] = header
+        if body:
+            script_data['custom_tooltip'] = body
+
+        self.picker_button.script_data = script_data
+        self.picker_button.update_tooltip()
+        self.picker_button.changed.emit(self.picker_button)
+        self.close()
     #---------------------------------------------------------------------------------------
     def eventFilter(self, obj, event):
         if obj == self.frame:

@@ -3,13 +3,17 @@ import json
 import time
 import threading
 from collections import OrderedDict
-from threading import Timer
+
+from PySide6 import QtCore
 
 from . import blender_ui as UI
 
 class PickerDataManager:
     PROP_NAME = 'PickerToolData'
     DEFAULT_DATA = OrderedDict({
+        'settings': {
+            'last_picker_file_path': ''      # Remember last loaded picker file location
+        },
         'tabs': OrderedDict({
             'Tab 1': {
                 'buttons': [],
@@ -18,13 +22,17 @@ class PickerDataManager:
                 'image_scale': 1.0,
                 'background_value': 20,
                 'namespace': 'None',
+                'namespace_filter_mode': False,
+                'pinned_namespaces': [],
                 'show_dots': False,
-                'show_axes': True,    
-                'show_grid': True,   
-                'grid_size': 50       
+                'show_axes': True,
+                'show_grid': True,
+                'grid_size': 50,
+                'pan_offset_x': 0.0,
+                'pan_offset_y': 0.0,
+                'zoom_factor': 1.0,
             }
         }),
-        'thumbnail_directory': ''
     })
     _undo_stack = []
     _redo_stack = []
@@ -34,13 +42,73 @@ class PickerDataManager:
     _last_undo_state = None
     _saving_in_progress = False  # NEW: Prevent recursion
 
-    _batch_timer = None
-    _batch_delay = 0.0  # 200ms delay for batching
+    # Batch update system (QTimer-based so callbacks fire on the
+    # main thread, which is required for bpy scene property writes).
+    _batch_qtimer = None
+    _batch_delay = 0.15  # 150 ms debounce — drags/slider scrubs coalesce
     _pending_updates = False
     _last_save_time = 0
-    _min_save_interval = 0.0  # Minimum 100ms between saves
+    _min_save_interval = 0.15
     _cached_data = None
     _save_lock = threading.Lock()  # Thread safety for Blender
+    _active_session = None  # PickerSession instance (set when a .bpicker is open)
+
+    #----------------------------------------------------------------------------------------------------------
+    # SESSION & SCENE LINK
+    #----------------------------------------------------------------------------------------------------------
+    @classmethod
+    def set_active_session(cls, session):
+        """Register (or clear) the active PickerSession."""
+        cls._active_session = session
+
+    @classmethod
+    def get_active_session(cls):
+        """Return the active PickerSession, or None."""
+        return cls._active_session
+
+    SCENE_LINK_PROP = 'BGENPickerLink'
+    SCENE_LINK_PROP_LEGACY = 'FTPickerLink'
+
+    @classmethod
+    def get_scene_link(cls):
+        """Read the scene-level picker link (UUID reference to .bpicker).
+
+        Checks new key first, falls back to legacy key for backward compat.
+        Returns dict or None.
+        """
+        try:
+            scene = bpy.context.scene
+            raw = scene.get(cls.SCENE_LINK_PROP)
+            if not raw:
+                raw = scene.get(cls.SCENE_LINK_PROP_LEGACY)
+            if raw:
+                return json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def set_scene_link(cls, link_data):
+        """Write the scene-level picker link. Removes legacy key if present."""
+        try:
+            scene = bpy.context.scene
+            scene[cls.SCENE_LINK_PROP] = json.dumps(link_data)
+            if cls.SCENE_LINK_PROP_LEGACY in scene:
+                del scene[cls.SCENE_LINK_PROP_LEGACY]
+        except Exception as e:
+            print(f"Failed to set scene link: {e}")
+
+    @classmethod
+    def clear_scene_link(cls):
+        """Remove the scene-level picker link (both new and legacy keys)."""
+        try:
+            scene = bpy.context.scene
+            if cls.SCENE_LINK_PROP in scene:
+                del scene[cls.SCENE_LINK_PROP]
+            if cls.SCENE_LINK_PROP_LEGACY in scene:
+                del scene[cls.SCENE_LINK_PROP_LEGACY]
+        except Exception:
+            pass
 
     #----------------------------------------------------------------------------------------------------------
     # UNDO REDO SYSTEM
@@ -148,7 +216,7 @@ class PickerDataManager:
                 if len(cls._undo_stack) > cls._max_undo_steps:
                     cls._undo_stack.pop(0)
                 
-                print(f"Saved undo state: {operation_name} (Stack size: {len(cls._undo_stack)})")
+                #print(f"Saved undo state: {operation_name} (Stack size: {len(cls._undo_stack)})")
 
             # Clear redo stack when new action is performed
             cls._redo_stack.clear()
@@ -207,7 +275,7 @@ class PickerDataManager:
         finally:
             cls._recording_enabled = old_recording
             
-        print(f"Undid: {undo_entry['operation']}")
+        #print(f"Undid: {undo_entry['operation']}")
         return undo_entry['operation'], restored_selected_ids
     
     @classmethod
@@ -415,12 +483,27 @@ class PickerDataManager:
         if data_string:
             try:
                 data = json.loads(data_string, object_pairs_hook=OrderedDict)
+                
+                # Ensure 'settings' key exists (backward compatibility)
+                if 'settings' not in data:
+                    data['settings'] = {
+                        'last_picker_file_path': ''
+                    }
+                
                 # Ensure 'buttons' key exists for each tab
                 for tab in data['tabs']:
                     if 'buttons' not in data['tabs'][tab]:
                         data['tabs'][tab]['buttons'] = []
                     if 'namespace' not in data['tabs'][tab]:
                         data['tabs'][tab]['namespace'] = 'None'
+                    
+                    # Ensure path settings exist for each tab (backward compatibility)
+                    if 'use_custom_path_settings' not in data['tabs'][tab]:
+                        data['tabs'][tab]['use_custom_path_settings'] = False
+                    if 'custom_base_path' not in data['tabs'][tab]:
+                        data['tabs'][tab]['custom_base_path'] = ''
+                    if 'custom_path_mode' not in data['tabs'][tab]:
+                        data['tabs'][tab]['custom_path_mode'] = 'auto'
                     
                     # Convert assigned objects to new format for each button
                     for button in data['tabs'][tab]['buttons']:
@@ -479,53 +562,80 @@ class PickerDataManager:
         return data
     
     @classmethod
-    def save_data(cls, data, force_immediate=False):
-        """Enhanced save_data with automatic undo recording - FIXED to prevent recursion"""
+    def save_data(cls, data, force_immediate=False, notify_session=True):
+        """Enhanced save_data with automatic undo recording - FIXED to prevent recursion
+
+        Args:
+            data: The picker data dict to save.
+            force_immediate: Skip batching and save now.
+            notify_session: If False, skip marking the PickerSession dirty.
+                Use this for view-only changes (pan/zoom) that don't need
+                to trigger a bpicker archive repack.
+        """
         # Existing save_data logic...
         with cls._save_lock:
             cls._cached_data = data
-            
+
             current_time = time.time()
-            
+
             if force_immediate:
-                cls._perform_save(data)
+                cls._perform_save(data, notify_session=notify_session)
                 return
-                
+
             if current_time - cls._last_save_time < cls._min_save_interval:
                 cls._schedule_batched_save(data)
                 return
-                
-            cls._perform_save(data)
+
+            cls._perform_save(data, notify_session=notify_session)
 
     @classmethod
-    def _perform_save(cls, data):
+    def _perform_save(cls, data, notify_session=True):
         """Actually perform the save operation"""
         try:
             scene = bpy.context.scene
             scene[cls.PROP_NAME] = json.dumps(data)
             cls._last_save_time = time.time()
             cls._pending_updates = False
-            
+
             # Cancel any pending batch timer since we just saved
-            if cls._batch_timer:
-                cls._batch_timer.cancel()
-                cls._batch_timer = None
-                
+            if cls._batch_qtimer is not None:
+                cls._batch_qtimer.stop()
+
+            # Notify active session that data changed
+            if notify_session and cls._active_session:
+                cls._active_session.mark_dirty()
+
         except Exception as e:
             print(f"Failed to save picker data: {e}")
 
     @classmethod
     def _schedule_batched_save(cls, data):
-        """Schedule a batched save operation"""
+        """Schedule a debounced save on the main thread via QTimer.
+
+        bpy scene property writes are not safe from background threads,
+        so the timer must fire on the Qt main thread. _cached_data
+        holds the latest pending state — repeated calls coalesce into
+        a single save.
+        """
         cls._pending_updates = True
-        
-        # Cancel existing timer if any
-        if cls._batch_timer:
-            cls._batch_timer.cancel()
-            
-        # Schedule new save
-        cls._batch_timer = Timer(cls._batch_delay, cls._perform_save, args=[data])
-        cls._batch_timer.start()
+        cls._cached_data = data
+
+        if cls._batch_qtimer is None:
+            t = QtCore.QTimer()
+            t.setSingleShot(True)
+            t.timeout.connect(cls._flush_pending_save)
+            cls._batch_qtimer = t
+
+        cls._batch_qtimer.stop()
+        cls._batch_qtimer.start(int(cls._batch_delay * 1000))
+
+    @classmethod
+    def _flush_pending_save(cls):
+        """Fire the pending save now. Called by the QTimer and by
+        flush_pending_saves() from window-close / edit-mode-exit paths.
+        """
+        if cls._pending_updates and cls._cached_data is not None:
+            cls._perform_save(cls._cached_data)
 
     @classmethod
     def batch_update_buttons(cls, tab_name, buttons_data):
@@ -562,12 +672,46 @@ class PickerDataManager:
                 'image_scale': 1.0,
                 'background_value': 20,
                 'namespace': 'None',
+                'namespace_filter_mode': False,
+                'pinned_namespaces': [],
                 'show_dots': False,
-                'show_axes': True,    
-                'show_grid': True,   
-                'grid_size': 50       
+                'show_axes': True,
+                'show_grid': True,
+                'grid_size': 50,
+                'pan_offset_x': 0.0,
+                'pan_offset_y': 0.0,
+                'zoom_factor': 1.0,
+                # Per-tab path overrides (optional - uses global if not set)
+                'use_custom_path_settings': False,
+                'custom_base_path': '',
+                'custom_path_mode': 'auto'
             })
             cls.save_data(data)
+        else:
+            # Ensure existing tabs have the new camera/path fields (backward compatibility)
+            tab_data = data['tabs'][tab_name]
+            updated = False
+            for key, default in (('pan_offset_x', 0.0), ('pan_offset_y', 0.0), ('zoom_factor', 1.0)):
+                if key not in tab_data:
+                    tab_data[key] = default
+                    updated = True
+            if 'use_custom_path_settings' not in tab_data:
+                tab_data['use_custom_path_settings'] = False
+                updated = True
+            if 'custom_base_path' not in tab_data:
+                tab_data['custom_base_path'] = ''
+                updated = True
+            if 'custom_path_mode' not in tab_data:
+                tab_data['custom_path_mode'] = 'auto'
+                updated = True
+            if 'namespace_filter_mode' not in tab_data:
+                tab_data['namespace_filter_mode'] = False
+                updated = True
+            if 'pinned_namespaces' not in tab_data:
+                tab_data['pinned_namespaces'] = []
+                updated = True
+            if updated:
+                cls.save_data(data)
         return data['tabs'][tab_name]
     
     @classmethod
@@ -577,7 +721,12 @@ class PickerDataManager:
         # Capture selected buttons before saving undo state
         selected_button_ids = cls._get_selected_button_ids()
         cls.save_undo_state("Data Change", selected_button_ids)
-        cls.save_data(data, force_immediate=True)
+        # Use the 150 ms batch debounce so rapid per-button edits (color,
+        # size, rotation, rename) coalesce into a single scene-property
+        # write before mark_dirty() restarts the archive auto-save timer.
+        # Structural ops (add/delete/rename tab, add/delete button) keep
+        # force_immediate=True at their own call sites.
+        cls.save_data(data)
 
     @classmethod
     def add_tab(cls, tab_name, operation_name="Add Tab"):
@@ -592,11 +741,22 @@ class PickerDataManager:
                 'background_value': 20,
                 'namespace': 'None',
                 'show_dots': False,
-                'show_axes': True,    
-                'show_grid': True,   
-                'grid_size': 50       
+                'show_axes': True,
+                'show_grid': True,
+                'grid_size': 50,
+                'pan_offset_x': 0.0,
+                'pan_offset_y': 0.0,
+                'zoom_factor': 1.0,
+                # Per-tab path overrides (optional - uses global if not set)
+                'use_custom_path_settings': False,
+                'custom_base_path': '',
+                'custom_path_mode': 'auto'
             })
             cls.save_data(data, force_immediate=True)
+            
+            # OPTIMIZATION: Clear undo/redo history when adding tabs to prevent accumulation
+            # This is a structural change, not something that should be undone
+            cls.clear_undo_history()
 
     @classmethod
     def delete_tab(cls, tab_name, operation_name="Delete Tab"):
@@ -605,6 +765,13 @@ class PickerDataManager:
         if tab_name in data['tabs']:
             del data['tabs'][tab_name]
             cls.save_data(data, force_immediate=True)  # Force immediate for UI operations
+            
+            # OPTIMIZATION: Clear undo/redo history when deleting tabs to prevent memory leaks
+            # Tab deletion removes all associated buttons, so undo history becomes invalid
+            cls.clear_undo_history()
+            
+            # OPTIMIZATION: Clear cache to force fresh read
+            cls.clear_cache()
 
     @classmethod
     def rename_tab(cls, old_name, new_name):
@@ -631,6 +798,7 @@ class PickerDataManager:
         button_data['width'] = button_data.get('width', 80)
         button_data['height'] = button_data.get('height', 30)
         button_data['radius'] = button_data.get('radius', [3, 3, 3, 3])
+        button_data['rotation'] = button_data.get('rotation', 0)
 
         # Handle assigned_objects in new format for Blender
         if 'assigned_objects' in button_data:
@@ -686,6 +854,8 @@ class PickerDataManager:
         # Initialize pose data if not present
         if 'pose_data' not in button_data:
             button_data['pose_data'] = {}
+        if 'animation_data' not in button_data:
+            button_data['animation_data'] = {}
 
         data['tabs'][tab_name]['buttons'].append(button_data)
         cls.save_data(data)  # Uses batching
@@ -792,7 +962,29 @@ class PickerDataManager:
         data = cls.get_data()
         if tab_name in data['tabs']:
             data['tabs'][tab_name]['namespace'] = namespace
-            cls.save_data(data)  # Uses batching
+            cls.save_data(data, force_immediate=True)  # Force immediate for UI operations
+
+    @classmethod
+    def update_tab_namespace_filter_mode(cls, tab_name, enabled):
+        data = cls.get_data()
+        if tab_name in data['tabs']:
+            data['tabs'][tab_name]['namespace_filter_mode'] = bool(enabled)
+            cls.save_data(data, force_immediate=True)
+
+    @classmethod
+    def update_tab_pinned_namespaces(cls, tab_name, names):
+        data = cls.get_data()
+        if tab_name in data['tabs']:
+            # Deduplicate while preserving order, coerce to str
+            seen = set()
+            cleaned = []
+            for n in names or []:
+                s = str(n)
+                if s not in seen:
+                    seen.add(s)
+                    cleaned.append(s)
+            data['tabs'][tab_name]['pinned_namespaces'] = cleaned
+            cls.save_data(data, force_immediate=True)
 
     @classmethod
     def reorder_tabs(cls, new_order):
@@ -805,26 +997,29 @@ class PickerDataManager:
         cls.save_data(data, force_immediate=True)  # Force immediate for UI operations
         
     @classmethod
-    def set_thumbnail_directory(cls, directory):
-        data = cls.get_data()
-        data['thumbnail_directory'] = directory
-        cls.save_data(data, force_immediate=True)  # Force immediate for settings
-        
-    @classmethod
-    def get_thumbnail_directory(cls):
-        data = cls.get_data()
-        return data.get('thumbnail_directory', '')
-
-    @classmethod
     def flush_pending_saves(cls):
-        """Force any pending saves to complete immediately"""
+        """Force any pending saves to complete immediately. Call from
+        closeEvent, edit-mode exit, or before archive save to guarantee
+        any debounced writes land before the window goes away.
+
+        Also drains the active session's archive auto-save: with the 8 s
+        debounce, closing the window 1 s after an edit would otherwise
+        leave the archive without that edit. close() in PickerSession
+        already cleans up state, but explicit flush ensures the disk
+        catches up first.
+        """
         with cls._save_lock:
-            if cls._batch_timer:
-                cls._batch_timer.cancel()
-                cls._batch_timer = None
-            
-            if cls._pending_updates and cls._cached_data:
-                cls._perform_save(cls._cached_data)
+            if cls._batch_qtimer is not None:
+                cls._batch_qtimer.stop()
+            cls._flush_pending_save()
+
+        session = cls._active_session
+        if session is not None and session.is_dirty():
+            try:
+                session.save(auto=False)
+            except Exception as e:
+                print(f"[PickerDataManager] flush_pending_saves: "
+                      f"session save failed: {e}")
 
     @classmethod
     def set_batch_delay(cls, delay_seconds):
@@ -836,4 +1031,173 @@ class PickerDataManager:
         """Clear cached data to force fresh read from Blender scene"""
         cls._cached_data = None
         cls._pending_updates = False
+
+    #----------------------------------------------------------------------------------------------------------
+    # SETTINGS MANAGEMENT
+    #----------------------------------------------------------------------------------------------------------
+    @classmethod
+    def get_global_settings(cls):
+        """Get global settings from picker data"""
+        data = cls.get_data()
+        if 'settings' not in data:
+            data['settings'] = {
+                'last_picker_file_path': ''
+            }
+            cls.save_data(data)
+        return data['settings']
+
+    @classmethod
+    def update_global_settings(cls, **kwargs):
+        """Update global settings with provided key-value pairs"""
+        data = cls.get_data()
+        if 'settings' not in data:
+            data['settings'] = {
+                'last_picker_file_path': ''
+            }
+        for key, value in kwargs.items():
+            data['settings'][key] = value
+        cls.save_data(data, force_immediate=True)
+
+    @classmethod
+    def _get_legacy_base_path(cls, tab_name=None):
+        """Read base path from legacy scene data for backward-compatible path resolution.
+
+        Legacy scenes may store image_base_path in global settings and/or
+        custom_base_path per tab. This helper reads them so resolve_image_path
+        can still find images saved with the old path system.
+        """
+        data = cls.get_data()
+        global_settings = data.get('settings', {})
+
+        # Check per-tab custom override first (legacy)
+        if tab_name:
+            tab_data = data.get('tabs', {}).get(tab_name, {})
+            if tab_data.get('use_custom_path_settings', False):
+                bp = tab_data.get('custom_base_path', '')
+                if bp:
+                    return bp
+
+        # Fall back to global image_base_path (legacy)
+        return global_settings.get('image_base_path', '')
+
+    @classmethod
+    def resolve_image_path(cls, stored_path, tab_name=None):
+        """
+        Resolve a stored image path to an absolute path for display.
+        Handles multiple path formats for backward compatibility.
+
+        Args:
+            stored_path: The path as stored in the data (may be relative, absolute, or legacy format)
+            tab_name: Optional tab name for legacy per-tab path resolution
+
+        Returns:
+            str: Absolute path to the image, or None if cannot be resolved
+        """
+        import os
+
+        try:
+            if not stored_path:
+                return None
+
+            # BPicker archive-relative path (session media)
+            if stored_path.startswith("bpicker://"):
+                if cls._active_session:
+                    return cls._active_session.get_media_path(stored_path)
+                return None
+
+            # Already absolute path - return as-is
+            if os.path.isabs(stored_path) and os.path.exists(stored_path):
+                return stored_path
+
+            # Legacy "pref:" prefix (backward compatibility with old studio fix)
+            if stored_path.startswith("pref:"):
+                filename = stored_path[5:]  # Remove "pref:" prefix
+                base_path = cls._get_legacy_base_path(tab_name)
+                if base_path:
+                    resolved = os.path.join(base_path, filename)
+                    if os.path.exists(resolved):
+                        return resolved
+                return None
+
+            # Legacy base-relative path with {base} prefix
+            if stored_path.startswith("{base}"):
+                relative_part = stored_path[6:].lstrip("/\\")
+                base_path = cls._get_legacy_base_path(tab_name)
+                if base_path:
+                    resolved = os.path.join(base_path, relative_part)
+                    if os.path.exists(resolved):
+                        return resolved
+                return None
+
+            # Blender-relative path (starts with //)
+            if stored_path.startswith("//"):
+                if bpy.data.filepath:
+                    blend_dir = os.path.dirname(bpy.data.filepath)
+                    resolved = os.path.normpath(os.path.join(blend_dir, stored_path[2:]))
+                    if os.path.exists(resolved):
+                        return resolved
+                return None
+
+            # Picker-file relative path (starts with ./ or ../)
+            if stored_path.startswith("./") or stored_path.startswith("../"):
+                settings = cls.get_global_settings()
+                picker_dir = settings.get('last_picker_file_path', '')
+                if picker_dir:
+                    resolved = os.path.normpath(os.path.join(picker_dir, stored_path))
+                    if os.path.exists(resolved):
+                        return resolved
+                return None
+
+            # Simple filename - try legacy base path
+            base_path = cls._get_legacy_base_path(tab_name)
+            if base_path:
+                resolved = os.path.join(base_path, stored_path)
+                if os.path.exists(resolved):
+                    return resolved
+
+            # Last resort - check if it's a valid absolute path that just doesn't exist yet
+            if os.path.isabs(stored_path):
+                return stored_path
+
+            return None
+        except Exception as e:
+            print(f"Warning: Error in resolve_image_path for '{stored_path}': {e}")
+            return None
+
+    @classmethod
+    def convert_path_for_storage(cls, absolute_path, tab_name=None, force_mode=None, media_category="backgrounds"):
+        """
+        Convert an absolute path to the appropriate storage format.
+
+        New data always uses bpicker session routing or absolute paths.
+        Legacy base-path modes are no longer generated.
+
+        Args:
+            absolute_path: The absolute path to convert
+            tab_name: Unused, kept for API compatibility
+            force_mode: Unused, kept for API compatibility
+            media_category: Category for .bpicker media storage ('backgrounds' or 'thumbnails')
+
+        Returns:
+            str: Path in the appropriate format for storage
+        """
+        import os
+
+        if not absolute_path:
+            return None
+
+        # If already a bpicker:// path, keep as-is
+        if isinstance(absolute_path, str) and absolute_path.startswith("bpicker://"):
+            return absolute_path
+
+        # When a session is active, route new media through the session
+        if cls._active_session and os.path.isabs(str(absolute_path)) and os.path.isfile(str(absolute_path)):
+            ext = os.path.splitext(str(absolute_path))[1].lower()
+            if ext in ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp'):
+                result = cls._active_session.add_media_file(str(absolute_path), media_category)
+                if result:
+                    return result
+
+        # Store as absolute path
+        return absolute_path
 

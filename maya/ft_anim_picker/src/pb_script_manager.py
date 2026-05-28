@@ -27,6 +27,48 @@ from . import tool_functions as TF
 from . import custom_dialog as CD
 from . import main as MAIN
 from . import custom_color_picker as CCP
+from . import custom_segment_control as CSC
+
+
+# Shared editor styling — reused by TogglePanel's per-state code editor so
+# both editors match visually (transparent bg, rounded scrollbars).
+CODE_EDITOR_STYLE = """
+    QPlainTextEdit {
+        background-color: transparent;
+        color: #dddddd;
+        border: None;
+        padding: 5px 5px 5px 15px;
+        font-family: Consolas, Monaco, monospace;
+        selection-background-color: #264f78;
+    }
+    QScrollBar:vertical {
+        border: none; background: transparent; width: 8px; margin: 0px;
+    }
+    QScrollBar::handle:vertical {
+        background: rgba(100, 100, 100, 0.5); min-height: 20px; border-radius: 4px;
+    }
+    QScrollBar::handle:vertical:hover { background: rgba(120, 120, 120, 0.7); }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+    QScrollBar:horizontal {
+        border: none; background: transparent; height: 8px; margin: 0px;
+    }
+    QScrollBar::handle:horizontal {
+        background: rgba(100, 100, 100, 0.5); min-width: 20px; border-radius: 4px;
+    }
+    QScrollBar::handle:horizontal:hover { background: rgba(120, 120, 120, 0.7); }
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
+"""
+
+CODE_EDITOR_CONTAINER_STYLE = """
+    QFrame {
+        background-color: #252525;
+        border-radius: 8px;
+        border: 0px solid #333333;
+    }
+"""
+
 
 class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
     def __init__(self, parent=None):
@@ -910,29 +952,38 @@ class ScriptManagerWidget(QtWidgets.QWidget):
           # Set minimum size
         self.setGeometry(0,0,500,300)
         self.setMinimumSize(305, 300)
+
+        self.br = 8  # Border radius for styling
         # Setup main layout
         self.main_layout = QtWidgets.QVBoxLayout(self)
-        self.main_layout.setContentsMargins(4, 4, 4, 4)
-        self.main_layout.setSpacing(4)
-        
+        self.main_layout.setContentsMargins(8, 8, 8, 8)
+        self.main_layout.setSpacing(6)
+
         # Create main frame
         self.frame = QtWidgets.QFrame()
         self.frame.setMinimumWidth(300)
-        self.frame.setStyleSheet("""
-            QFrame {
-                background-color: rgba(36, 36, 36, .9);
-                border: 0px solid #444444;
-                border-radius: 4px;
-            }
+        self.frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: #1d1d1d;
+                border: 1px solid #444444;
+                border-radius: {self.br}px;
+            }}
+            QToolTip {{
+                background-color: #1b1b1b;
+                color: #ffffff;
+                border: 1px solid #555555;
+                border-radius: 0px;
+                padding: 4px;
+            }}
         """)
         self.frame_layout = QtWidgets.QVBoxLayout(self.frame)
-        self.frame_layout.setContentsMargins(6, 6, 6, 6)
-        self.frame_layout.setSpacing(6)
+        self.frame_layout.setContentsMargins(10, 10, 10, 10)
+        self.frame_layout.setSpacing(8)
         #--------------------------------------------------------------------------------------------------------------------------
         # Title bar with draggable area and close button
         self.title_bar = QtWidgets.QWidget()
         self.title_bar.setFixedHeight(30)
-        self.title_bar.setStyleSheet("background: rgba(30, 30, 30, .9); border: none; border-radius: 3px;")
+        self.title_bar.setStyleSheet(f"background: rgba(30, 30, 30, .9); border: none; border-radius: {self.br}px;")
         title_layout = QtWidgets.QHBoxLayout(self.title_bar)
         title_layout.setContentsMargins(6, 6, 6, 6)
         title_layout.setSpacing(6)
@@ -952,20 +1003,7 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         title_layout.addSpacing(4)
         #title_layout.addLayout(self.title_label_layout)
         #--------------------------------------------------------------------------------------------------------------------------
-        self.close_button = QtWidgets.QPushButton("✕")
-        self.close_button.setFixedSize(16, 16)
-        self.close_button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(200, 0, 0, 0.6);
-                color: #ff9393;
-                border: none;
-                border-radius: 2px;
-                padding: 0px 0px 2px 0px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 0, 0, 0.6);
-            }
-        """)
+        self.close_button = CB.CustomButton(icon=UT.get_icon('close_01.png', size=16, opacity=1), height=24, width=24, radius=12, color='#db2525', tooltip='Close')
         title_layout.addStretch(1)
         #title_layout.addWidget(self.close_button)
         #--------------------------------------------------------------------------------------------------------------------------
@@ -973,18 +1011,15 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.language_layout = QtWidgets.QHBoxLayout()
         self.language_layout.setAlignment(QtCore.Qt.AlignLeft)
 
-        self.language_toggle_frame = QtWidgets.QFrame()
-        self.language_toggle_frame.setStyleSheet("QFrame {background-color: #1e1e1e; border: 1px solid #444444; border-radius: 3px; padding: 2px;}")
-        self.language_toggle_layout = QtWidgets.QHBoxLayout(self.language_toggle_frame)
-        self.language_toggle_layout.setContentsMargins(0, 0, 0, 0)
-        self.language_toggle_layout.setSpacing(0)
-
-        self.python_button = CB.CustomRadioButton("Python", fill=False, width=60, height=14, group=True)
-        self.mel_button = CB.CustomRadioButton("MEL", fill=False, width=40, height=14, group=True)
-        self.python_button.group('script_language')
-        self.mel_button.group('script_language')
-        self.language_toggle_layout.addWidget(self.python_button)
-        self.language_toggle_layout.addWidget(self.mel_button)
+        self.mode_segment = CSC.TextSegmentControl(
+            ["Python", "MEL", "Toggle"],
+            height=28, font_size=11, radius=6,
+            frame_radius=6, use_frame=True,
+            frame_bg="rgba(255, 255, 255, 0.06)",
+            selected_color="#1D65CA",
+            expand=False,
+        )
+        self.mode_segment.segment_changed.connect(self._on_mode_changed)
 
         self.function_preset_stack = QtWidgets.QStackedWidget()
         fps = 22
@@ -1007,7 +1042,7 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.function_preset_stack.addWidget(self.python_function_preset_button)
         self.function_preset_stack.addWidget(self.mel_function_preset_button)
 
-        self.language_layout.addWidget(self.language_toggle_frame)
+        self.language_layout.addWidget(self.mode_segment)
         self.language_layout.addLayout(self.title_label_layout)
         self.language_layout.addStretch(1)
         #self.language_layout.addWidget(self.color_sample)
@@ -1016,73 +1051,15 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.language_layout.addSpacing(2)
 
         #--------------------------------------------------------------------------------------------------------------------------
-        # Create custom QPlainTextEdit subclass with line numbers and tab handling
-        
-        # Editor style
-        editor_style = f"""
-            QPlainTextEdit {{
-                background-color: #1b1b1b;
-                color: #dddddd;
-                border: None;
-                border-radius: 3px;
-                padding: 5px 5px 5px 15px; /* Added significant left padding to prevent text from being under line numbers */
-                font-family: Consolas, Monaco, monospace;
-                selection-background-color: #264f78;
-            }}
-            QScrollBar:vertical {{
-                border: none;
-                background: transparent;
-                width: 8px;
-                margin: 0px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: rgba(100, 100, 100, 0.5);
-                min-height: 20px;
-                border-radius: 4px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background: rgba(120, 120, 120, 0.7);
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                height: 0px;
-            }}
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
-                background: transparent;
-            }}
-            QScrollBar:horizontal {{
-                border: none;
-                background: transparent;
-                height: 8px;
-                margin: 0px;
-            }}
-            QScrollBar::handle:horizontal {{
-                background: rgba(100, 100, 100, 0.5);
-                min-width: 20px;
-                border-radius: 4px;
-            }}
-            QScrollBar::handle:horizontal:hover {{
-                background: rgba(120, 120, 120, 0.7);
-            }}
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
-                width: 0px;
-            }}
-            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
-                background: transparent;
-            }}
-
-        """
-        #--------------------------------------------------------------------------------------------------------------------------
         # Create editors using the custom CodeEditor class
         self.python_editor = CodeEditor()
-        self.python_editor.setStyleSheet(editor_style)
+        self.python_editor.setStyleSheet(CODE_EDITOR_STYLE)
         self.python_highlighter = ScriptSyntaxHighlighter(self.python_editor.document())
-        # Force document margin to create space for line numbers
         self.python_editor.document().setDocumentMargin(5)
-        
+
         self.mel_editor = CodeEditor()
-        self.mel_editor.setStyleSheet(editor_style)
+        self.mel_editor.setStyleSheet(CODE_EDITOR_STYLE)
         self.mel_highlighter = ScriptSyntaxHighlighter(self.mel_editor.document())
-        # Force document margin to create space for line numbers
         self.mel_editor.document().setDocumentMargin(5)
         
         # Set tab width for both editors
@@ -1099,34 +1076,46 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         self.editor_stack.addWidget(self.python_editor)
         self.editor_stack.addWidget(self.mel_editor)
 
+        # Container frame to give the editor a contained, rounded background
+        self.editor_container = QtWidgets.QFrame()
+        self.editor_container.setStyleSheet(CODE_EDITOR_CONTAINER_STYLE)
+        editor_container_layout = QtWidgets.QVBoxLayout(self.editor_container)
+        editor_container_layout.setContentsMargins(0, 0, 0, 0)
+        editor_container_layout.setSpacing(0)
+        editor_container_layout.addWidget(self.editor_stack)
+
+        # Outer stack swaps the whole content area between the Python/MEL
+        # editor container and the Toggle panel (created lazily on first use).
+        self.content_stack = QtWidgets.QStackedWidget()
+        self.content_stack.addWidget(self.editor_container)
+        self.toggle_panel = None
+
         # Apply Button
         self.apply_button = QtWidgets.QPushButton("Save Code")
         self.apply_button.setFixedHeight(24)
-        self.apply_button.setStyleSheet("""
-            QPushButton {
-                background-color: #5285a6;
+        self.apply_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #1D65CA;
                 color: white;
                 border: none;
-                border-radius: 3px;
+                border-radius: {self.br}px;
                 padding: 2px 10px;
-            }
-            QPushButton:hover {
-                background-color: #77c2f2;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: #67c2f2;
+            }}
         """)
-        
+
         # Add widgets to layout
         #self.frame_layout.addWidget(self.title_bar)
         self.frame_layout.addLayout(self.language_layout)
-        self.frame_layout.addWidget(self.editor_stack)
+        self.frame_layout.addWidget(self.content_stack)
         self.frame_layout.addWidget(self.apply_button)
         self.main_layout.addWidget(self.frame)
         
         # Connect signals
         self.close_button.clicked.connect(self.close)
         self.apply_button.clicked.connect(self.execute_code)
-        self.python_button.toggled.connect(self.update_language_selection)
-        self.mel_button.toggled.connect(self.update_language_selection)
         
         # Setup event handling for dragging and resizing
         self.dragging = False
@@ -1194,32 +1183,87 @@ class ScriptManagerWidget(QtWidgets.QWidget):
         cursor.insertText(preset_code)
         self.mel_editor.setFocus()  
     #--------------------------------------------------------------------------------------------------------------------
+    def _ensure_toggle_panel(self):
+        """Create the TogglePanel on first use and insert it into the content stack."""
+        if self.toggle_panel is not None:
+            return
+        from . import pb_toggle_panel as PTP
+        self.toggle_panel = PTP.TogglePanel(parent=self)
+        self.content_stack.addWidget(self.toggle_panel)
+        if self.picker_button is not None:
+            script_data = self.picker_button.script_data if isinstance(self.picker_button.script_data, dict) else {}
+            toggle_data = script_data.get('toggle_data') or self._default_toggle_data()
+            self.toggle_panel.set_toggle_data(toggle_data, self.picker_button)
+
+    @staticmethod
+    def _default_toggle_data():
+        return {
+            'state_count': 2,
+            'current_state': 0,
+            'state_labels': ['State 1', 'State 2', 'State 3'],
+            'appearances': [],
+            'state_1_code': '',
+            'state_2_code': '',
+            'state_3_code': '',
+        }
+
+    def _on_mode_changed(self, index):
+        """segment: 0=Python, 1=MEL, 2=Toggle."""
+        if index == 2:
+            self._ensure_toggle_panel()
+            self.content_stack.setCurrentWidget(self.toggle_panel)
+            return
+        # Python or MEL — show the shared editor container
+        self.content_stack.setCurrentWidget(self.editor_container)
+        self.editor_stack.setCurrentIndex(index)
+        # Keep function_preset_stack's index in sync but don't toggle visibility:
+        # the stack isn't in any layout (legacy commented-out add) so calling
+        # setVisible(True) on it would surface it as a top-level window.
+        self.function_preset_stack.setCurrentIndex(index)
+
     def set_picker_button(self, button):
         """Modified to ensure proper initialization of script data for individual buttons"""
         self.picker_button = button
         script_data = button.script_data if isinstance(button.script_data, dict) else {}
-        
-        # Create default script data if not properly formatted
+
         if not script_data:
             script_data = {
                 'type': 'python',
                 'python_code': '',
                 'mel_code': '',
-                'code': ''  # For backwards compatibility
+                'code': ''
             }
-            
-        # Set the editors' content from button-specific data
+
         self.python_editor.setPlainText(script_data.get('python_code', ''))
         self.mel_editor.setPlainText(script_data.get('mel_code', ''))
-        
-        # Set the correct language button based on stored type
+
         script_type = script_data.get('type', 'python')
-        if script_type == 'python':
-            self.python_button.setChecked(True)
+        if script_type == 'toggle':
+            seg_index = 2
+        elif script_type == 'mel':
+            seg_index = 1
         else:
-            self.mel_button.setChecked(True)
-        
-        # Make sure to update the button's script data
+            seg_index = 0
+
+        self.mode_segment.blockSignals(True)
+        self.mode_segment.set_selected_index(seg_index)
+        self.mode_segment.blockSignals(False)
+
+        if seg_index == 2:
+            self._ensure_toggle_panel()
+            toggle_data = script_data.get('toggle_data') or self._default_toggle_data()
+            self.toggle_panel.set_toggle_data(toggle_data, button)
+            self.content_stack.setCurrentWidget(self.toggle_panel)
+        else:
+            if self.toggle_panel is not None:
+                toggle_data = script_data.get('toggle_data') or self._default_toggle_data()
+                self.toggle_panel.set_toggle_data(toggle_data, button)
+            self.content_stack.setCurrentWidget(self.editor_container)
+            self.editor_stack.setCurrentIndex(seg_index)
+            # Don't call setVisible on function_preset_stack — it's a parentless
+            # widget (never added to a layout) and would surface as a window.
+            self.function_preset_stack.setCurrentIndex(seg_index)
+
         button.script_data = script_data
         self.button_id_label.setText(f"[{self.picker_button.unique_id}]")
         self.position_window()
@@ -1238,57 +1282,77 @@ class ScriptManagerWidget(QtWidgets.QWidget):
                 global_pos.setY(global_pos.y() - self.height() / 2)
                 self.move(global_pos) 
 
-    def update_language_selection(self, checked):
-        if checked:  # Only respond to the button being checked
-            is_python = self.python_button.isChecked()
-            #self.title_label.setText("Script Manager (Python)" if is_python else "Script Manager (MEL)")
-            self.editor_stack.setCurrentIndex(0 if is_python else 1)
-            self.function_preset_stack.setCurrentIndex(0 if is_python else 1)
-            
+    @staticmethod
+    def _extract_tooltip(code):
+        tooltip_patterns = [
+            r'@TF\.tool_tip\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
+            r'@tool_tip\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
+            r'@tt\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
+        ]
+        for pattern in tooltip_patterns:
+            m = re.search(pattern, code, flags=re.IGNORECASE)
+            if m:
+                header = m.group(1)
+                body = m.group(2) if m.lastindex and m.lastindex >= 2 else None
+                return header, body
+        return None, None
+
     def execute_code(self):
-        """Modified to ensure each button gets its own script data and extract tooltip information"""
-        if self.picker_button:
-            # Get the current code based on selected language
-            current_code = self.python_editor.toPlainText() if self.python_button.isChecked() else self.mel_editor.toPlainText()
-            
-            # Extract tooltip from the code if present
-            custom_tooltip_header = None
-            custom_tooltip = None
-            tooltip_patterns = [
-                r'@TF\.tool_tip\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
-                r'@tool_tip\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
-                r'@tt\s*\(\s*["\'](.+?)["\']\s*(?:,\s*["\'](.+?)["\'])?\s*\)',
-            ]
-            for pattern in tooltip_patterns:
-                tooltip_match = re.search(pattern, current_code, flags=re.IGNORECASE)
-                if tooltip_match:
-                    custom_tooltip_header = tooltip_match.group(1)
-                    custom_tooltip = tooltip_match.group(2) if tooltip_match.lastindex >= 2 else None
-                    break
-            
-            # Create fresh script data for this button
+        """Save the script data to the button and close the manager.
+
+        Mode dispatch based on the segment control:
+            0=Python, 1=MEL, 2=Toggle
+        Preserves the *other* modes' content so switching modes is non-destructive.
+        """
+        if not self.picker_button:
+            return
+
+        seg_index = self.mode_segment.selected_index
+        existing = self.picker_button.script_data if isinstance(self.picker_button.script_data, dict) else {}
+        python_code = self.python_editor.toPlainText()
+        mel_code = self.mel_editor.toPlainText()
+
+        if seg_index == 2:
+            # Toggle mode
+            if self.toggle_panel is None:
+                self._ensure_toggle_panel()
+            toggle_data = self.toggle_panel.get_toggle_data()
+            prev = existing.get('toggle_data') or {}
+            toggle_data['current_state'] = prev.get('current_state', 0)
+
+            active_state = toggle_data.get('current_state', 0)
+            active_code = toggle_data.get(f'state_{active_state + 1}_code', '')
+            header, body = self._extract_tooltip(active_code)
+
             script_data = {
-                'type': 'python' if self.python_button.isChecked() else 'mel',
-                'python_code': self.python_editor.toPlainText(),
-                'mel_code': self.mel_editor.toPlainText(),
-                'code': current_code
+                'type': 'toggle',
+                'python_code': python_code,
+                'mel_code': mel_code,
+                'code': python_code,
+                'toggle_data': toggle_data,
             }
-            
-            # Add custom tooltip to script data if found
-            if custom_tooltip_header:
-                script_data['custom_tooltip_header'] = custom_tooltip_header
-            if custom_tooltip:
-                script_data['custom_tooltip'] = custom_tooltip
-            
-            # Update the button's script data
-            self.picker_button.script_data = script_data
-            
-            # Update the tooltip immediately
-            self.picker_button.update_tooltip()
-            
-            # Emit changed signal and close
-            self.picker_button.changed.emit(self.picker_button)
-            self.close()
+        else:
+            is_python = (seg_index == 0)
+            current_code = python_code if is_python else mel_code
+            header, body = self._extract_tooltip(current_code)
+            script_data = {
+                'type': 'python' if is_python else 'mel',
+                'python_code': python_code,
+                'mel_code': mel_code,
+                'code': current_code,
+            }
+            if 'toggle_data' in existing:
+                script_data['toggle_data'] = existing['toggle_data']
+
+        if header:
+            script_data['custom_tooltip_header'] = header
+        if body:
+            script_data['custom_tooltip'] = body
+
+        self.picker_button.script_data = script_data
+        self.picker_button.update_tooltip()
+        self.picker_button.changed.emit(self.picker_button)
+        self.close()
     #--------------------------------------------------------------------------------------------------------------------
     def eventFilter(self, obj, event):
         if obj == self.frame:

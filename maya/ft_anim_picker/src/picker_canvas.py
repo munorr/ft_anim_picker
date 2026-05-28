@@ -1,15 +1,16 @@
 try:
     from PySide6 import QtWidgets, QtCore, QtGui
-    from PySide6.QtGui import QColor, QShortcut
-    from PySide6.QtCore import QTimer, QPropertyAnimation, QEasingCurve, Signal
+    from PySide6.QtGui import QColor, QShortcut, QPainter, QBrush
+    from PySide6.QtCore import QTimer, QPropertyAnimation, QEasingCurve, Signal, Property
     from shiboken6 import wrapInstance
 except ImportError:
     from PySide2 import QtWidgets, QtCore, QtGui
     from PySide2.QtWidgets import QShortcut
-    from PySide2.QtGui import QColor
-    from PySide2.QtCore import QTimer, QPropertyAnimation, QEasingCurve, Signal
+    from PySide2.QtGui import QColor, QPainter, QBrush
+    from PySide2.QtCore import QTimer, QPropertyAnimation, QEasingCurve, Signal, Property
     from shiboken2 import wrapInstance
 import os
+import math
 import maya.cmds as cmds
 from . import ui as UI
 from . import utils as UT
@@ -20,6 +21,562 @@ from . import data_management as DM
 from . import custom_dialog as CD
 from . import pb_transform_guides as TG
 from .maya_curve_converter import create_buttons_from_maya_curves
+from . import selection_sync_manager as SSM
+from . import curve_editor as CE
+from . import duplicate_mirror_tool as DMT
+
+
+class ResizeHandle(QtWidgets.QWidget):
+    """
+    An elegant draggable resize handle for resizing the edit panel.
+    Features smooth animations, visual feedback, and a modern design.
+    """
+    resizing = Signal(int)
+    resize_started = Signal()
+    resize_finished = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(8)
+        self.setCursor(QtCore.Qt.SizeHorCursor)
+        self.setMouseTracking(True)
+
+        self._is_dragging = False
+        self._is_hovered = False
+        self._drag_start_x = 0
+
+        self._highlight_opacity = 0.0
+        self._handle_width = 2.0
+
+        self._base_color = QColor(80, 80, 80)
+        self._hover_color = QColor(29, 101, 202)
+        self._drag_color = QColor(29, 101, 202)
+
+        self._setup_animations()
+        self.setToolTip("Drag to resize panel")
+
+    def _setup_animations(self):
+        self._opacity_animation = QPropertyAnimation(self, b"highlightOpacity")
+        self._opacity_animation.setDuration(150)
+        self._opacity_animation.setEasingCurve(QEasingCurve.OutCubic)
+
+        self._width_animation = QPropertyAnimation(self, b"handleWidth")
+        self._width_animation.setDuration(100)
+        self._width_animation.setEasingCurve(QEasingCurve.OutCubic)
+
+    def get_highlight_opacity(self):
+        return self._highlight_opacity
+
+    def set_highlight_opacity(self, value):
+        self._highlight_opacity = value
+        self.update()
+
+    def get_handle_width(self):
+        return self._handle_width
+
+    def set_handle_width(self, value):
+        self._handle_width = value
+        self.update()
+
+    highlightOpacity = Property(float, get_highlight_opacity, set_highlight_opacity)
+    handleWidth = Property(float, get_handle_width, set_handle_width)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        handle_height = min(60, self.height() * 0.3)
+        handle_x = (self.width() - self._handle_width) / 2
+        handle_y = (self.height() - handle_height) / 2
+
+        if self._is_dragging:
+            color = self._drag_color
+        elif self._is_hovered:
+            color = QColor(
+                int(self._base_color.red() + (self._hover_color.red() - self._base_color.red()) * self._highlight_opacity),
+                int(self._base_color.green() + (self._hover_color.green() - self._base_color.green()) * self._highlight_opacity),
+                int(self._base_color.blue() + (self._hover_color.blue() - self._base_color.blue()) * self._highlight_opacity)
+            )
+        else:
+            color = self._base_color
+
+        if self._highlight_opacity > 0 or self._is_dragging:
+            bg_opacity = int(30 * (self._highlight_opacity if not self._is_dragging else 1.0))
+            bg_color = QColor(self._hover_color)
+            bg_color.setAlpha(bg_opacity)
+            painter.fillRect(self.rect(), bg_color)
+
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QBrush(color))
+        handle_rect = QtCore.QRectF(handle_x, handle_y, self._handle_width, handle_height)
+        painter.drawRoundedRect(handle_rect, self._handle_width / 2, self._handle_width / 2)
+
+        if self._highlight_opacity > 0.5 or self._is_dragging:
+            dot_color = QColor(color)
+            dot_color.setAlpha(int(180 * (self._highlight_opacity if not self._is_dragging else 1.0)))
+            painter.setBrush(QBrush(dot_color))
+            dot_radius = 1.5
+            dot_spacing = 8
+            num_dots = 3
+            start_y = handle_y + handle_height / 2 - (num_dots - 1) * dot_spacing / 2
+            for i in range(num_dots):
+                dot_y = start_y + i * dot_spacing
+                painter.drawEllipse(QtCore.QPointF(self.width() / 2, dot_y), dot_radius, dot_radius)
+
+        painter.end()
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        self._animate_hover(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if not self._is_dragging:
+            self._is_hovered = False
+            self._animate_hover(False)
+        super().leaveEvent(event)
+
+    def _animate_hover(self, entering):
+        self._opacity_animation.stop()
+        self._width_animation.stop()
+        self._opacity_animation.setStartValue(self._highlight_opacity)
+        self._opacity_animation.setEndValue(1.0 if entering else 0.0)
+        self._width_animation.setStartValue(self._handle_width)
+        self._width_animation.setEndValue(3.5 if entering else 2.0)
+        self._opacity_animation.start()
+        self._width_animation.start()
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self._is_dragging = True
+            try:
+                self._drag_start_x = event.globalPosition().x()
+            except AttributeError:
+                self._drag_start_x = event.globalPos().x()
+            self.resize_started.emit()
+            self._width_animation.stop()
+            self._width_animation.setStartValue(self._handle_width)
+            self._width_animation.setEndValue(4.5)
+            self._width_animation.start()
+            self.update()
+            event.accept()
+        else:
+            event.ignore()
+
+    def mouseMoveEvent(self, event):
+        if self._is_dragging:
+            try:
+                current_x = event.globalPosition().x()
+            except AttributeError:
+                current_x = event.globalPos().x()
+            delta = int(self._drag_start_x - current_x)
+            self._drag_start_x = current_x
+            self.resizing.emit(delta)
+            event.accept()
+        else:
+            event.ignore()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton and self._is_dragging:
+            self._is_dragging = False
+            self.resize_finished.emit()
+            if self._is_hovered:
+                self._width_animation.stop()
+                self._width_animation.setStartValue(self._handle_width)
+                self._width_animation.setEndValue(3.5)
+                self._width_animation.start()
+            else:
+                self._animate_hover(False)
+            self.update()
+            event.accept()
+        else:
+            event.ignore()
+
+
+class _PaintedContainer(QtWidgets.QWidget):
+    """QWidget with anti-aliased rounded background and border."""
+
+    def __init__(self, parent=None, bg_color=None, border_color=None, border_width=1, radius=8):
+        super().__init__(parent)
+        self._bg_color = bg_color or QtGui.QColor(29, 29, 29)
+        self._border_color = border_color or QtGui.QColor(255, 255, 255, 25)
+        self._border_width = border_width
+        self._radius = radius
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        half = self._border_width / 2.0
+        rect = QtCore.QRectF(self.rect()).adjusted(half, half, -half, -half)
+        painter.setBrush(self._bg_color)
+        pen = QtGui.QPen(self._border_color, self._border_width)
+        painter.setPen(pen)
+        painter.drawRoundedRect(rect, self._radius, self._radius)
+        painter.end()
+
+
+class CanvasEditPanel(QtWidgets.QWidget):
+    """
+    An overlay edit panel embedded inside canvas_frame.
+    Positioned at the right edge of its parent, overlaying the canvas content.
+    """
+    width_changed = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self._min_width = 200
+        self._max_width = 450
+        self._default_width = 200
+        self._current_width = self._default_width
+        # Margins are measured against `_anchor_widget` (the canvas area) when set,
+        # so they stay correct regardless of which frame the panel is reparented to.
+        self._top_margin = 4
+        self._right_margin = 4
+        self._bottom_margin = 10
+        self._anchor_widget = None
+
+        self._slide_offset = 0.0
+        self._opacity_effect = QtWidgets.QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(1.0)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._show_anim_group = None
+        self._hide_anim_group = None
+
+        self._layout = QtWidgets.QHBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
+
+        self._resize_handle = ResizeHandle(self)
+        self._resize_handle.resizing.connect(self._on_resize)
+
+        self._content_container = _PaintedContainer(
+            bg_color=QtGui.QColor(29, 29, 29),
+            border_color=QtGui.QColor(255, 255, 255, 25),
+            border_width=2,
+            radius=8,
+        )
+        self._content_layout = QtWidgets.QVBoxLayout(self._content_container)
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.setSpacing(4)
+
+        self._layout.addWidget(self._resize_handle)
+        self._layout.addWidget(self._content_container)
+
+        self._apply_width()
+
+    def get_panel_width(self):
+        return self._current_width
+
+    def set_panel_width(self, value):
+        self._current_width = value
+        self._apply_width()
+
+    panelWidth = Property(int, get_panel_width, set_panel_width)
+
+    def _get_slide_offset(self):
+        return self._slide_offset
+
+    def _set_slide_offset(self, value):
+        self._slide_offset = value
+        self._update_position()
+
+    slideOffset = Property(float, _get_slide_offset, _set_slide_offset)
+
+    def _apply_width(self):
+        total_width = self._current_width + self._resize_handle.width()
+        self.setFixedWidth(total_width)
+        self.width_changed.emit(self._current_width)
+        self._update_position()
+
+    def set_anchor_widget(self, widget):
+        """Set the widget the panel should align to (typically the canvas stack)."""
+        self._anchor_widget = widget
+        self._update_position()
+
+    def _update_position(self):
+        parent = self.parentWidget()
+        if not parent:
+            return
+        panel_width = self.width()
+
+        anchor = self._anchor_widget
+        if anchor is not None and anchor.isVisible() and anchor.window() is parent.window():
+            top_left = anchor.mapTo(parent, QtCore.QPoint(0, 0))
+            anchor_w = anchor.width()
+            anchor_h = anchor.height()
+            x = int(top_left.x() + anchor_w - panel_width - self._right_margin + self._slide_offset)
+            y = top_left.y() + self._top_margin
+            panel_height = anchor_h - self._top_margin - self._bottom_margin
+        else:
+            parent_rect = parent.rect()
+            panel_height = parent_rect.height() - self._top_margin - self._bottom_margin
+            x = int(parent_rect.width() - panel_width - self._right_margin + self._slide_offset)
+            y = self._top_margin
+        self.setGeometry(x, y, panel_width, max(panel_height, 100))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.raise_()
+        self._update_position()
+
+    def animate_show(self, delay_ms=0):
+        self._stop_animations()
+        self._slide_offset = 30.0
+        self._opacity_effect.setOpacity(0.0)
+        self._update_position()
+
+        slide_anim = QPropertyAnimation(self, b"slideOffset")
+        slide_anim.setStartValue(30.0)
+        slide_anim.setEndValue(0.0)
+        slide_anim.setDuration(300)
+        slide_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        opacity_anim = QPropertyAnimation(self._opacity_effect, b"opacity")
+        opacity_anim.setStartValue(0.0)
+        opacity_anim.setEndValue(1.0)
+        opacity_anim.setDuration(300)
+        opacity_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        group = QtCore.QParallelAnimationGroup(self)
+        group.addAnimation(slide_anim)
+        group.addAnimation(opacity_anim)
+        self._show_anim_group = group
+
+        if delay_ms > 0:
+            QTimer.singleShot(delay_ms, group.start)
+        else:
+            group.start()
+
+    def animate_hide(self):
+        self._stop_animations()
+
+        slide_anim = QPropertyAnimation(self, b"slideOffset")
+        slide_anim.setStartValue(self._slide_offset)
+        slide_anim.setEndValue(30.0)
+        slide_anim.setDuration(220)
+        slide_anim.setEasingCurve(QEasingCurve.InCubic)
+
+        opacity_anim = QPropertyAnimation(self._opacity_effect, b"opacity")
+        opacity_anim.setStartValue(self._opacity_effect.opacity())
+        opacity_anim.setEndValue(0.0)
+        opacity_anim.setDuration(220)
+        opacity_anim.setEasingCurve(QEasingCurve.InCubic)
+
+        group = QtCore.QParallelAnimationGroup(self)
+        group.addAnimation(slide_anim)
+        group.addAnimation(opacity_anim)
+
+        def _on_finished():
+            self.setVisible(False)
+            self._slide_offset = 0.0
+            self._opacity_effect.setOpacity(1.0)
+
+        group.finished.connect(_on_finished)
+        self._hide_anim_group = group
+        group.start()
+
+    def _stop_animations(self):
+        for grp in (self._show_anim_group, self._hide_anim_group):
+            if grp is not None and grp.state() == QtCore.QAbstractAnimation.Running:
+                grp.stop()
+        self._show_anim_group = None
+        self._hide_anim_group = None
+
+    def add_widget(self, widget):
+        self._content_layout.addWidget(widget)
+
+    def add_layout(self, layout):
+        self._content_layout.addLayout(layout)
+
+    def get_content_width(self):
+        return self._current_width
+
+    def set_content_width(self, width, animated=False):
+        width = max(self._min_width, min(self._max_width, width))
+        self._current_width = width
+        self._apply_width()
+
+    def reset_to_default(self):
+        self.set_content_width(self._default_width)
+
+    def _on_resize(self, delta):
+        new_width = self._current_width + delta
+        new_width = max(self._min_width, min(self._max_width, new_width))
+        if new_width != self._current_width:
+            self._current_width = new_width
+            self._apply_width()
+
+
+class CanvasLoadingOverlay(QtWidgets.QWidget):
+    """Semi-transparent overlay with a pulsating icon shown while buttons load."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
+
+        from pathlib import Path
+        icon_path = Path(__file__).parent / 'bgen_picker_icons' / 'bgen-picker-icon-01.png'
+        self._icon_pixmap = QtGui.QPixmap(str(icon_path)).scaled(
+            48, 48, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+
+        self._opacity_effect = QtWidgets.QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(1.0)
+        self.setGraphicsEffect(self._opacity_effect)
+
+        self._icon_opacity = 1.0
+
+        self._pulse_anim = QPropertyAnimation(self, b"iconOpacity")
+        self._pulse_anim.setDuration(800)
+        self._pulse_anim.setKeyValueAt(0, 0.3)
+        self._pulse_anim.setKeyValueAt(0.5, 1.0)
+        self._pulse_anim.setKeyValueAt(1.0, 0.3)
+        self._pulse_anim.setEasingCurve(QEasingCurve.InOutSine)
+        self._pulse_anim.setLoopCount(-1)
+
+        self._fade_out = QPropertyAnimation(self._opacity_effect, b"opacity")
+        self._fade_out.setDuration(200)
+        self._fade_out.setStartValue(1.0)
+        self._fade_out.setEndValue(0.0)
+        self._fade_out.setEasingCurve(QEasingCurve.InCubic)
+        self._fade_out.finished.connect(self._on_fade_out_done)
+
+        self._min_timer = QTimer(self)
+        self._min_timer.setSingleShot(True)
+        self._hide_requested = False
+
+        self.setVisible(True)
+        self._pulse_anim.start()
+
+    def _get_icon_opacity(self):
+        return self._icon_opacity
+
+    def _set_icon_opacity(self, val):
+        self._icon_opacity = val
+        self.update()
+
+    iconOpacity = Property(float, _get_icon_opacity, _set_icon_opacity)
+
+    def show_overlay(self):
+        self._hide_requested = False
+        self._reposition()
+        self._fade_out.stop()
+        self._opacity_effect.setOpacity(1.0)
+        self.setVisible(True)
+        self.raise_()
+        if self._pulse_anim.state() != QPropertyAnimation.Running:
+            self._pulse_anim.start()
+        self._min_timer.start(200)
+
+    def hide_overlay(self):
+        self._hide_requested = True
+        if not self._min_timer.isActive():
+            self._do_hide()
+        else:
+            try:
+                self._min_timer.timeout.disconnect(self._do_hide)
+            except (RuntimeError, TypeError):
+                pass
+            self._min_timer.timeout.connect(self._do_hide)
+
+    def _do_hide(self):
+        try:
+            self._min_timer.timeout.disconnect(self._do_hide)
+        except (RuntimeError, TypeError):
+            pass
+        self._fade_out.start()
+
+    def _on_fade_out_done(self):
+        self._pulse_anim.stop()
+        self.setVisible(False)
+
+    def _reposition(self):
+        p = self.parentWidget()
+        if p:
+            self.setGeometry(p.rect())
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QtGui.QColor(29, 29, 29, 180))
+        if not self._icon_pixmap.isNull():
+            painter.setOpacity(self._icon_opacity)
+            x = (self.width() - self._icon_pixmap.width()) // 2
+            y = (self.height() - self._icon_pixmap.height()) // 2
+            painter.drawPixmap(x, y, self._icon_pixmap)
+        painter.end()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reposition()
+
+
+class SaveIndicatorOverlay(QtWidgets.QWidget):
+    """Small pill badge that appears at top-right of canvas after a save."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self.setFixedSize(90, 24)
+        self.setVisible(False)
+
+        self._label = "Saved \u2713"
+
+        # Opacity effect + animations
+        self._opacity_effect = QtWidgets.QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_effect)
+
+        self._fade_in = QPropertyAnimation(self._opacity_effect, b"opacity")
+        self._fade_in.setDuration(150)
+        self._fade_in.setStartValue(0.0)
+        self._fade_in.setEndValue(1.0)
+        self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+        self._fade_out = QPropertyAnimation(self._opacity_effect, b"opacity")
+        self._fade_out.setDuration(500)
+        self._fade_out.setStartValue(1.0)
+        self._fade_out.setEndValue(0.0)
+        self._fade_out.setEasingCurve(QEasingCurve.InCubic)
+        self._fade_out.finished.connect(lambda: self.setVisible(False))
+
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setSingleShot(True)
+        self._hold_timer.timeout.connect(self._fade_out.start)
+
+    def show_indicator(self, label="Saved \u2713"):
+        self._label = label
+        self._fade_out.stop()
+        self._hold_timer.stop()
+        self._opacity_effect.setOpacity(0.0)
+        self._reposition()
+        self.setVisible(True)
+        self.raise_()
+        self.update()
+        self._fade_in.start()
+        self._hold_timer.start(2000)
+
+    def _reposition(self):
+        p = self.parentWidget()
+        if p:
+            margin = 10
+            x = p.width() - self.width() - margin
+            self.move(x, margin)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = self.rect()
+        painter.setBrush(QtGui.QColor(29, 101, 202, 210))
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
+        painter.setPen(QtGui.QColor(210, 210, 210))
+        font = painter.font()
+        font.setPixelSize(11)
+        painter.setFont(font)
+        painter.drawText(rect, QtCore.Qt.AlignCenter, self._label)
+        painter.end()
+
 
 class HUDWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -154,6 +711,7 @@ class HUDWidget(QtWidgets.QWidget):
 class PickerCanvas(QtWidgets.QWidget):
     clicked = Signal()
     button_selection_changed = Signal()
+    view_changed = Signal()  # Emitted when pan/zoom settles (debounced)
     selection_count_changed = Signal(int)
     
     def __init__(self, parent=None):
@@ -177,11 +735,11 @@ class PickerCanvas(QtWidgets.QWidget):
         self.dot_spacing = 12
 
         # Border properties
-        self.default_border_color = QtGui.QColor(82, 133, 166, 150) #(36, 36, 36, 255)
-        self.edit_mode_border_color = QtGui.QColor(145, 203, 8,255)   #(82, 133, 166, 255) blue  (108, 152, 9,255) green
+        self.default_border_color = QtGui.QColor(82, 133, 166, 0)
+        self.edit_mode_border_color = QtGui.QColor(29, 101, 202, 255)
         self.border_color = self.default_border_color
         self.border_width = 1
-        self.border_radius = 4
+        self.border_radius = 10
 
         # Image properties
         self.background_image = None
@@ -192,14 +750,27 @@ class PickerCanvas(QtWidgets.QWidget):
         self.pan_offset = QtCore.QPointF(0, 0)
         self.last_pan_pos = None
 
+        self.last_zoom_pos = None
+        self.was_zoom_dragging = False
+
+        # Trackpad vs mouse detection state
+        self._scroll_gesture_is_trackpad = False
+
+        # Set when a non-edit-mode button click wants Maya to become the
+        # active window — but deferred until the cursor actually leaves
+        # the picker so the picker remains the macOS key window while
+        # hovered (required for trackpad pinch-zoom NSEvent gestures).
+        self._pending_maya_activation = False
+
         self.buttons = []
         self.setup_dot_texture()
         
         # Set size policy to allow expanding
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
 
-        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.customContextMenuRequested.connect(self.show_context_menu)
+        # Use PreventContextMenu so right-click goes through mousePressEvent first,
+        # allowing Alt+RMB zoom to take priority over the context menu.
+        self.setContextMenuPolicy(QtCore.Qt.PreventContextMenu)
 
         self.setMouseTracking(True)
         self.rubberband = QtWidgets.QRubberBand(QtWidgets.QRubberBand.Rectangle, self)
@@ -211,8 +782,46 @@ class PickerCanvas(QtWidgets.QWidget):
         self.edit_mode = False
         self.image_scale = 1.0
 
+        # Multi-button placement state (drag-to-place after "Create Buttons from Selection")
+        self.is_placing_multi = False
+        self.placement_origin_scene = None
+        self.placement_cursor_scene = None
+        self.pending_placement_data = None  # {'selection': [...], 'default_w', 'default_h', 'gap'}
+
         self.hud = HUDWidget(self)
         self.hud.raise_()
+
+        self.loading_overlay = CanvasLoadingOverlay(self)
+
+        # Save indicator overlay (top-right badge)
+        self.save_indicator = SaveIndicatorOverlay(self)
+
+        # Curve editor overlay for shape editing (in edit mode)
+        self.curve_editor = CE.CurveEditorOverlay(self, self)
+        self.curve_editor.editingFinished.connect(self._on_curve_editing_finished)
+        self.curve_editor.editingCancelled.connect(self._on_curve_editing_cancelled)
+
+        # Debounce timer for view_changed signal
+        self._view_change_timer = QTimer(self)
+        self._view_change_timer.setSingleShot(True)
+        self._view_change_timer.setInterval(500)
+        self._view_change_timer.timeout.connect(self.view_changed.emit)
+
+        # Deferred widget geometry: during pan/zoom, canvas painting doesn't need
+        # widget geometry, so we skip update_button_positions() and just repaint.
+        self._geometry_dirty = False
+
+        # Persistent timer for deferred geometry flush
+        self._geometry_flush_timer = QTimer(self)
+        self._geometry_flush_timer.setSingleShot(True)
+        self._geometry_flush_timer.setInterval(100)
+        self._geometry_flush_timer.timeout.connect(self._flush_deferred_geometry)
+
+        # Persistent throttled timer for transform guides updates during drag
+        self._guides_update_timer = QTimer(self)
+        self._guides_update_timer.setSingleShot(True)
+        self._guides_update_timer.setInterval(30)  # ~33 FPS cap for guides
+        self._guides_update_timer.timeout.connect(self._on_guides_timer)
 
         self.minimal_mode = False
         self.last_selected_button = None
@@ -223,15 +832,23 @@ class PickerCanvas(QtWidgets.QWidget):
         self._tooltip_timer.setSingleShot(True)
         self._tooltip_timer.timeout.connect(self._show_button_tooltip)
         self._current_hover_button = None
+        self._pressed_button = None
         self._tooltip_position = QtCore.QPoint()
 
         # Transform guides for edit mode (add after HUD initialization)
         self.transform_guides = TG.TransformGuides(self, self)
         self.transform_guides.transform_finished.connect(self.on_transform_finished)
+
+        # Interactive duplicate-mirror tool (right-click → Duplicate Mirror in edit mode)
+        self.duplicate_mirror_tool = DMT.DuplicateMirrorTool(self)
+
         self.canvas_shortcuts()
         
         # Initialize curve import settings
         self._separate_curves_mode = True  # Default to separate curves
+        
+        # Initialize 2-way selection synchronization
+        self._init_selection_sync()
     
     #------------------------------------------------------------------------------
     # Curve import settings methods
@@ -287,6 +904,11 @@ class PickerCanvas(QtWidgets.QWidget):
     
     #------------------------------------------------------------------------------
     def set_edit_mode(self, enabled):
+        # If the user is leaving edit mode while the duplicate-mirror tool is up,
+        # tear it down — its UI is meaningless outside edit mode.
+        if not enabled and hasattr(self, 'duplicate_mirror_tool') and self.duplicate_mirror_tool.active:
+            self.duplicate_mirror_tool.cancel()
+
         self.edit_mode = enabled
         self.border_color = self.edit_mode_border_color if enabled else self.default_border_color
         self.border_width = 1 if enabled else 1
@@ -301,8 +923,9 @@ class PickerCanvas(QtWidgets.QWidget):
             else:
                 self.transform_guides.setVisible(False)
                 self.transform_guides.visual_layer.setVisible(False)
-                if hasattr(self.transform_guides, 'control_widget'):  
+                if hasattr(self.transform_guides, 'control_widget'):
                     self.transform_guides.control_widget.setVisible(False)
+
         self.update()
     
     def set_minimal_mode(self, enabled):
@@ -645,14 +1268,9 @@ class PickerCanvas(QtWidgets.QWidget):
     def update_pan_offset(self, delta):
         """Helper method to update pan offset and transform guides"""
         self.pan_offset += QtCore.QPointF(delta.x(), delta.y())
-        
-        # Update transform guides immediately during panning
-        if hasattr(self, 'transform_guides') and self.transform_guides.isVisible():
-            QtCore.QTimer.singleShot(5, self.transform_guides.update_position)
-        
-        # Update transform guides immediately during panning
-        if hasattr(self, 'transform_guides') and self.transform_guides.isVisible():
-            QtCore.QTimer.singleShot(5, self.transform_guides.update_position)
+
+        # Throttled transform guides update (persistent timer prevents accumulation)
+        self._request_guides_update()
     
     def _update_guides_after_button_change(self):
         """Update transform guides after button changes"""
@@ -717,16 +1335,20 @@ class PickerCanvas(QtWidgets.QWidget):
             if not self.edit_mode and hasattr(button, 'selectable') and not button.selectable:
                 continue
             
-            # First check if button's bounding rect intersects with selection
+            # AABB pre-cull using rotated envelope for speed
             button_pos = button.scene_position
-            button_rect = QtCore.QRectF(
-                button_pos.x() - button.width/2,
-                button_pos.y() - button.height/2,
-                button.width,
-                button.height
+            if hasattr(button, 'rotated_envelope_size'):
+                env_w, env_h = button.rotated_envelope_size()
+            else:
+                env_w, env_h = button.width, button.height
+            envelope_rect = QtCore.QRectF(
+                button_pos.x() - env_w / 2,
+                button_pos.y() - env_h / 2,
+                env_w,
+                env_h
             )
-            
-            if scene_rect.intersects(button_rect):
+
+            if scene_rect.intersects(envelope_rect):
                 # Now check if the button's actual shape intersects with selection
                 if self._button_shape_intersects_rect(button, scene_rect):
                     current_buttons.add(button)
@@ -776,45 +1398,39 @@ class PickerCanvas(QtWidgets.QWidget):
 
     def _button_shape_intersects_rect(self, button, scene_rect):
         """
-        Check if a button's actual shape intersects with a selection rectangle.
-        This provides more precise selection for custom shapes.
+        Check if a button's actual (rotated, possibly custom) shape intersects
+        a selection rectangle in scene coordinates. Uses the same cached scene
+        path as paint_on_canvas/hit_test_scene so selection matches the visible
+        shape exactly.
         """
         try:
-            # Get current zoom factor
-            zoom_factor = self.zoom_factor
-            
-            # Create the button's path in scene coordinates
-            button_rect = QtCore.QRectF(
-                -button.width/2, -button.height/2,
-                button.width, button.height
-            )
-            
-            # Create the button path
-            button_path = button._create_button_path(button_rect, button.radius, zoom_factor)
-            
-            # Transform the path to scene coordinates
+            button_path = button._get_scene_path(button.width, button.height)
+
             transform = QtGui.QTransform()
             transform.translate(button.scene_position.x(), button.scene_position.y())
+            if getattr(button, 'rotation', 0):
+                transform.rotate(button.rotation)
             scene_button_path = transform.map(button_path)
-            
-            # Create a path from the selection rectangle
+
             selection_path = QtGui.QPainterPath()
             selection_path.addRect(scene_rect)
-            
-            # Check if the paths intersect
+
             return scene_button_path.intersects(selection_path)
-            
+
         except Exception as e:
             print(f"Error checking button shape intersection: {e}")
-            # Fallback to simple rectangle intersection
             button_pos = button.scene_position
-            button_rect = QtCore.QRectF(
-                button_pos.x() - button.width/2,
-                button_pos.y() - button.height/2,
-                button.width,
-                button.height
+            if hasattr(button, 'rotated_envelope_size'):
+                env_w, env_h = button.rotated_envelope_size()
+            else:
+                env_w, env_h = button.width, button.height
+            envelope_rect = QtCore.QRectF(
+                button_pos.x() - env_w / 2,
+                button_pos.y() - env_h / 2,
+                env_w,
+                env_h
             )
-            return scene_rect.intersects(button_rect)
+            return scene_rect.intersects(envelope_rect)
     #------------------------------------------------------------------------------
     def _show_button_tooltip(self):
         """Show tooltip for the currently hovered button"""
@@ -872,37 +1488,44 @@ class PickerCanvas(QtWidgets.QWidget):
         self._current_hover_button = None
 
     def _update_hover_button(self, pos):
-        """Update which button is being hovered over"""
-        # Get button at position
+        """Update which button is being hovered over.
+
+        In canvas-painted mode, hover is determined by the _current_hover_button
+        reference checked during paint — no per-button is_hovered flag needed.
+        """
         button = self._get_button_at_position(pos)
-        
+
         if button != self._current_hover_button:
-            # Hide current tooltip
             self._hide_button_tooltip()
-            
-            # Update hover state for current button (with safety check)
-            if self._current_hover_button:
+
+            # Clear old hover (keep is_hovered in sync for non-canvas-painted fallback)
+            old = self._current_hover_button
+            if old:
                 try:
-                    self._current_hover_button.is_hovered = False
-                    self._current_hover_button.update()
+                    old.is_hovered = False
+                    old.update()
                 except:
-                    # Button is being deleted, clear reference
-                    self._current_hover_button = None
-            
+                    pass
+
             self._current_hover_button = button
-            
+
             if button:
-                # Show new button as hovered
                 try:
                     button.is_hovered = True
                     button.update()
-                    
-                    # Start tooltip timer
                     self._tooltip_position = QtGui.QCursor.pos()
-                    self._tooltip_timer.start(800)  # 800ms delay
+                    self._tooltip_timer.start(800)
+                    # Set cursor to match button's cursor (e.g. PointingHandCursor)
+                    if button._canvas_painted:
+                        self.setCursor(button.cursor())
                 except:
-                    # Button is being deleted, don't set as hover button
                     self._current_hover_button = None
+            else:
+                # No button under cursor — restore default canvas cursor
+                self.setCursor(QtCore.Qt.ArrowCursor)
+
+            # Single canvas repaint — hover visuals read _current_hover_button
+            self.update()
     #------------------------------------------------------------------------------
     # SELECTION LOGIC
     #------------------------------------------------------------------------------
@@ -910,6 +1533,13 @@ class PickerCanvas(QtWidgets.QWidget):
         """Enhanced selection with proper modifier handling and counterpart support"""
         if self.edit_mode:
             return
+        
+        # Temporarily disable sync to prevent loops when we apply Maya selection
+        try:
+            manager = SSM.SelectionSyncManager.get_instance()
+            manager._sync_lock = True  # Use sync lock to prevent conflicts
+        except:
+            pass
             
         try:
             # Handle deselection mode (ctrl+shift)
@@ -942,6 +1572,14 @@ class PickerCanvas(QtWidgets.QWidget):
             
         except Exception as e:
             print(f"Error in apply_final_selection: {e}")
+        finally:
+            # Restore sync state with a delay to ensure Maya selection is complete
+            try:
+                manager = SSM.SelectionSyncManager.get_instance()
+                # Use the manager's delayed_unlock which includes post-unlock resync
+                QtCore.QTimer.singleShot(150, manager._delayed_unlock)
+            except:
+                pass
 
     def _apply_maya_deselection(self, deselected_buttons, alt_held=False):
         """Apply deselection to Maya with counterpart support"""
@@ -1556,8 +2194,16 @@ class PickerCanvas(QtWidgets.QWidget):
                 self.transform_guides.visual_layer.setVisible(False)
 
     def get_selected_buttons(self):
-        """Get list of currently selected buttons"""
-        return [button for button in self.buttons if button.is_selected]
+        """Cached version of get_selected_buttons for better performance during drag."""
+        if not hasattr(self, '_selected_buttons_cache'):
+            self._selected_buttons_cache = []
+            self._cache_valid = False
+
+        if not self._cache_valid:
+            self._selected_buttons_cache = [button for button in self.buttons if button.is_selected]
+            self._cache_valid = True
+
+        return self._selected_buttons_cache
     
     def on_button_selected(self, button, is_selected):
         if not is_selected:
@@ -1574,22 +2220,26 @@ class PickerCanvas(QtWidgets.QWidget):
 
     def _get_button_at_position(self, pos):
         """Get the topmost visible button at the given position, respecting button shapes"""
+        # Convert canvas pixel position to scene coordinates for hit testing
+        scene_pos = self.canvas_to_scene_coords(QtCore.QPointF(pos))
+
         # Check buttons in reverse order (topmost first due to z-order)
         for button in reversed(self.buttons):
             if not button.isVisible():
                 continue
-                
-            # First check if position is within the button's bounding rectangle
-            if not button.geometry().contains(pos):
-                continue
-            
-            # Convert canvas position to button-local coordinates
-            local_pos = button.mapFromParent(pos)
-            
-            # Check if the position is within the button's actual shape
-            if button.contains_point(local_pos):
-                return button
-        
+
+            if button._canvas_painted:
+                # Canvas-painted: math-based hit test in scene space
+                if button.hit_test_scene(scene_pos):
+                    return button
+            else:
+                # Legacy widget-based hit test
+                if not button.geometry().contains(pos):
+                    continue
+                local_pos = button.mapFromParent(pos)
+                if button.contains_point(local_pos):
+                    return button
+
         return None
 
     def _emit_selection_changed(self):
@@ -1614,11 +2264,38 @@ class PickerCanvas(QtWidgets.QWidget):
         button.changed.connect(self.on_button_changed)
         button.edit_mode = self.edit_mode
         button.update_cursor()
+        # Canvas-painted mode: rendering on canvas, widget is invisible
+        button._canvas_painted = True
+        button.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        button.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        button.clearMask()
+        button.lower()
         self.update_button_positions()
-        
+
         # Update HUD button count
         self.update_hud_counts()
         self._update_guides_after_button_change()
+
+    def add_buttons_batch(self, buttons):
+        """Add multiple buttons at once, deferring expensive ops until the end."""
+        for button in buttons:
+            self.buttons.append(button)
+            button.setParent(self)
+            button.show()
+            button.deleted.connect(self.remove_button)
+            button.selected.connect(self.on_button_selected)
+            button.changed.connect(self.on_button_changed)
+            button.edit_mode = self.edit_mode
+            button.update_cursor()
+            button._canvas_painted = True
+            button.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+            button.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+            button.clearMask()
+            button.lower()
+        if buttons:
+            self.update_button_positions()
+            self.update_hud_counts()
+            self._update_guides_after_button_change()
 
     def remove_button(self, button):
         if button in self.buttons:
@@ -1639,6 +2316,13 @@ class PickerCanvas(QtWidgets.QWidget):
             self.transform_guides.visual_layer.setVisible(False)
             if hasattr(self.transform_guides, 'control_widget'):  
                 self.transform_guides.control_widget.setVisible(False)
+
+    def _flush_deferred_geometry(self):
+        """Flush deferred widget geometry if dirty (called when pan/zoom ends)."""
+        if self._geometry_dirty:
+            self._geometry_dirty = False
+            self.update_button_positions()
+            self._update_hover_button(self.mapFromGlobal(QtGui.QCursor.pos()))
 
     def update_button_positions(self):
         """Optimized button position updating with better culling"""
@@ -1667,26 +2351,39 @@ class PickerCanvas(QtWidgets.QWidget):
         buttons_to_hide = []
         
         for button in self.buttons:
-            # Quick visibility test
+            # Quick visibility test — use rotated envelope for accurate culling
             button_pos = button.scene_position
-            button_width = button.width
-            button_height = button.height
+            env_w, env_h = button.rotated_envelope_size()
             button_rect = QtCore.QRectF(
-                button_pos.x() - button_width/2,
-                button_pos.y() - button_height/2,
-                button_width,
-                button_height
+                button_pos.x() - env_w/2,
+                button_pos.y() - env_h/2,
+                env_w,
+                env_h
             )
-            
+
             if visible_scene_rect.intersects(button_rect):
-                # Calculate geometry
+                # Calculate geometry using envelope size for the widget bounds
                 canvas_pos = self.scene_to_canvas_coords(button_pos)
-                scaled_width = button_width * self.zoom_factor
-                scaled_height = button_height * self.zoom_factor
+                scaled_width = env_w * self.zoom_factor
+                scaled_height = env_h * self.zoom_factor
+                
+                # Calculate center-based position maintaining sub-pixel precision
+                # Key: Keep full floating-point precision through the calculation
+                # to ensure the same scene point maps consistently across zoom levels
                 x = canvas_pos.x() - scaled_width / 2
                 y = canvas_pos.y() - scaled_height / 2
                 
-                geometry_updates.append((button, int(x), int(y), int(scaled_width), int(scaled_height)))
+                # Round to integer pixels at the very end
+                # Using math.floor(v + 0.5) gives more consistent rounding than round()
+                # especially for negative coordinates
+                import math
+                geometry_updates.append((
+                    button, 
+                    math.floor(x + 0.5),
+                    math.floor(y + 0.5),
+                    math.floor(scaled_width + 0.5),
+                    math.floor(scaled_height + 0.5)
+                ))
                 buttons_to_show.append(button)
             else:
                 buttons_to_hide.append(button)
@@ -1886,17 +2583,23 @@ class PickerCanvas(QtWidgets.QWidget):
         self.update()
 
     def set_background_image(self, image_path):
-        """Set the background image from a file path"""
+        """Set the background image from a file path.
+
+        Handles bpicker:// paths by resolving through PickerDataManager.
+        """
         if image_path is None:
             self.background_image = None
         else:
-            self.background_image = QtGui.QImage(image_path)
+            # Resolve bpicker:// or relative paths
+            resolved = DM.PickerDataManager.resolve_image_path(image_path)
+            load_path = resolved if resolved else image_path
+
+            self.background_image = QtGui.QImage(load_path)
             if self.background_image.isNull():
                 self.background_image = None
             else:
-                # Store the image path for saving in the tab data
+                # Store the ORIGINAL path (may be bpicker://) for data persistence
                 self.background_image_path = image_path
-                # Update the tab data with the background image path
                 self._update_tab_data_with_background(image_path)
                 self.focus_canvas()
         self.update()
@@ -2017,26 +2720,12 @@ class PickerCanvas(QtWidgets.QWidget):
         self.update()
 
     def focus_canvas(self):
-        view_rect = self.rect()
         selected_buttons = self.get_selected_buttons()
 
         if selected_buttons:
             # Focus on the selected buttons
             button_rect = self.get_buttons_bounding_rect(selected_buttons)
-
-            # Apply zoom to fit the button_rect in the view
             self.fit_rect_in_view(button_rect)
-
-            # Center the selected buttons
-            center_scene = button_rect.center()
-            center_view = QtCore.QPointF(1, 1) 
-
-            if len(selected_buttons) == 1:
-                self.zoom_factor = 2
-            else:
-                self.zoom_factor = .6
-            self.pan_offset = center_view - (center_scene * (self.zoom_factor))
-            
 
         elif self.background_image and not self.background_image.isNull():
             # Focus on the full image
@@ -2070,21 +2759,18 @@ class PickerCanvas(QtWidgets.QWidget):
             self.pan_offset = QtCore.QPointF(0, 0)
             return
 
-        # Calculate the zoom factor to fit the rect within the view
-        sf = .8 / self.image_scale # scale factor
-        scale_x = (view_rect.width() / rect.width() ) * sf
-        scale_y = (view_rect.height() / rect.height()) * sf
+        # Calculate the zoom factor to fit the rect within the view with 10% padding
+        padding = 0.9
+        scale_x = (view_rect.width() / rect.width()) * padding
+        scale_y = (view_rect.height() / rect.height()) * padding
         self.zoom_factor = min(scale_x, scale_y)
 
         # Limit the zoom factor to prevent extreme zoom levels
         self.zoom_factor = max(0.1, min(self.zoom_factor, 10))
 
-        # Calculate the pan offset to center the rect (done in focus_canvas now)
-        scaled_width = rect.width() * self.zoom_factor
-        scaled_height = rect.height() * self.zoom_factor
-
-        self.pan_offset = QtCore.QPointF(1,1)
-        #(view_rect.width() - scaled_width) / 2
+        # Calculate the pan offset to center the rect in the view
+        center_scene = rect.center()
+        self.pan_offset = -center_scene * self.zoom_factor
 
     def get_buttons_bounding_rect(self, buttons=None):
         if buttons is None:
@@ -2093,13 +2779,13 @@ class PickerCanvas(QtWidgets.QWidget):
         if not buttons:
             return QtCore.QRectF(0, 0, 1, 1)
 
-        min_x = min(button.scene_position.x() for button in buttons) 
-        max_x = max(button.scene_position.x() for button in buttons)
-        min_y = min(button.scene_position.y() for button in buttons)
-        max_y = max(button.scene_position.y() for button in buttons)
+        min_x = min(button.scene_position.x() - button.width / 2 for button in buttons)
+        max_x = max(button.scene_position.x() + button.width / 2 for button in buttons)
+        min_y = min(button.scene_position.y() - button.height / 2 for button in buttons)
+        max_y = max(button.scene_position.y() + button.height / 2 for button in buttons)
 
-        width = max(max_x - min_x, 1) 
-        height = max(max_y - min_y, 1) 
+        width = max(max_x - min_x, 1)
+        height = max(max_y - min_y, 1)
 
         return QtCore.QRectF(min_x, min_y, width, height)
     #------------------------------------------------------------------------------
@@ -2289,6 +2975,7 @@ class PickerCanvas(QtWidgets.QWidget):
                         "color": new_button.color,
                         "opacity": new_button.opacity,
                         "position": (new_button.scene_position.x(), new_button.scene_position.y()),
+                        "rotation": new_button.rotation,
                         "width": new_button.width,
                         "height": new_button.height,
                         "radius": new_button.radius,
@@ -2397,6 +3084,7 @@ class PickerCanvas(QtWidgets.QWidget):
                     "color": new_button.color,
                     "opacity": new_button.opacity,
                     "position": (new_button.scene_position.x(), new_button.scene_position.y()),
+                    "rotation": new_button.rotation,
                     "width": new_button.width,
                     "height": new_button.height,
                     "radius": new_button.radius,
@@ -2407,7 +3095,7 @@ class PickerCanvas(QtWidgets.QWidget):
                     "svg_path_data": new_button.svg_path_data,
                     "svg_file_path": new_button.svg_file_path
                 }
-                
+
                 tab_data = DM.PickerDataManager.get_tab_data(current_tab)
                 tab_data['buttons'].append(button_data)
                 #DM.PickerDataManager.update_tab_data(current_tab, tab_data)
@@ -2795,6 +3483,15 @@ class PickerCanvas(QtWidgets.QWidget):
                 return {'import': True, 'separate': False}
     #------------------------------------------------------------------------------
     def show_context_menu(self, position):
+        # Don't show context menu if we just finished zooming
+        if self.was_zoom_dragging:
+            self.was_zoom_dragging = False
+            return
+
+        # Hide any active tooltip
+        if hasattr(self, '_hide_button_tooltip'):
+            self._hide_button_tooltip()
+
         if not hasattr(self, 'context_menu'):
             self.context_menu = QtWidgets.QMenu()
             self.context_menu.setWindowFlags(self.context_menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
@@ -2817,16 +3514,30 @@ class PickerCanvas(QtWidgets.QWidget):
                 QMenu::item:selected {
                     background-color: #444444;
                 }''')
-        
+
         menu = self.context_menu
         menu.clear()
-        
+
         if self.edit_mode:
             add_button_action = menu.addAction(QtGui.QIcon(UT.get_icon('add.png')), "Add Button")
             add_button_action.triggered.connect(lambda: self.add_button_at_position(position))
-            
+
+            # Create multiple buttons paired to each currently selected scene object
+            selection_preview = TF.get_current_scene_selection()
+            sel_count = len(selection_preview)
+            label = f"Create Buttons from Selection ({sel_count})" if sel_count else "Create Buttons from Selection"
+            create_from_sel_action = menu.addAction(QtGui.QIcon(UT.get_icon('add.png')), label)
+            create_from_sel_action.triggered.connect(lambda: self.start_multi_button_placement(position))
+            if sel_count == 0:
+                create_from_sel_action.setEnabled(False)
+                create_from_sel_action.setToolTip("No scene objects/bones selected")
+
+            # Draw custom shape - creates a new button and opens curve editor
+            draw_shape_action = menu.addAction(QtGui.QIcon(UT.get_icon('add.png')), "Draw Custom Shape")
+            draw_shape_action.triggered.connect(lambda: self.start_drawing_new_button_shape(position))
+
             scene_pos = self.get_center_position()  # Use canvas center
-            
+
             # Add the main curve creation action
             from . import maya_curve_converter as MCC
             create_button_from_maya_curve_action = menu.addAction(QtGui.QIcon(UT.get_icon('add.png')), "Create Button from Curve")
@@ -2837,32 +3548,22 @@ class PickerCanvas(QtWidgets.QWidget):
             curve_import_submenu.setWindowFlags(curve_import_submenu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
             curve_import_submenu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
             curve_import_submenu.setStyleSheet(menu.styleSheet())
-            
+
             # Create the widget and embed it in the submenu
             from .curve_import_widget import CurveImportOptionsWidget
             curve_widget = CurveImportOptionsWidget(canvas=self)
             curve_widget_action = QtWidgets.QWidgetAction(curve_import_submenu)
             curve_widget_action.setDefaultWidget(curve_widget)
             curve_import_submenu.addAction(curve_widget_action)
-            
-            '''# Add utility actions
-            curve_import_submenu.addSeparator()
-            
-            refresh_action = curve_import_submenu.addAction("Refresh")
-            refresh_action.triggered.connect(curve_widget.handle_refresh)
-            
-            reset_action = curve_import_submenu.addAction("Reset to Defaults")
-            reset_action.triggered.connect(curve_widget.reset_settings)'''
-            
-            
+
             # Get clipboard state to determine if paste actions should be enabled
             has_clipboard = bool(PB.ButtonClipboard.instance().get_all_buttons())
-            
+
             # Create regular paste action
             paste_buttons_action = menu.addAction(QtGui.QIcon(UT.get_icon('paste.png')), "Paste Button")
             paste_buttons_action.triggered.connect(lambda: self.paste_buttons_at_position(position, mirror=False))
             paste_buttons_action.setEnabled(has_clipboard)
-            
+
             # Create mirrored paste action
             paste_mirror_action = menu.addAction(QtGui.QIcon(UT.get_icon('paste.png')), "Paste Mirror")
             paste_mirror_action.triggered.connect(lambda: self.paste_buttons_at_position(position, mirror=True))
@@ -2878,7 +3579,38 @@ class PickerCanvas(QtWidgets.QWidget):
             main_window = self.window()
             if isinstance(main_window, UI.AnimPickerWindow):
                 edit_mode_action.triggered.connect(main_window.toggle_edit_mode)
-        
+
+        # Add selection sync options
+        menu.addSeparator()
+        sync_submenu = menu.addMenu("Selection Sync")
+        sync_submenu.setWindowFlags(sync_submenu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
+        sync_submenu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+
+        # Check current sync status
+        try:
+            manager = SSM.SelectionSyncManager.get_instance()
+            sync_enabled = manager._sync_enabled
+        except:
+            sync_enabled = True  # Default to enabled
+
+        enable_sync_action = sync_submenu.addAction("Enable 2-Way Sync")
+        enable_sync_action.setCheckable(True)
+        enable_sync_action.setChecked(sync_enabled)
+        enable_sync_action.triggered.connect(self.enable_selection_sync)
+
+        disable_sync_action = sync_submenu.addAction("Disable 2-Way Sync")
+        disable_sync_action.setCheckable(True)
+        disable_sync_action.setChecked(not sync_enabled)
+        disable_sync_action.triggered.connect(self.disable_selection_sync)
+
+        sync_submenu.addSeparator()
+
+        test_sync_action = sync_submenu.addAction("Test Sync System")
+        test_sync_action.triggered.connect(self._test_selection_sync)
+
+        create_test_scene_action = sync_submenu.addAction("Create Test Scene")
+        create_test_scene_action.triggered.connect(self._create_test_scene)
+
         if menu.actions():
             menu.exec_(self.mapToGlobal(position))
 
@@ -2904,12 +3636,13 @@ class PickerCanvas(QtWidgets.QWidget):
                 "color": new_button.color,
                 "opacity": new_button.opacity,
                 "position": (new_button.scene_position.x(), new_button.scene_position.y()),
+                "rotation": new_button.rotation,
                 "width": new_button.width,
                 "height": new_button.height,
                 "radius": new_button.radius,
                 "assigned_objects": []
             }
-            
+
             # Update PickerDataManager
             tab_data = DM.PickerDataManager.get_tab_data(current_tab)
             tab_data['buttons'].append(button_data)
@@ -2922,10 +3655,291 @@ class PickerCanvas(QtWidgets.QWidget):
 
             self.update_button_positions()
             self.update()
-    
-    def paste_buttons_at_position(self, position, mirror=False):
+
+    # ------------------------------------------------------------------
+    # Multi-button "Create from Selection" with drag-to-place layout
+    # ------------------------------------------------------------------
+    def start_multi_button_placement(self, click_widget_pos):
+        """Begin drag-to-place mode for N buttons, one per selected scene object."""
+        if not self.edit_mode:
+            return
+        selection = TF.get_current_scene_selection()
+        if not selection:
+            return
+
+        origin_scene = self.canvas_to_scene_coords(QtCore.QPointF(click_widget_pos))
+
+        if len(selection) == 1:
+            # Single selection: create immediately at the clicked position.
+            self._commit_multi_button_placement_internal(selection, [origin_scene])
+            return
+
+        self.is_placing_multi = True
+        self.placement_origin_scene = origin_scene
+        self.placement_cursor_scene = QtCore.QPointF(origin_scene)
+        self.pending_placement_data = {
+            'selection': selection,
+            'default_w': 80,
+            'default_h': 30,
+            'gap': 4,
+            'scale_w': 1.0,
+            'scale_h': 1.0,
+        }
+        self.setMouseTracking(True)
+        self.setCursor(QtCore.Qt.SizeAllCursor)
+        self.setFocus(QtCore.Qt.OtherFocusReason)
+        self.update()
+
+    def _compute_multi_layout_positions(self, modifiers=QtCore.Qt.NoModifier):
+        data = self.pending_placement_data
+        if not data or self.placement_origin_scene is None:
+            return []
+        import math
+        n = len(data['selection'])
+        origin = self.placement_origin_scene
+        cursor = self.placement_cursor_scene if self.placement_cursor_scene is not None else origin
+        dw = data['default_w'] * data.get('scale_w', 1.0)
+        dh = data['default_h'] * data.get('scale_h', 1.0)
+        gap = data['gap']
+
+        shift = bool(modifiers & QtCore.Qt.ShiftModifier)
+        alt = bool(modifiers & QtCore.Qt.AltModifier)
+
+        dx = cursor.x() - origin.x()
+        dy = cursor.y() - origin.y()
+        dist = math.hypot(dx, dy)
+
+        # Angle snap to nearest axis within 8° unless Alt is held.
+        if not alt and dist > 1e-3:
+            angle = math.degrees(math.atan2(dy, dx))
+            for snap_deg in (0, 90, 180, -90, -180):
+                if abs(angle - snap_deg) <= 8:
+                    rad = math.radians(snap_deg)
+                    dx = math.cos(rad) * dist
+                    dy = math.sin(rad) * dist
+                    break
+
+        positions = []
+        if shift:
+            # Grid wrap: rows of ceil(sqrt(N)), centered on origin.
+            cols = max(1, int(math.ceil(math.sqrt(n))))
+            rows = int(math.ceil(n / float(cols)))
+            col_step = dw + gap
+            row_step = dh + gap
+            for i in range(n):
+                r = i // cols
+                c = i % cols
+                # Items in the last row may be < cols; center them too.
+                row_count = cols if r < rows - 1 else (n - r * cols)
+                cx = (c - (row_count - 1) / 2.0) * col_step
+                cy = (r - (rows - 1) / 2.0) * row_step
+                positions.append(QtCore.QPointF(origin.x() + cx, origin.y() + cy))
+            return positions
+
+        # Linear layout: origin = first button, cursor = last button.
+        if n == 1:
+            return [QtCore.QPointF(origin)]
+        spread_vec_len = math.hypot(dx, dy)
+        if spread_vec_len < 1e-3:
+            ux, uy = 1.0, 0.0
+        else:
+            ux = dx / spread_vec_len
+            uy = dy / spread_vec_len
+        # Axis-aware floor: vertical drags use height+gap, horizontal use width+gap.
+        axis_step = (dw + gap) if abs(ux) >= abs(uy) else (dh + gap)
+        min_spread = (n - 1) * axis_step
+        spread = max(spread_vec_len, min_spread)
+        step = spread / (n - 1)
+        for i in range(n):
+            offset = i * step
+            positions.append(QtCore.QPointF(origin.x() + ux * offset, origin.y() + uy * offset))
+        return positions
+
+    def _paint_placement_ghosts(self, painter):
+        """Draw ghost rects + axis guide for the in-progress multi placement.
+
+        Called from paintEvent inside the scene-transformed painter block.
+        """
+        data = self.pending_placement_data
+        if not (self.is_placing_multi and data):
+            return
+        positions = self._compute_multi_layout_positions(QtWidgets.QApplication.keyboardModifiers())
+        if not positions:
+            return
+        dw = data['default_w'] * data.get('scale_w', 1.0)
+        dh = data['default_h'] * data.get('scale_h', 1.0)
+        selection = data['selection']
+        n = len(positions)
+
+        painter.save()
+        # Axis guide (dashed line from origin to cursor)
+        pen = QtGui.QPen(QtGui.QColor(200, 200, 200, 160))
+        pen.setWidthF(1.0 / max(self.zoom_factor, 0.001))
+        pen.setStyle(QtCore.Qt.DashLine)
+        painter.setPen(pen)
+        if self.placement_cursor_scene is not None:
+            painter.drawLine(self.placement_origin_scene, self.placement_cursor_scene)
+
+        # Ghost rects
+        throttled = n > 100
+        draw_indices = range(n) if not throttled else {0, n // 2, n - 1}
+        fill = QtGui.QColor(90, 140, 200, 110)
+        border = QtGui.QColor(240, 240, 240, 200)
+        text_pen = QtGui.QPen(QtGui.QColor(240, 240, 240, 220))
+        for i, pos in enumerate(positions):
+            if i not in draw_indices:
+                continue
+            rect = QtCore.QRectF(pos.x() - dw / 2.0, pos.y() - dh / 2.0, dw, dh)
+            painter.setBrush(fill)
+            bpen = QtGui.QPen(border)
+            bpen.setWidthF(1.5 / max(self.zoom_factor, 0.001))
+            painter.setPen(bpen)
+            painter.drawRoundedRect(rect, 4, 4)
+            painter.setPen(text_pen)
+            label = selection[i].get('label', '')
+            painter.drawText(rect, QtCore.Qt.AlignCenter, label)
+
+        # HUD: live readout of size + count near the cursor. Scaled by zoom so
+        # the text size stays consistent across zoom levels.
+        if self.placement_cursor_scene is not None:
+            zoom = max(self.zoom_factor, 0.001)
+            hud_text = f"{int(round(dw))} × {int(round(dh))}  ·  {n} buttons"
+            font = painter.font()
+            font.setPointSizeF(max(7.0, 9.0 / zoom))
+            painter.setFont(font)
+            painter.setPen(text_pen)
+            offset = QtCore.QPointF(14.0 / zoom, -8.0 / zoom)
+            painter.drawText(self.placement_cursor_scene + offset, hud_text)
+        painter.restore()
+
+    def _commit_multi_button_placement(self, modifiers=QtCore.Qt.NoModifier):
+        if not self.is_placing_multi or not self.pending_placement_data:
+            return
+        data = self.pending_placement_data
+        positions = self._compute_multi_layout_positions(modifiers)
+        scaled_w = max(5, int(round(data['default_w'] * data.get('scale_w', 1.0))))
+        scaled_h = max(5, int(round(data['default_h'] * data.get('scale_h', 1.0))))
+        self._cancel_multi_button_placement(repaint=False)
+        self._commit_multi_button_placement_internal(
+            data['selection'], positions, width=scaled_w, height=scaled_h
+        )
+
+    def _commit_multi_button_placement_internal(self, selection, positions, width=None, height=None):
+        """Shared commit path for both single-select fast path and drag-placed batch."""
+        main_window = self.window()
+        if not isinstance(main_window, UI.AnimPickerWindow):
+            return
+        current_tab = main_window.tab_system.current_tab
+
+        new_buttons_data = []
+        new_buttons_widgets = []
+
+        for i, item in enumerate(selection):
+            unique_id = main_window.generate_unique_id(current_tab)
+            if current_tab not in main_window.available_ids:
+                main_window.available_ids[current_tab] = set()
+            main_window.available_ids[current_tab].add(unique_id)
+
+            label = item.get('label', 'Button') or 'Button'
+            new_button = PB.PickerButton(label, self, unique_id=unique_id)
+            if width is not None:
+                new_button.width = width
+            if height is not None:
+                new_button.height = height
+            new_button.scene_position = QtCore.QPointF(positions[i])
+            new_button.mode = 'select'
+            assigned = item.get('assigned_object')
+            new_button.assigned_objects = [assigned] if assigned else []
+
+            if hasattr(self, 'add_button_without_db_update'):
+                self.add_button_without_db_update(new_button)
+            else:
+                old_method = main_window.update_button_data
+                main_window.update_button_data = lambda *a, **kw: None
+                self.add_button(new_button)
+                main_window.update_button_data = old_method
+
+            new_buttons_widgets.append(new_button)
+            new_buttons_data.append({
+                "id": unique_id,
+                "selectable": new_button.selectable,
+                "label": new_button.label,
+                "color": new_button.color,
+                "opacity": new_button.opacity,
+                "position": (new_button.scene_position.x(), new_button.scene_position.y()),
+                "rotation": new_button.rotation,
+                "width": new_button.width,
+                "height": new_button.height,
+                "radius": new_button.radius,
+                "assigned_objects": list(new_button.assigned_objects),
+                "mode": new_button.mode,
+                "script_data": {},
+                "shape_type": new_button.shape_type,
+                "svg_path_data": getattr(new_button, 'svg_path_data', '') or '',
+                "svg_file_path": getattr(new_button, 'svg_file_path', '') or '',
+            })
+
+        if not new_buttons_data:
+            return
+
+        # Select new buttons
+        self.clear_selection()
+        for b in new_buttons_widgets:
+            b.is_selected = True
+            b._cached_envelope = None
+            b._cached_envelope_key = None
+            b._cached_scene_path = None
+            b._cached_scene_path_key = None
+
+        # Single batched DB update (one undo entry)
+        tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+        tab_data['buttons'].extend(new_buttons_data)
+        DM.PickerDataManager.batch_update_buttons(current_tab, tab_data['buttons'])
+
+        self.update_button_positions()
+        self._emit_selection_changed()
+        if hasattr(self, 'transform_guides'):
+            self.transform_guides.update_selection()
+
+    def _cancel_multi_button_placement(self, repaint=True):
+        self.is_placing_multi = False
+        self.placement_origin_scene = None
+        self.placement_cursor_scene = None
+        self.pending_placement_data = None
+        self.unsetCursor()
+        if repaint:
+            self.update()
+
+    def keyPressEvent(self, event):
+        # Duplicate-mirror tool: Enter commits, Escape cancels.
+        if hasattr(self, 'duplicate_mirror_tool') and self.duplicate_mirror_tool.active:
+            if self.duplicate_mirror_tool.handle_key_press(event):
+                event.accept()
+                return
+        if self.is_placing_multi and event.key() == QtCore.Qt.Key_Escape:
+            self._cancel_multi_button_placement()
+            event.accept()
+            return
+        if self.is_placing_multi and event.key() in (QtCore.Qt.Key_Shift, QtCore.Qt.Key_Alt):
+            self.update()
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        if self.is_placing_multi and event.key() in (QtCore.Qt.Key_Shift, QtCore.Qt.Key_Alt):
+            self.update()
+        super().keyReleaseEvent(event)
+
+    def focusOutEvent(self, event):
+        if self.is_placing_multi:
+            self._cancel_multi_button_placement()
+        super().focusOutEvent(event)
+
+    def paste_buttons_at_position(self, position, mirror=False, is_scene_coords=False):
         """REFACTORED: Simplified paste function that uses horizontal_mirror_button_positions for mirroring"""
-        scene_pos = self.canvas_to_scene_coords(QtCore.QPointF(position))
+        if is_scene_coords:
+            scene_pos = QtCore.QPointF(position)
+        else:
+            scene_pos = self.canvas_to_scene_coords(QtCore.QPointF(position))
         copied_buttons = PB.ButtonClipboard.instance().get_all_buttons()
         
         if not copied_buttons:
@@ -2967,7 +3981,8 @@ class PickerCanvas(QtWidgets.QWidget):
                 new_button.shape_type = button_data.get('shape_type', 'rect')
                 new_button.svg_path_data = button_data.get('svg_path_data', '')
                 new_button.svg_file_path = button_data.get('svg_file_path', '')
-                
+                new_button.rotation = button_data.get('rotation', 0)
+
                 # Always use original assigned objects - counterpart mirroring handled in horizontal_mirror_button_positions
                 original_assigned_objects = button_data['assigned_objects'].copy() if button_data['assigned_objects'] else []
                 new_button.assigned_objects = original_assigned_objects
@@ -2978,10 +3993,24 @@ class PickerCanvas(QtWidgets.QWidget):
                         new_button.thumbnail_path = button_data['thumbnail_path']
                         if os.path.exists(new_button.thumbnail_path):
                             new_button.thumbnail_pixmap = QtGui.QPixmap(new_button.thumbnail_path)
-                    
+
                     if 'pose_data' in button_data and button_data['pose_data']:
                         new_button.pose_data = button_data['pose_data'].copy()
-                
+                    if 'animation_data' in button_data and button_data['animation_data']:
+                        new_button.animation_data = button_data['animation_data'].copy()
+
+                # Handle controller-specific data
+                if new_button.mode == 'controller' and 'controller_data' in button_data and button_data['controller_data']:
+                    import copy as _copy
+                    new_button.controller_data = _copy.deepcopy(button_data['controller_data'])
+                    if new_button.controller_data.get('data_path'):
+                        val = new_button._read_controller_value()
+                        if val is not None:
+                            new_button._controller_value = val
+                        else:
+                            new_button._controller_value = new_button.controller_data.get('default_value', 0.0)
+                        new_button._start_controller_sync()
+
                 # Position WITHOUT position mirroring (will be handled by horizontal_mirror_button_positions)
                 relative_position = button_data['relative_position']
                 new_button.scene_position = scene_pos + relative_position
@@ -3006,6 +4035,7 @@ class PickerCanvas(QtWidgets.QWidget):
                     "color": new_button.color,
                     "opacity": new_button.opacity,
                     "position": (new_button.scene_position.x(), new_button.scene_position.y()),
+                    "rotation": new_button.rotation,
                     "width": new_button.width,
                     "height": new_button.height,
                     "radius": new_button.radius,
@@ -3023,7 +4053,13 @@ class PickerCanvas(QtWidgets.QWidget):
                         button_data_for_db["thumbnail_path"] = new_button.thumbnail_path
                     if hasattr(new_button, 'pose_data') and new_button.pose_data:
                         button_data_for_db["pose_data"] = new_button.pose_data
-                
+                    if hasattr(new_button, 'animation_data') and new_button.animation_data:
+                        button_data_for_db["animation_data"] = new_button.animation_data
+
+                # Add controller-specific data to database
+                if new_button.mode == 'controller' and new_button.controller_data:
+                    button_data_for_db["controller_data"] = new_button.controller_data
+
                 new_buttons_data.append(button_data_for_db)
             
             # STEP 2: Select all newly pasted buttons
@@ -3031,12 +4067,26 @@ class PickerCanvas(QtWidgets.QWidget):
                 self.clear_selection()
                 for button in new_buttons_widgets:
                     button.is_selected = True
-            
+                    # Invalidate per-button transform/paint caches so the very first
+                    # bounding-rect calculation can't read a value cached from a
+                    # previously-deleted button instance.
+                    button._cached_envelope = None
+                    button._cached_envelope_key = None
+                    button._cached_scene_path = None
+                    button._cached_scene_path_key = None
+                # Notify transform guides / edit widgets that selection has changed.
+                # Without this, TransformGuides keeps stale selected_buttons from the
+                # cleared selection and the first transform mousePress captures
+                # original_states for the wrong buttons -> rotated duplicates jump.
+                self.button_selection_changed.emit()
+
             # STEP 3: Apply position/SVG/counterpart mirroring if requested using existing function
             if mirror and new_buttons_widgets:
                 #print("Applying position, SVG, and counterpart mirroring using horizontal_mirror_button_positions...")
                 # Use existing horizontal mirror function with counterpart mirroring enabled
                 self.horizontal_mirror_button_positions(apply_counterparts=True)
+                # Positions changed — re-emit so guides recompute the bounding rect
+                self.button_selection_changed.emit()
                 
                 # Update button data for database after mirroring
                 for i, button in enumerate(new_buttons_widgets):
@@ -3057,9 +4107,11 @@ class PickerCanvas(QtWidgets.QWidget):
                 # Update database once with all new data
                 #DM.PickerDataManager.update_tab_data(current_tab, tab_data)
                 DM.PickerDataManager.batch_update_buttons(current_tab, DM.PickerDataManager.get_tab_data(current_tab)['buttons'])
-                
-                # Force immediate save to ensure persistence
-                DM.PickerDataManager.save_data(DM.PickerDataManager.get_data(), force_immediate=True)
+
+                # batch_update_buttons debounces via the batch timer;
+                # flush synchronously here so the pasted buttons land
+                # in the scene attr before any verification read below.
+                DM.PickerDataManager.flush_pending_saves()
                 
                 # Verify the operation succeeded
                 verification_data = DM.PickerDataManager.get_tab_data(current_tab)
@@ -3082,53 +4134,81 @@ class PickerCanvas(QtWidgets.QWidget):
         selected_buttons = self.get_selected_buttons()
         if not selected_buttons:
             return
-        
+
         main_window = self.window()
         if not isinstance(main_window, UI.AnimPickerWindow):
             return
-        
-        current_tab = main_window.tab_system.current_tab
-        current_namespace = main_window.namespace_dropdown.currentText()
-        
-        # Get the center of the selected buttons
+
+        # Mirror axis = center X of the selection bounds
         min_x = min(button.scene_position.x() for button in selected_buttons)
         max_x = max(button.scene_position.x() for button in selected_buttons)
-        center_x = (min_x + max_x) / 2
-        
-        # Get namespace and naming conventions for counterpart resolution if needed
+        axis_x = (min_x + max_x) / 2
+
+        self._apply_mirror_to_buttons(
+            selected_buttons,
+            axis_x,
+            apply_counterparts=apply_counterparts,
+            mirror_rotation=False,  # legacy behavior: don't flip rotation
+        )
+
+        self.update_button_positions()
+
+    def _apply_mirror_to_buttons(self, buttons, axis_x, apply_counterparts=False, mirror_rotation=False):
+        """Mirror the given buttons horizontally across an explicit scene-space axis_x.
+
+        Mutates each button in place: position X reflected across axis_x, SVG
+        custom-path mirrored, and (optionally) rotation negated and assigned
+        objects swapped to L/R counterparts. Emits `button.changed` per button
+        so the main window picks up the mutation; the caller is responsible
+        for any post-loop refresh (e.g. update_button_positions, DB writes).
+        """
+        if not buttons:
+            return
+
+        main_window = self.window()
+        if not isinstance(main_window, UI.AnimPickerWindow):
+            return
+
+        current_namespace = main_window.namespace_dropdown.currentText()
+
         if apply_counterparts:
             naming_conventions = self._get_naming_conventions("", "")
-        
-        # Mirror positions around the center
-        for button in selected_buttons:
-            # Mirror position
-            button.scene_position.setX(center_x - (button.scene_position.x() - center_x))
-            
+
+        for button in buttons:
+            # Mirror position around axis_x
+            button.scene_position.setX(2 * axis_x - button.scene_position.x())
+
+            # Mirror rotation (opt-in — the legacy horizontal_mirror skips this)
+            if mirror_rotation and button.rotation != 0:
+                button.rotation = (-button.rotation) % 360
+                button._invalidate_mask_cache()
+                if hasattr(button, 'text_pixmap'):
+                    button.text_pixmap = None
+                if hasattr(button, 'pose_pixmap'):
+                    button.pose_pixmap = None
+
             # Mirror SVG shapes if they have custom paths
             if button.shape_type == 'custom_path' and button.svg_path_data:
                 button.svg_path_data = button.mirror_svg_path_horizontal(button.svg_path_data, button.width)
                 button._invalidate_mask_cache()
-            
+
             # Apply counterpart mirroring to assigned objects if requested
             if apply_counterparts and button.assigned_objects:
                 mirrored_objects = []
                 mirror_preferences = self._load_mirror_preferences_for_objects(button.assigned_objects, current_namespace)
-                
+
                 for obj_data in button.assigned_objects:
                     try:
-                        # Resolve the original object
                         resolved_obj = self._resolve_object_name_from_data(obj_data, current_namespace)
-                        
+
                         if resolved_obj:
-                            # Find counterpart using existing function
                             namespace, short_name = self._extract_namespace_and_name(resolved_obj)
                             mirrored_name, is_center_object = self._find_mirrored_name(
                                 short_name, naming_conventions, mirror_preferences, namespace
                             )
-                            
+
                             if cmds.objExists(mirrored_name):
                                 try:
-                                    # Create new object data for the mirrored object
                                     mirrored_uuid = cmds.ls(mirrored_name, uuid=True)[0]
                                     mirrored_long_name = cmds.ls(mirrored_name, long=True)[0]
                                     mirrored_obj_data = {
@@ -3136,40 +4216,38 @@ class PickerCanvas(QtWidgets.QWidget):
                                         'long_name': mirrored_long_name
                                     }
                                     mirrored_objects.append(mirrored_obj_data)
-                                    #print(f"Mirrored object: {resolved_obj} -> {mirrored_name}")
                                 except Exception as e:
                                     print(f"Error creating mirrored object data for {mirrored_name}: {e}")
                                     mirrored_objects.append(obj_data.copy())
                             else:
-                                # Keep original if counterpart doesn't exist
                                 mirrored_objects.append(obj_data.copy())
-                                #print(f"Counterpart object not found for {resolved_obj}, keeping original")
                         else:
-                            # Keep original if can't resolve
                             mirrored_objects.append(obj_data.copy())
-                            
+
                     except Exception as e:
                         print(f"Error mirroring assigned object {obj_data}: {e}")
-                        # If there's an error, keep the original object
                         mirrored_objects.append(obj_data.copy())
-                
-                # Update button's assigned objects
+
                 button.assigned_objects = mirrored_objects
-            
-            # Force immediate visual update
+
             button.update()
-            
+
             # Emit change signal to trigger database update
             button.changed.emit(button)
-            
-            counterpart_info = " with counterparts" if apply_counterparts else ""
-            #print(f"Mirrored button {button.unique_id}: position={button.scene_position.x():.2f}, svg_updated={bool(button.svg_path_data)}{counterpart_info}")
-        
-        # Update the canvas
-        self.update_button_positions()
-        
-        action_type = "with counterpart assignment" if apply_counterparts else "position/SVG only"
-        #print(f"Horizontally mirrored {len(selected_buttons)} buttons ({action_type})")
+
+    def start_duplicate_mirror_tool(self):
+        """Activate the interactive Duplicate Mirror tool on the current selection.
+
+        The mirror axis seeds at the cursor's current scene-space X (handled by
+        the tool itself in its activate() method); this entry point just gathers
+        the source set and hands off control.
+        """
+        if not self.edit_mode:
+            return
+        source = self.get_selected_buttons()
+        if not source:
+            return
+        self.duplicate_mirror_tool.activate(source, 0.0)
 
     def vertical_mirror_button_positions(self):
         selected_buttons = self.get_selected_buttons()
@@ -3199,65 +4277,397 @@ class PickerCanvas(QtWidgets.QWidget):
             del self.selection_manager
     #------------------------------------------------------------------------------
     def wheelEvent(self, event):
-        # Hide tooltip during zoom
         self._hide_button_tooltip()
 
-        # Get the wheel delta value - positive for wheel up, negative for wheel down
-        delta_y = event.angleDelta().y()
-        
-        # Check for modifier keys
+        # During multi-button placement, the wheel scales the ghost button size
+        # instead of zooming the canvas. Ctrl = width-only, Alt/Option = height-only.
+        if self.is_placing_multi and self.pending_placement_data is not None:
+            delta = event.angleDelta().y()
+            if delta == 0:
+                delta = event.pixelDelta().y()  # trackpad fallback
+            if delta != 0:
+                step = 1.10 if delta > 0 else (1.0 / 1.10)
+                mods = event.modifiers()
+                width_only = bool(mods & QtCore.Qt.ControlModifier)
+                height_only = bool(mods & QtCore.Qt.AltModifier)
+                d = self.pending_placement_data
+                if width_only and not height_only:
+                    d['scale_w'] = max(0.25, min(4.0, d.get('scale_w', 1.0) * step))
+                elif height_only and not width_only:
+                    d['scale_h'] = max(0.25, min(4.0, d.get('scale_h', 1.0) * step))
+                else:
+                    d['scale_w'] = max(0.25, min(4.0, d.get('scale_w', 1.0) * step))
+                    d['scale_h'] = max(0.25, min(4.0, d.get('scale_h', 1.0) * step))
+                self.update()
+            event.accept()
+            return
+
         alt_pressed = bool(event.modifiers() & QtCore.Qt.AltModifier)
         ctrl_pressed = bool(event.modifiers() & QtCore.Qt.ControlModifier)
-        
-        # Determine zoom direction based on wheel direction
-        zoom_in = delta_y > 0
-        
-        # Set zoom factors based on modifiers
+
         if alt_pressed:
             event.ignore()
             return
-        elif ctrl_pressed:
-            # Ctrl key for finer control
-            zoom_factor = 1.05 if zoom_in else 1 / 1.05
+
+        # Detect trackpad vs mouse using scroll phase + horizontal movement.
+        # Mouse wheels are 1D (vertical only), trackpads are 2D and almost
+        # always produce some horizontal delta during two-finger scrolling.
+        pixel_delta = event.pixelDelta()
+        angle_delta_y = event.angleDelta().y()
+
+        try:
+            phase = event.phase()
+            no_phase = (phase == QtCore.Qt.ScrollPhase.NoScrollPhase)
+        except AttributeError:
+            no_phase = True
+
+        if no_phase:
+            # No scroll phase = traditional discrete mouse wheel → always zoom
+            is_trackpad = False
         else:
-            # Default zoom speed
-            zoom_factor = 1.2 if zoom_in else 1 / 1.2
-        
+            # Phased scroll event = trackpad / Magic Mouse on macOS.
+            # Default to trackpad for any phased stream; horizontal delta
+            # only confirms it. Reset on ScrollEnd so classification does
+            # not bleed across gesture boundaries (important for forwarded
+            # synthetic events from PickerButton.wheelEvent which may
+            # arrive mid-stream without a ScrollBegin phase).
+            try:
+                if phase == QtCore.Qt.ScrollPhase.ScrollBegin:
+                    self._scroll_gesture_is_trackpad = True
+                elif phase == QtCore.Qt.ScrollPhase.ScrollEnd:
+                    pass  # leave classification alone for this final event
+                elif abs(pixel_delta.x()) > 0:
+                    self._scroll_gesture_is_trackpad = True
+                elif not self._scroll_gesture_is_trackpad:
+                    # Phased event with no ScrollBegin we ever saw — assume
+                    # trackpad rather than mis-zooming.
+                    self._scroll_gesture_is_trackpad = True
+            except AttributeError:
+                pass
+            is_trackpad = self._scroll_gesture_is_trackpad
+
+        if is_trackpad and not ctrl_pressed:
+            # ----------------------------------------------------------
+            # TRACKPAD: Two-finger scroll -> PAN (natural gesture)
+            # Ctrl + scroll -> zoom (handled below)
+            # ----------------------------------------------------------
+            pan_delta = QtCore.QPointF(pixel_delta.x(), pixel_delta.y())
+            self.update_pan_offset(pan_delta)
+            self._geometry_dirty = True
+            self.update()
+            # Restart flush timer (resets on each event — fires once inertia settles)
+            self._geometry_flush_timer.start()
+
+            # Reset trackpad classification at the end of a stream so the
+            # next gesture (or a real mouse wheel) starts cleanly.
+            try:
+                if phase == QtCore.Qt.ScrollPhase.ScrollEnd:
+                    self._scroll_gesture_is_trackpad = False
+            except (AttributeError, NameError):
+                pass
+
+            event.accept()
+            return
+
+        # ----------------------------------------------------------
+        # ZOOM: Mouse wheel or Ctrl + trackpad scroll
+        # Proportional zoom using pow() so that:
+        #   - Standard mouse notch (±120) gives the same 1.2x as before
+        #   - Small trackpad deltas give tiny, smooth increments
+        #   - Zoom-in and zoom-out are perfectly symmetric
+        # ----------------------------------------------------------
+        zoom_base = 1.05 if ctrl_pressed else 1.2
+
+        if is_trackpad:
+            # Trackpad Ctrl+scroll: use pixelDelta for smooth proportional zoom
+            zoom_factor = pow(zoom_base, pixel_delta.y() / 120.0)
+        else:
+            # Mouse wheel: proportional to angleDelta (120 per notch)
+            zoom_factor = pow(zoom_base, angle_delta_y / 120.0)
+
         # Get mouse position in scene coordinates before zoom
         mouse_pos = QtCore.QPointF(event.position().x(), event.position().y())
         old_scene_pos = self.canvas_to_scene_coords(mouse_pos)
 
-        # Apply zoom (only once!)
         self.zoom_factor *= zoom_factor
-        
-        # Limit zoom range for better performance
         self.zoom_factor = max(0.01, min(self.zoom_factor, 100.0))
 
-        # Get new scene position and adjust pan to maintain mouse position
+        # Adjust pan to keep cursor position stable during zoom
         new_scene_pos = self.canvas_to_scene_coords(mouse_pos)
         self.pan_offset += (new_scene_pos - old_scene_pos) * self.zoom_factor
 
-        # Batch updates
+        self._geometry_dirty = True
+        self.update()
+
+        if hasattr(self, 'transform_guides') and self.transform_guides.isVisible():
+            self.transform_guides.update_position()
+
+        self._geometry_flush_timer.start()
+        self._view_change_timer.start()
+
+        # Reset trackpad classification at the end of a stream.
+        try:
+            if phase == QtCore.Qt.ScrollPhase.ScrollEnd:
+                self._scroll_gesture_is_trackpad = False
+        except (AttributeError, NameError):
+            pass
+
+        event.accept()
+
+    def _apply_zoom_at_position(self, zoom_factor, position):
+        """Apply zoom centered on a given canvas position."""
+        old_scene_pos = self.canvas_to_scene_coords(position)
+
+        self.zoom_factor *= zoom_factor
+        self.zoom_factor = max(0.01, min(self.zoom_factor, 100.0))
+
+        new_scene_pos = self.canvas_to_scene_coords(position)
+        self.pan_offset += (new_scene_pos - old_scene_pos) * self.zoom_factor
+
         self.setUpdatesEnabled(False)
         self.update()
         self.update_button_positions()
         self.setUpdatesEnabled(True)
-        
-        # Update transform guides if visible
+
         if hasattr(self, 'transform_guides') and self.transform_guides.isVisible():
             self.transform_guides.update_position()
 
-        self.setCursor(QtCore.Qt.ArrowCursor)
+        self._view_change_timer.start()
 
-        # Update hover after zoom
-        QtCore.QTimer.singleShot(100, lambda: self._update_hover_button(self.mapFromGlobal(QtGui.QCursor.pos())))
-        
-        # Accept the event to prevent it from being processed further
-        event.accept()
+    def event(self, ev):
+        """Handle native gesture events (trackpad pinch-to-zoom)."""
+        # Qt6 (PySide6): QEvent.Type.NativeGesture
+        # Qt5 (PySide2): QEvent.NativeGesture
+        native_gesture_type = getattr(
+            QtCore.QEvent.Type, 'NativeGesture',
+            getattr(QtCore.QEvent, 'NativeGesture', None)
+        )
+        wheel_type = getattr(
+            QtCore.QEvent.Type, 'Wheel',
+            getattr(QtCore.QEvent, 'Wheel', None)
+        )
+        ev_type = ev.type()
+        # On macOS, reactivate the picker window for scroll/gesture events
+        # so zoom/pan works even after focus was returned to Maya
+        if ev_type in (native_gesture_type, wheel_type):
+            if not self.window().isActiveWindow():
+                self.window().activateWindow()
+        if native_gesture_type is not None and ev_type == native_gesture_type:
+            return self._handle_native_gesture(ev)
+        return super().event(ev)
+
+    def _handle_native_gesture(self, event):
+        """Process trackpad pinch / smart-zoom gestures."""
+        try:
+            gesture_type = event.gestureType()
+        except AttributeError:
+            return False
+
+        # Resolve enum values for both Qt5 and Qt6
+        zoom_gesture = getattr(
+            getattr(QtCore.Qt, 'NativeGestureType', QtCore.Qt),
+            'ZoomNativeGesture', None
+        )
+        smart_zoom_gesture = getattr(
+            getattr(QtCore.Qt, 'NativeGestureType', QtCore.Qt),
+            'SmartZoomNativeGesture', None
+        )
+
+        if zoom_gesture is not None and gesture_type == zoom_gesture:
+            # Pinch-to-zoom: event.value() is the relative scale delta
+            scale_delta = event.value()
+            pos = QtCore.QPointF(event.position())
+            self._apply_zoom_at_position(1.0 + scale_delta, pos)
+            self._hide_button_tooltip()
+            event.accept()
+            return True
+
+        if smart_zoom_gesture is not None and gesture_type == smart_zoom_gesture:
+            # Two-finger double-tap: toggle between 1x and 2x
+            pos = QtCore.QPointF(event.position())
+            if abs(self.zoom_factor - 1.0) < 0.01:
+                target = 2.0
+            else:
+                target = 1.0
+            self._apply_zoom_at_position(target / self.zoom_factor, pos)
+            event.accept()
+            return True
+
+        return False
+
+    # ------------------------------------------------------------------
+    # Transform Guides Throttling
+    # ------------------------------------------------------------------
+    def _request_guides_update(self):
+        """Schedule a throttled transform guides position update."""
+        if (hasattr(self, 'transform_guides') and
+                self.transform_guides.isVisible() and self.edit_mode):
+            if not self._guides_update_timer.isActive():
+                self._guides_update_timer.start()
+
+    def _on_guides_timer(self):
+        """Persistent timer callback for transform guides update."""
+        if hasattr(self, 'transform_guides') and self.transform_guides.isVisible():
+            self.transform_guides.update_position()
+
+    # ------------------------------------------------------------------
+    # Curve Editor Integration
+    # ------------------------------------------------------------------
+    def start_new_shape_drawing(self, button):
+        """Start drawing a new custom shape for a button."""
+        if not self.edit_mode or not button:
+            return
+
+        # Save undo state before starting
+        DM.PickerDataManager.save_undo_state(
+            operation_name="Start New Shape Drawing",
+            selected_button_ids=[button.unique_id]
+        )
+
+        # Hide transform guides while editing curves
+        self.hide_transform_guides()
+
+        # Deselect other buttons
+        self.clear_selection()
+
+        # Start curve editor with empty shape
+        self.curve_editor.start_editing(button, existing_shape=CE.ButtonShape())
+
+    def start_drawing_new_button_shape(self, position):
+        """Create a new button and start drawing a custom shape for it.
+        Called from canvas context menu."""
+        if not self.edit_mode:
+            return
+
+        scene_pos = self.canvas_to_scene_coords(QtCore.QPointF(position))
+
+        main_window = self.window()
+        if not isinstance(main_window, UI.AnimPickerWindow):
+            return
+
+        current_tab = main_window.tab_system.current_tab
+        unique_id = main_window.generate_unique_id(current_tab)
+
+        # Create button with default properties
+        new_button = PB.PickerButton("Button", self, unique_id=unique_id)
+        new_button.scene_position = scene_pos
+
+        # Add button to canvas
+        self.add_button(new_button)
+
+        # Save the button immediately so it persists even if shape drawing is cancelled
+        self.update_button_data(new_button)
+
+        # Start drawing the shape for this new button
+        self.start_new_shape_drawing(new_button)
+
+    def start_curve_editing(self, button):
+        """Start curve editing for a button."""
+        if not self.edit_mode or not button:
+            return
+
+        # Save undo state before starting curve editing
+        DM.PickerDataManager.save_undo_state(
+            operation_name="Start Curve Editing",
+            selected_button_ids=[button.unique_id]
+        )
+
+        # Hide transform guides while editing curves
+        if hasattr(self, 'transform_guides'):
+            self.transform_guides.setVisible(False)
+            self.transform_guides.visual_layer.setVisible(False)
+
+        # Deselect other buttons, highlight target
+        self.clear_selection()
+
+        # Start curve editor
+        self.curve_editor.start_editing(button)
+
+    def is_curve_editing(self):
+        """Check if curve editing is currently active."""
+        return hasattr(self, 'curve_editor') and self.curve_editor.is_editing()
+
+    def _on_curve_editing_finished(self, svg_path_data):
+        """Handle completion of curve editing."""
+        if self.curve_editor.target_button:
+            button = self.curve_editor.target_button
+
+            # Apply the new shape to the button
+            if svg_path_data:
+                button.shape_type = 'custom_path'
+                button.svg_path_data = svg_path_data
+
+            # Invalidate caches
+            button._cached_scene_path = None
+            button._cached_scene_path_key = None
+            button.cached_mask = None
+
+            # Update the button in database
+            main_window = self.window()
+            if hasattr(main_window, 'update_button_data'):
+                main_window.update_button_data(button)
+
+            # Clear curve editor state
+            self.curve_editor.target_button = None
+
+            # Re-show transform guides and re-select button
+            if self.edit_mode:
+                self.clear_selection()
+                button.is_selected = True
+                # Invalidate selection cache so get_selected_buttons() sees the change
+                if hasattr(self, '_cache_valid'):
+                    self._cache_valid = False
+                button.selected.emit(button, True)
+                button.update()
+                if hasattr(self, 'transform_guides'):
+                    self.transform_guides.setVisible(True)
+                    self.transform_guides.visual_layer.setVisible(True)
+                    self.transform_guides.update_selection()
+
+        self.update()
+
+    def _on_curve_editing_cancelled(self):
+        """Handle cancellation of curve editing."""
+        button = self.curve_editor.target_button
+        is_new_shape = hasattr(self.curve_editor, '_is_new_shape') and self.curve_editor._is_new_shape
+
+        # If this was a new shape being drawn, delete the placeholder button
+        if is_new_shape:
+            if button and button in self.buttons:
+                self.buttons.remove(button)
+                button.deleteLater()
+                button = None
+
+        # Re-select the button and show transform guides
+        if self.edit_mode:
+            if button and button in self.buttons:
+                self.clear_selection()
+                button.is_selected = True
+                if hasattr(self, '_cache_valid'):
+                    self._cache_valid = False
+                button.selected.emit(button, True)
+                button.update()
+            if hasattr(self, 'transform_guides'):
+                self.transform_guides.setVisible(True)
+                self.transform_guides.visual_layer.setVisible(True)
+                self.transform_guides.update_selection()
+
+        self.update()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
-            # Reset to original size when double-clicked
+            # Check if a canvas-painted button is under cursor — forward double-click
+            dbl_button = self._get_button_at_position(event.pos())
+            if dbl_button and dbl_button._canvas_painted:
+                local_pos = dbl_button.mapFromParent(event.pos())
+                fwd = QtGui.QMouseEvent(
+                    event.type(), local_pos, event.globalPos(),
+                    event.button(), event.buttons(), event.modifiers()
+                )
+                dbl_button.mouseDoubleClickEvent(fwd)
+                event.accept()
+                return
+            # No button — reset zoom/pan
             self.zoom_factor = 1.0
             self.pan_offset = QtCore.QPointF(0, 0)
             self.update()
@@ -3269,6 +4679,23 @@ class PickerCanvas(QtWidgets.QWidget):
         """Enhanced mouse press event with proper modifier handling"""
         # Hide tooltip immediately
         self._hide_button_tooltip()
+
+        # Duplicate-mirror tool: intercept left-click. Right/middle still pass
+        # through so context menus and middle-button pan continue to work.
+        if (hasattr(self, 'duplicate_mirror_tool') and self.duplicate_mirror_tool.active
+                and event.button() == QtCore.Qt.LeftButton):
+            self.duplicate_mirror_tool.handle_mouse_press(event)
+            event.accept()
+            return
+
+        # Multi-button placement mode: left = commit, right/middle = cancel.
+        if self.is_placing_multi:
+            if event.button() == QtCore.Qt.LeftButton:
+                self._commit_multi_button_placement(event.modifiers())
+            else:
+                self._cancel_multi_button_placement()
+            event.accept()
+            return
 
         if (hasattr(self, 'transform_guides') and self.transform_guides.isVisible() and event.button() == QtCore.Qt.LeftButton):
             # Handle transform guides first
@@ -3311,10 +4738,17 @@ class PickerCanvas(QtWidgets.QWidget):
                     clicked_button = button
                     break'''
             clicked_button = self._get_button_at_position(event.pos())
-            
+
             if clicked_button:
-                # Button was clicked - let the button handle its own selection logic
-                pass
+                self._pressed_button = clicked_button
+                # Forward the mouse event to the canvas-painted button
+                if clicked_button._canvas_painted:
+                    local_pos = clicked_button.mapFromParent(event.pos())
+                    fwd = QtGui.QMouseEvent(
+                        event.type(), local_pos, event.globalPos(),
+                        event.button(), event.buttons(), event.modifiers()
+                    )
+                    clicked_button.mousePressEvent(fwd)
             elif alt_pressed:
                 # Alt + drag for panning
                 self.last_pan_pos = event.pos()
@@ -3326,8 +4760,8 @@ class PickerCanvas(QtWidgets.QWidget):
                     if self.edit_mode:
                         self.clear_selection()
                     else:
-                        cmds.select(clear=True)
-                        self.clear_selection()
+                        # Clear both Maya and picker selection with sync lock
+                        self._clear_all_selections()
                     
                     # Update initial selection state after clearing
                     self.initial_selection_state = {button: False for button in self.buttons}
@@ -3349,6 +4783,30 @@ class PickerCanvas(QtWidgets.QWidget):
             self.last_pan_pos = event.pos()
             self.setCursor(QtCore.Qt.ArrowCursor)
             event.accept()
+        elif event.button() == QtCore.Qt.RightButton:
+            alt_pressed = bool(event.modifiers() & QtCore.Qt.AltModifier)
+
+            if alt_pressed:
+                # Alt+RightButton for zoom — store anchor for cursor-centered zoom
+                self.last_zoom_pos = event.pos()
+                self._zoom_anchor_pos = event.pos()
+                self.was_zoom_dragging = True
+                self.setCursor(QtCore.Qt.SizeVerCursor)
+                event.accept()
+            else:
+                # Check if a canvas-painted button is under cursor — forward right-click
+                rc_button = self._get_button_at_position(event.pos())
+                if rc_button and rc_button._canvas_painted:
+                    local_pos = rc_button.mapFromParent(event.pos())
+                    fwd = QtGui.QMouseEvent(
+                        event.type(), local_pos, event.globalPos(),
+                        event.button(), event.buttons(), event.modifiers()
+                    )
+                    rc_button.mousePressEvent(fwd)
+                    event.accept()
+                else:
+                    # No button — show context menu manually
+                    self.show_context_menu(event.pos())
         else:
             super().mousePressEvent(event)
             self.setFocus()
@@ -3358,10 +4816,28 @@ class PickerCanvas(QtWidgets.QWidget):
             UT.maya_main_window().activateWindow()
 
     def mouseMoveEvent(self, event):
-        # Update button hover state and tooltip
-        self._update_hover_button(event.pos())
+        # Duplicate-mirror tool: drag the axis line (or update hover state).
+        if hasattr(self, 'duplicate_mirror_tool') and self.duplicate_mirror_tool.active:
+            if self.duplicate_mirror_tool.handle_mouse_move(event):
+                event.accept()
+                return
+
+        # Multi-button placement: live-update ghost layout.
+        if self.is_placing_multi:
+            self.placement_cursor_scene = self.canvas_to_scene_coords(QtCore.QPointF(event.pos()))
+            self.update()
+            event.accept()
+            return
 
         alt_pressed = bool(event.modifiers() & QtCore.Qt.AltModifier)
+
+        # Skip expensive hover hit-testing during active navigation
+        is_panning = (((event.buttons() == QtCore.Qt.LeftButton and alt_pressed) or
+                       event.buttons() == QtCore.Qt.MiddleButton) and self.last_pan_pos)
+        is_zooming = (event.buttons() == QtCore.Qt.RightButton and alt_pressed and self.last_zoom_pos)
+        is_button_drag = bool(self._pressed_button and event.buttons() & QtCore.Qt.LeftButton)
+        if not (self.is_selecting or is_panning or is_zooming or is_button_drag):
+            self._update_hover_button(event.pos())
         if self.is_selecting:
             selection_rect = QtCore.QRect(self.rubberband_origin, event.pos()).normalized()
             self.rubberband.setGeometry(selection_rect)
@@ -3382,30 +4858,61 @@ class PickerCanvas(QtWidgets.QWidget):
                 self.update_visual_selection(selection_rect, add_to_selection=False, remove_from_selection=False)
 
             event.accept()
-        elif ((event.buttons() == QtCore.Qt.LeftButton and alt_pressed) or 
-              event.buttons() == QtCore.Qt.MiddleButton) and self.last_pan_pos:
+        elif event.buttons() == QtCore.Qt.RightButton and alt_pressed and self.last_zoom_pos:
             # Hide tooltip during zoom
             self._hide_button_tooltip()
-            
-            # Batch updates during pan
-            self.setUpdatesEnabled(False)
-            
-            delta = event.pos() - self.last_pan_pos
-            self.pan_offset += QtCore.QPointF(delta.x(), delta.y())
-            self.last_pan_pos = event.pos()
-            
+
+            # Handle Alt+RMB zoom — anchored to initial cursor position
+            ctrl_pressed = bool(event.modifiers() & QtCore.Qt.ControlModifier)
+
+            delta_y = event.pos().y() - self.last_zoom_pos.y()
+            zoom_speed = 0.002 if ctrl_pressed else 0.008
+            zoom_delta = -delta_y * zoom_speed
+            new_zoom = self.zoom_factor * (1.0 + zoom_delta)
+            new_zoom = max(0.1, min(10.0, new_zoom))
+
+            # Zoom toward the point where Alt+RMB was first pressed
+            anchor = getattr(self, '_zoom_anchor_pos', self.last_zoom_pos)
+            scene_before = self.canvas_to_scene_coords(QtCore.QPointF(anchor))
+
+            self.zoom_factor = new_zoom
+
+            scene_after = self.canvas_to_scene_coords(QtCore.QPointF(anchor))
+            self.pan_offset += (scene_after - scene_before) * self.zoom_factor
+
+            self.last_zoom_pos = event.pos()
+            self._geometry_dirty = True
             self.update()
-            self.update_button_positions()
-            
-            self.setUpdatesEnabled(True)
+            event.accept()
+
+        elif ((event.buttons() == QtCore.Qt.LeftButton and alt_pressed) or
+              event.buttons() == QtCore.Qt.MiddleButton) and self.last_pan_pos:
+            # Hide tooltip during pan
+            self._hide_button_tooltip()
+
+            delta = event.pos() - self.last_pan_pos
+            self.update_pan_offset(delta)
+            self.last_pan_pos = event.pos()
+            self._geometry_dirty = True
+            self.update()
+            event.accept()
         else:
-            any_button_dragging = any(getattr(btn, 'dragging', False) for btn in self.buttons)
-            if any_button_dragging:
-                # Update transform guides during button drag
-                if hasattr(self, 'transform_guides') and self.transform_guides.isVisible():
-                    QtCore.QTimer.singleShot(1, self._update_transform_guides_position)
+            # Forward move events to the pressed button (for drag in edit mode)
+            if hasattr(self, '_pressed_button') and self._pressed_button and self._pressed_button._canvas_painted:
+                local_pos = self._pressed_button.mapFromParent(event.pos())
+                fwd = QtGui.QMouseEvent(
+                    event.type(), local_pos, event.globalPos(),
+                    event.button(), event.buttons(), event.modifiers()
+                )
+                self._pressed_button.mouseMoveEvent(fwd)
+
+            if getattr(self._pressed_button, 'dragging', False):
+                self._request_guides_update()
             super().mouseMoveEvent(event)
         event.accept()
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
 
     def leaveEvent(self, event):
         """Handle mouse leaving the canvas"""
@@ -3414,10 +4921,40 @@ class PickerCanvas(QtWidgets.QWidget):
             self._current_hover_button.is_hovered = False
             self._current_hover_button.update()
             self._current_hover_button = None
+        self._pressed_button = None
+        self.setCursor(QtCore.Qt.ArrowCursor)
+        self.update()
+
+        # Hand window activation back to Maya whenever the cursor
+        # genuinely leaves the picker so the user's hotkeys (W/E/R,
+        # spacebar hotbox, etc.) reach Maya immediately. enterEvent
+        # reclaims activation on re-entry, so trackpad gestures still
+        # work. leaveEvent also fires when the cursor moves into a
+        # child widget, so verify the cursor is actually outside the
+        # top-level frame before handing focus over.
+        try:
+            top = self.window()
+            if top is not None:
+                global_pos = QtGui.QCursor.pos()
+                if not top.frameGeometry().contains(global_pos):
+                    self._pending_maya_activation = False
+                    UT.maya_main_window().activateWindow()
+        except Exception:
+            pass
         super().leaveEvent(event)
+
+    def contextMenuEvent(self, event):
+        """Accept the context menu event to prevent propagation to parent window."""
+        event.accept()
 
     def mouseReleaseEvent(self, event):
         """Enhanced mouse release with proper modifier state propagation"""
+        # Duplicate-mirror tool: end any in-progress line drag.
+        if hasattr(self, 'duplicate_mirror_tool') and self.duplicate_mirror_tool.active:
+            if self.duplicate_mirror_tool.handle_mouse_release(event):
+                event.accept()
+                return
+
         if event.button() == QtCore.Qt.LeftButton and self.is_selecting:
             self.is_selecting = False
             self.rubberband.hide()
@@ -3437,9 +4974,28 @@ class PickerCanvas(QtWidgets.QWidget):
             if self.edit_mode and hasattr(self, 'transform_guides'):
                 QtCore.QTimer.singleShot(15, self.transform_guides.update_selection)
         elif event.button() == QtCore.Qt.LeftButton:
+            # Forward release to the pressed button
+            if hasattr(self, '_pressed_button') and self._pressed_button and self._pressed_button._canvas_painted:
+                local_pos = self._pressed_button.mapFromParent(event.pos())
+                fwd = QtGui.QMouseEvent(
+                    event.type(), local_pos, event.globalPos(),
+                    event.button(), event.buttons(), event.modifiers()
+                )
+                self._pressed_button.mouseReleaseEvent(fwd)
+                self._pressed_button = None
             self.last_pan_pos = None
+            self._flush_deferred_geometry()
+            self._view_change_timer.start()
         elif event.button() == QtCore.Qt.MiddleButton:
             self.last_pan_pos = None
+            self._flush_deferred_geometry()
+            self._view_change_timer.start()
+        elif event.button() == QtCore.Qt.RightButton:
+            # Reset zoom variables and cursor
+            self.last_zoom_pos = None
+            self.setCursor(QtCore.Qt.ArrowCursor)
+            self._flush_deferred_geometry()
+            self._view_change_timer.start()
         else:
             super().mouseReleaseEvent(event)
         
@@ -3452,8 +5008,24 @@ class PickerCanvas(QtWidgets.QWidget):
     
     def resizeEvent(self, event):
         super().resizeEvent(event)
+
+        # Compensate pan_offset during programmatic edit-mode resize so
+        # the canvas content stays visually anchored in place.
+        main_win = self.window()
+        if getattr(main_win, '_programmatic_resize', False):
+            old_size = event.oldSize()
+            new_size = event.size()
+            if old_size.isValid():
+                dx = (new_size.width() - old_size.width()) / 2.0
+                dy = (new_size.height() - old_size.height()) / 2.0
+                self.pan_offset -= QtCore.QPointF(dx, dy)
+
         self.update_button_positions()
         self.hud.setGeometry(self.rect())
+        if hasattr(self, 'loading_overlay'):
+            self.loading_overlay._reposition()
+        if hasattr(self, 'save_indicator'):
+            self.save_indicator._reposition()
         self.hud.raise_()
         # Update selection manager position if it exists and is visible
         if hasattr(self, 'selection_manager') and self.selection_manager.isVisible():
@@ -3530,6 +5102,50 @@ class PickerCanvas(QtWidgets.QWidget):
             )
             painter.drawImage(image_rect, self.background_image)
 
+        # --- Paint buttons directly on canvas (Figma-style) ---
+        # This replaces per-widget paintEvent drawing with a single canvas pass,
+        # using floating-point scene coordinates to eliminate integer-rounding jitter.
+        painter.setOpacity(1.0)
+        hover_btn = self._current_hover_button
+        # Scene-space visible area for culling (with margin)
+        vis_tl = self.canvas_to_scene_coords(QtCore.QPointF(0, 0))
+        vis_br = self.canvas_to_scene_coords(QtCore.QPointF(self.width(), self.height()))
+        vis_left = min(vis_tl.x(), vis_br.x())
+        vis_right = max(vis_tl.x(), vis_br.x())
+        vis_top = min(vis_tl.y(), vis_br.y())
+        vis_bottom = max(vis_tl.y(), vis_br.y())
+        for button in self.buttons:
+            if not button._canvas_painted:
+                continue
+            # Fast scene-space AABB cull
+            bp = button._scene_position
+            env_w, env_h = button.rotated_envelope_size()
+            hw, hh = env_w * 0.5, env_h * 0.5
+            if (bp.x() + hw < vis_left or bp.x() - hw > vis_right or
+                    bp.y() + hh < vis_top or bp.y() - hh > vis_bottom):
+                continue
+            button.paint_on_canvas(painter, self.zoom_factor, hover_btn)
+
+        # --- Duplication ghost preview ---
+        if hasattr(self, '_pressed_button') and self._pressed_button and getattr(self._pressed_button, 'duplicating', False):
+            ghost_center = getattr(self._pressed_button, '_dup_ghost_scene_center', None)
+            ghost_offsets = getattr(self._pressed_button, '_dup_ghost_offsets', [])
+            if ghost_center and ghost_offsets:
+                for btn, offset in ghost_offsets:
+                    ghost_pos = QtCore.QPointF(
+                        ghost_center.x() + offset.x(),
+                        ghost_center.y() + offset.y()
+                    )
+                    btn.paint_ghost_on_canvas(painter, ghost_pos)
+
+        # Multi-button placement ghosts (drag-to-place)
+        if self.is_placing_multi:
+            self._paint_placement_ghosts(painter)
+
+        # Duplicate-mirror tool: dashed axis line + ghost previews (in edit mode only)
+        if hasattr(self, 'duplicate_mirror_tool') and self.duplicate_mirror_tool.active:
+            self.duplicate_mirror_tool.paint(painter, self.zoom_factor)
+
         painter.restore()
 
         # Remove clipping to draw the border
@@ -3547,8 +5163,28 @@ class PickerCanvas(QtWidgets.QWidget):
                 self.border_radius
             )   
 
+    def _create_buttons_from_curves_at_position(self, position):
+        """Create buttons from Maya curves at the specified position"""
+        try:
+            from .maya_curve_converter import create_buttons_from_maya_curves
+            scene_pos = self.canvas_to_scene_coords(QtCore.QPointF(position))
+            create_buttons_from_maya_curves(self, scene_pos, show_options_dialog=False)
+        except Exception as e:
+            print(f"Error creating buttons from curves: {e}")
+    
+    def _create_test_scene(self):
+        """Create a test scene for sync testing"""
+        try:
+            from . import selection_sync_test as SST
+            SST.create_test_scene()
+        except Exception as e:
+            print(f"Error creating test scene: {e}")
+
     def cleanup(self):
         """Clean up resources when canvas is destroyed"""
+        # Cleanup selection synchronization
+        self._cleanup_selection_sync()
+        
         self._hide_button_tooltip()
         if self._tooltip_widget:
             self._tooltip_widget.deleteLater()
@@ -3560,4 +5196,85 @@ class PickerCanvas(QtWidgets.QWidget):
         
         if hasattr(self, 'hud'):
             self.hud.deleteLater()
+    
+    #------------------------------------------------------------------------------
+    # Selection Synchronization Methods
+    #------------------------------------------------------------------------------
+    def _init_selection_sync(self):
+        """Initialize 2-way selection synchronization"""
+        try:
+            # Register this canvas with the selection sync manager
+            SSM.register_canvas_for_sync(self)
+        except Exception as e:
+            print(f"PickerCanvas (Maya): Error initializing selection sync: {e}")
+    
+    def _cleanup_selection_sync(self):
+        """Cleanup selection synchronization"""
+        try:
+            # Unregister this canvas from the selection sync manager
+            SSM.unregister_canvas_from_sync(self)
+        except Exception as e:
+            print(f"PickerCanvas (Maya): Error cleaning up selection sync: {e}")
+    
+    def _get_current_namespace(self):
+        """Get the current namespace for this canvas"""
+        try:
+            # Try to get namespace from parent window
+            main_window = self.window()
+            if hasattr(main_window, '_get_current_namespace'):
+                return main_window._get_current_namespace()
+            elif hasattr(main_window, 'namespace_dropdown'):
+                current_text = main_window.namespace_dropdown.currentText()
+                return current_text if current_text != 'None' else None
+        except:
+            pass
+        return None
+    
+    def enable_selection_sync(self):
+        """Enable 2-way selection synchronization"""
+        SSM.enable_selection_sync()
+    
+    def disable_selection_sync(self):
+        """Disable 2-way selection synchronization"""
+        SSM.disable_selection_sync()
+    
+    def _test_selection_sync(self):
+        """Test the selection synchronization system"""
+        try:
+            from . import selection_sync_test as SST
+            SST.run_sync_tests()
+        except Exception as e:
+            print(f"Error running sync tests: {e}")
+    
+    def _clear_all_selections(self):
+        """Clear both Maya and picker selections with proper sync handling"""
+        # Set sync lock to prevent interference during clearing
+        try:
+            manager = SSM.SelectionSyncManager.get_instance()
+            manager._sync_lock = True
+        except:
+            pass
+        
+        try:
+            # Clear Maya selection
+            cmds.select(clear=True)
+            
+            # Clear picker selection
+            self.clear_selection()
+            
+            # Small delay to ensure Maya has processed the deselection
+            QTimer.singleShot(100, self._release_sync_lock)
+            
+        except Exception as e:
+            print(f"Error clearing selections: {e}")
+            # Always release lock on error
+            self._release_sync_lock()
+    
+    def _release_sync_lock(self):
+        """Release the sync lock after selection clearing"""
+        try:
+            manager = SSM.SelectionSyncManager.get_instance()
+            manager._delayed_unlock()
+        except Exception as e:
+            print(f"Error releasing sync lock: {e}")
 

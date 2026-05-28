@@ -27,21 +27,20 @@ from . fade_away_logic import FadeAway
 from . import custom_color_picker as CCP
 from .update_ui import UpdateBanner
 from . import selection_sync_manager as SSM
-from . import library_ui as LIB_UI
+from . import local_file_ui as LIB_UI
 from .picker_session import PickerSession
 from . import picker_io as PIO
 from .settings_page import SettingsPage
 from .auth_manager import AuthManager
-from .marketplace_manager import MarketplaceManager
-from . import marketplace_ui as MKT_UI
+from .bgen_library_manager import BgenLocalFileManager
 
 # Get version from __init__
 import ft_anim_picker
 anim_picker_version = ft_anim_picker.src.__version__
 anim_picker_version = f" (v{anim_picker_version})"
 
-class _MarketplaceGateBanner(QtWidgets.QWidget):
-    """Centered placeholder shown when the marketplace is gated by a feature flag."""
+class _LibraryGateBanner(QtWidgets.QWidget):
+    """Centered placeholder shown when the library is gated by a feature flag."""
 
     action_clicked = QtCore.Signal(str)
 
@@ -82,10 +81,55 @@ class _MarketplaceGateBanner(QtWidgets.QWidget):
         layout.addStretch()
 
 
+class NamespaceComboBox(QtWidgets.QComboBox):
+    """QComboBox that emits a signal on right-click instead of showing the
+    default popup, so the parent window can build a context menu that knows
+    about the current tab/scene state. Also exposes a helper to swap the
+    border color between the default and 'pinned filter active' variants.
+    """
+
+    requestContextMenu = QtCore.Signal(QtCore.QPoint)
+
+    _BORDER_DEFAULT = '#2f2f2f'
+    _BORDER_FILTERED = '#1d65ca'
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._filter_active = False
+        self._apply_stylesheet()
+
+    def _apply_stylesheet(self):
+        bg = UT.rgba_value('#222222', 1, .9)
+        bg_hover = UT.rgba_value('#222222', .8, 1)
+        border = self._BORDER_FILTERED if self._filter_active else self._BORDER_DEFAULT
+        self.setStyleSheet(
+            f'''QComboBox{{background-color: {bg}; color: #dddddd; border: 1px solid {border}; padding: 2px 2px 2px 8px; border-radius: 11px;}}
+                QComboBox:hover {{background-color: {bg_hover};}}
+                QComboBox::drop-down {{border: 0px; color: #dddddd;}}
+                QComboBox::down-arrow {{background-color: transparent;}}
+                QComboBox QAbstractItemView {{background-color: #222222; color: #dddddd; border: 1px solid #2f2f2f; selection-background-color: rgba(29,101,202,0.4);}}
+                QToolTip {{background-color: #222222; color: #eeeeee;border: 1px solid rgba(255,255,255,.2); padding: 4px; border-radius: 0px;}} '''
+        )
+
+    def set_filter_mode_style(self, active):
+        active = bool(active)
+        if active == self._filter_active:
+            return
+        self._filter_active = active
+        self._apply_stylesheet()
+
+    def contextMenuEvent(self, event):
+        # Emit a signal carrying the global position so the main window can
+        # build a context menu that closes over its own state.
+        self.requestContextMenu.emit(event.globalPos())
+        event.accept()
+
+
 class BlenderAnimPickerWindow(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super(BlenderAnimPickerWindow, self).__init__(parent)
-        self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint)
+        from . import utils as UT
+        self.setWindowFlags(UT.picker_window_flags())
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setAttribute(QtCore.Qt.WA_AlwaysShowToolTips, True)
         self.setStyleSheet('''QWidget {background-color: rgba(40, 40, 40, 0.5); border-radius: 4px;}''')
@@ -144,6 +188,20 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.setup_layout()
         self.setup_tab_system()
         self.setup_connections()
+
+        # When focus moves OUT of any picker line edit (color hex input,
+        # transform fields, name field, etc.), Blender's GHOST may have
+        # missed key-up events for modifier keys (Ctrl/Shift/Alt/Cmd)
+        # because Qt was holding the keyboard. The result is "stuck"
+        # modifier state in Blender — MMB drag becomes Ctrl+MMB (zoom),
+        # so viewport orbit/pan break and only zoom appears to work.
+        # Re-activating Blender forces GHOST to refresh its input state.
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.focusChanged.connect(self._on_app_focus_changed)
+        except Exception:
+            pass
 
         # Resize tracking variables
         self.resizing = False
@@ -215,19 +273,20 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self._library_view_mode = "medium"
 
         # Library page controller
-        self.library_controller = LIB_UI.LibraryPageController(
+        self.library_controller = LIB_UI.LocalFilePageController(
             grid_layout=self.my_library_grid,
             grid_container=self.my_library_grid_container,
             scroll_area=self.my_library_grid_area,
             parent_window=self,
         )
         self.library_controller.picker_open_requested.connect(self.open_picker_from_library)
+        self.library_controller.tab_import_requested.connect(self._import_tab_from_library)
 
         # Initial data load for library (deferred so layouts have valid sizes)
         QTimer.singleShot(100, self.library_controller.refresh)
 
-        # Marketplace manager signals (native pages removed — web handles UI)
-        self._marketplace_mgr.feature_flags_loaded.connect(
+        # Library manager signals (native pages removed — web handles UI)
+        self._bgen_library_mgr.feature_flags_loaded.connect(
             self._on_feature_flags_loaded
         )
 
@@ -328,7 +387,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         #Info Util
         self.info_util = CB.CustomButton(text='Info', height=util_button_height, width=40, radius=3,color='#385c73',alpha=0,textColor='#aaaaaa', ContextMenu=True, onlyContext= True,
                                     cmColor='#333333',tooltip='Info Utilities', flat=True, notification=True)
-        self.info_util.addMenuLabel(f"Anim Picker{anim_picker_version}",position=(0,0))
+        self.info_util.addMenuLabel(f"BGEN Picker{anim_picker_version}",position=(0,0))
         self.info_util.addToMenu(f"Manual", self.info, icon=UT.get_icon('manual.png'), position=(1,0))
         self.info_util.addToMenu(f"Update", self.update_anim_picker, icon=UT.get_icon('update.png'), position=(2,0))
         #-----------------------------------------------------------------------------------
@@ -439,17 +498,10 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.canvas_frame_layout.addWidget(self.canvas_stack)
         #-----------------------------------------------------------------------------------------------------------------------------------
         #-Name Space Dropdown
-        self.namespace_dropdown = QtWidgets.QComboBox(self)
+        self.namespace_dropdown = NamespaceComboBox(self)
         self.namespace_dropdown.setFixedHeight(22)
         # Width will be dynamically set based on content (min 40, max 120)
-        
-        self.namespace_dropdown.setStyleSheet(f'''QComboBox{{background-color: {UT.rgba_value('#222222', 1,.9)}; color: #dddddd; border: 1px solid #2f2f2f; padding: 2px 2px 2px 8px; border-radius: 11px;}}
-                            QComboBox:hover {{background-color: {UT.rgba_value('#222222', .8,1)};}}
-                            QComboBox::drop-down {{border: 0px; color: #dddddd;}}
-                            QComboBox::down-arrow {{background-color: transparent;}}
-                            QComboBox QAbstractItemView {{background-color: #222222; color: #dddddd; border: 1px solid #2f2f2f; selection-background-color: rgba(29,101,202,0.4);}}
-                            QToolTip {{background-color: #222222; color: #eeeeee;border: 1px solid rgba(255,255,255,.2); padding: 4px; border-radius: 0px;}} ''')
-        self.namespace_dropdown.setToolTip('Select Namespace')
+        self.namespace_dropdown.setToolTip('Select Namespace  -  Right-click to pin/filter')
         self.namespace_dropdown.addItems(['None'])
         #-----------------------------------------------------------------------------------------------------------------------------------
         self.canvas_frame_column_1.addWidget(self.canvas_tab_frame_scroll_area)
@@ -464,6 +516,9 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
 
         # Create the canvas edit panel (overlay inside canvas_frame)
         self.canvas_edit_panel = PC.CanvasEditPanel(self.canvas_frame)
+        # Anchor positioning to the canvas area so the panel stays correctly placed
+        # when reparented to main_frame in minimal mode.
+        self.canvas_edit_panel.set_anchor_widget(self.canvas_stack)
         self.canvas_edit_panel.width_changed.connect(self._on_edit_panel_width_changed)
         
         self.edit_frame = QtWidgets.QFrame()
@@ -934,21 +989,21 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         my_library_layout.addWidget(self.lib_create_btn)
 
         # --- BGEN Library sub-page (WebView only) ---
-        self._marketplace_mgr = MarketplaceManager.get_instance()
+        self._bgen_library_mgr = BgenLocalFileManager.get_instance()
 
-        from .marketplace_webview import MarketplaceWebView
-        self._mkt_webview = MarketplaceWebView(parent=self)
+        from .library_webview import LibraryWebView
+        self._mkt_webview = LibraryWebView(parent=self)
         self._mkt_webview.set_managers(
             AuthManager.get_instance(),
-            MarketplaceManager.get_instance(),
+            BgenLocalFileManager.get_instance(),
         )
 
         # Connect WebView bridge signals
         self._mkt_webview.download_requested.connect(
-            lambda pid: self._marketplace_mgr.download_product(pid)
+            lambda pid: self._bgen_library_mgr.download_product(pid)
         )
         self._mkt_webview.checkout_requested.connect(
-            lambda pid: self._marketplace_mgr.initiate_purchase(pid)
+            lambda pid: self._bgen_library_mgr.initiate_purchase(pid)
         )
         self._mkt_webview.sign_in_requested.connect(
             lambda: AuthManager.get_instance().start_sign_in()
@@ -966,12 +1021,11 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         # Connect checkout_ready → open embedded Stripe checkout page
         from .stripe_checkout_dialog import StripeCheckoutPage
         self._stripe_checkout_page = StripeCheckoutPage(parent=self)
-        self.library_stack.addWidget(self._stripe_checkout_page)  # index 2
 
-        self._marketplace_mgr.checkout_ready.connect(self._on_checkout_ready)
+        self._bgen_library_mgr.checkout_ready.connect(self._on_checkout_ready)
         self._stripe_checkout_page.payment_success.connect(
-            lambda pi_id: self._marketplace_mgr._on_stripe_success(
-                pi_id, self._marketplace_mgr._checkout_product_id
+            lambda pi_id: self._bgen_library_mgr._on_stripe_success(
+                pi_id, self._bgen_library_mgr._checkout_product_id
             )
         )
         self._stripe_checkout_page.back_requested.connect(
@@ -979,11 +1033,11 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         )
 
         # Push download progress/completion to WebView
-        self._marketplace_mgr.download_progress.connect(
+        self._bgen_library_mgr.download_progress.connect(
             lambda pid, done, total: self._mkt_webview.push_download_progress(pid, done, total)
         )
-        self._marketplace_mgr.download_completed.connect(self._on_webview_download_completed)
-        self._marketplace_mgr.download_failed.connect(
+        self._bgen_library_mgr.download_completed.connect(self._on_webview_download_completed)
+        self._bgen_library_mgr.download_failed.connect(
             lambda pid, err: self._mkt_webview.push_download_failed(pid, err)
         )
 
@@ -994,10 +1048,11 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         )
 
         # Add sub-pages to library stack
-        self.library_stack.addWidget(my_library_widget)    # index 0
-        self.library_stack.addWidget(self._mkt_webview)    # index 1
+        self.library_stack.addWidget(my_library_widget)           # index 0
+        self.library_stack.addWidget(self._mkt_webview)           # index 1
+        self.library_stack.addWidget(self._stripe_checkout_page)  # index 2
 
-        # Connect segment to stack + refresh marketplace on BGEN Library tab
+        # Connect segment to stack + refresh library on BGEN Library tab
         self.library_segment.segment_changed.connect(self._on_library_tab_changed)
 
         library_layout.addWidget(self.library_segment)
@@ -1012,7 +1067,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             open_downloads_callback=self._open_downloads_folder,
         )
 
-        # Auth integration (account management is now in the web marketplace)
+        # Auth integration (account management is now in the web library)
         self._auth = AuthManager.get_instance()
         self._auth.auth_state_changed.connect(self._on_auth_state_changed)
         self._auth.profile_error.connect(
@@ -1076,8 +1131,8 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         """Handle My Library / BGEN Library tab switch."""
         self.library_stack.setCurrentIndex(index)
         if index == 1:
-            # Lazy-load the marketplace WebView on first visit
-            self._mkt_webview.load_marketplace()
+            # Lazy-load the library WebView on first visit
+            self._mkt_webview.load_library()
 
     def _on_checkout_ready(self, stripe_data, product_id):
         """Open the embedded Stripe checkout page when a PaymentIntent is ready."""
@@ -1097,12 +1152,12 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             self.library_controller.refresh()
 
     def _on_feature_flags_loaded(self, flags):
-        """Handle feature flag updates (logging only — web marketplace handles gating)."""
+        """Handle feature flag updates (logging only — web library handles gating)."""
         pass
 
     def _on_auth_state_changed(self, signed_in: bool):
         """Handle auth state transitions from AuthManager."""
-        # Web marketplace handles account UI; just push state to webview
+        # Web library handles account UI; just push state to webview
         pass
 
     def setup_connections(self):
@@ -1121,6 +1176,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         
         self.image_scale_factor.valueChanged.connect(self.update_image_scale)
         self.namespace_dropdown.currentTextChanged.connect(self.on_namespace_changed)
+        self.namespace_dropdown.requestContextMenu.connect(self._show_namespace_context_menu)
         if hasattr(self, 'tab_system') and self.tab_system.current_tab:
             current_canvas = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
             current_canvas.clicked.connect(self.clear_line_edit_focus)
@@ -1519,7 +1575,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
     def info(self):
         # Opens link to Manual
         import webbrowser
-        webbrowser.open('https://munorr.com/tools/ft-anim-picker/')
+        webbrowser.open('https://m2ky.com/dev/tools/bgen-picker?tab=manual')
         print(f'BGEN Picker {anim_picker_version}')
      
     def toggle_edit_mode(self):
@@ -1535,12 +1591,12 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         # The visible canvas area after the panel overlays
         visible_canvas = canvas_width - panel_width
         # We want at least 40% of the canvas to remain visible
-        min_visible_ratio = 0.4
+        min_visible_ratio = 0.55
         min_visible_px = canvas_width * min_visible_ratio
 
         if self.edit_mode and visible_canvas < min_visible_px:
             # Canvas is too narrow — expand the window to give enough room
-            needed_extra = int(panel_width * 0.65)
+            needed_extra = int(panel_width * 1.1)
             target_width = geo.width() + needed_extra
             # Store how much we added so we can undo it later
             self._edit_mode_width_delta = needed_extra
@@ -1703,12 +1759,15 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                 self.raise_()
                 self.activateWindow()
 
-    def _ensure_window_hidden(self):
+    def _ensure_window_hidden(self, force=False):
         """Ensure window is hidden when not needed (called by centralized manager)"""
+        import sys
+        if sys.platform == "darwin" and not force:
+            return  # On macOS, Qt.Tool windows hide/show with the app natively
         if self.should_be_visible:
             self.should_be_visible = False
             #print(f"Hiding window {id(self)}")
-            
+
             # Store current geometry before hiding
             if self.isVisible():
                 self.stored_geometry = self.geometry()
@@ -1982,7 +2041,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
 
     def _import_picker_file(self, file_path):
         """Core import logic shared by import_picker() and dropEvent()."""
-        from .library_manager import LibraryManager
+        from .local_file_manager import LocalFileManager
         ext = os.path.splitext(file_path)[1].lower()
         picker_uuid = None
 
@@ -2010,7 +2069,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
 
         if import_mode == 'merge' and self.session:
             # Merge tabs from the imported bpicker into current session
-            lib_path = LibraryManager.get_picker_path(picker_uuid)
+            lib_path = LocalFileManager.get_picker_path(picker_uuid)
             if lib_path:
                 imported_tabs = PIO.import_tabs_from_bpicker(str(lib_path))
                 if imported_tabs:
@@ -2035,7 +2094,25 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         # Refresh library grid
         if self.library_controller:
             self.library_controller.refresh()
-            
+
+    def _import_tab_from_library(self, uuid, tab_name):
+        """Import a single tab from a library picker into the current session."""
+        from .local_file_manager import LocalFileManager
+        if not self.session:
+            return
+        lib_path = LocalFileManager.get_picker_path(uuid)
+        if not lib_path:
+            QtWidgets.QMessageBox.warning(
+                self, "Error", "Could not locate picker in library.",
+            )
+            return
+        imported = PIO.import_tab_from_bpicker(str(lib_path), tab_name)
+        if imported:
+            self._rebuild_ui_from_data()
+            self.show_blender_message(f"Imported tab '{imported[0]}'")
+        else:
+            self.show_blender_message(f"Tab '{tab_name}' was not imported.")
+
     def _load_picker_from_file(self, file_path):
         """OPTIMIZED: Load picker data from a file path with proper cleanup"""
         try:
@@ -2212,80 +2289,210 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         bpy.app.timers.register(show_message, first_interval=0.01)
     #-----------------------------------------------------------------------------------------------------------------------------------
     def setup_scene_update_timer(self):
-        """Setup msgbus subscription for efficient scene change detection"""
+        """Setup depsgraph handler to detect scene armature changes.
+
+        Performance: in heavy scenes the depsgraph fires many times per second.
+        The hot path here must be O(1). We use a length-based pre-filter so the
+        full armature-name scan only runs when scene.objects membership changes,
+        and we short-circuit entirely when no picker window is visible.
+        """
         import bpy
-        
-        # Create msgbus owner for this window instance
-        self._scene_msgbus_owner = object()
-        
-        # Subscribe to scene objects changes (much more efficient than polling)
+        import weakref
+        from . import blender_main as BM
+
+        # Cache current armature names for cheap comparison in the handler
+        self._cached_armature_names = self._get_scene_armature_names()
+        self._cached_scene_object_count = -1
+        self._scene_tick_counter = 0
         try:
-            # Subscribe to changes in the scene's objects collection
-            subscribe_to = bpy.types.Scene, "objects"
-            _scene_cb = lambda scene: self._on_scene_objects_changed(scene)
-            bpy.msgbus.subscribe_rna(
-                key=subscribe_to,
-                owner=self._scene_msgbus_owner,
-                args=(bpy.context.scene,),
-                notify=_scene_cb,
-                options={'PERSISTENT'}
+            self._cached_scene_object_count = len(bpy.context.scene.objects)
+        except Exception:
+            pass
+
+        # Debounce timer for batching rapid scene updates
+        self._scene_change_timer = QtCore.QTimer(self)
+        self._scene_change_timer.setSingleShot(True)
+        self._scene_change_timer.timeout.connect(self.check_scene_for_updates)
+
+        _self_ref = weakref.ref(self)
+
+        def _on_depsgraph_update_scene(scene, depsgraph):
+            s = _self_ref()
+            if s is None:
+                return
+            # Gate 1: skip all work when the picker is not on screen.
+            if not BM.is_any_picker_visible():
+                return
+            try:
+                # Gate 2: cheap O(1) length check. If the scene's object count
+                # hasn't changed, membership hasn't changed either — skip the
+                # full type-iteration (which is O(N) and expensive in heavy scenes).
+                count = len(scene.objects)
+                # Every ~120 ticks (~2-5s of activity) force a full scan anyway
+                # so armature renames are picked up. Cheap because we only do
+                # the scan itself, not every tick.
+                s._scene_tick_counter += 1
+                force_scan = s._scene_tick_counter >= 120
+                if count == s._cached_scene_object_count and not force_scan:
+                    return
+                s._cached_scene_object_count = count
+                if force_scan:
+                    s._scene_tick_counter = 0
+
+                # Only now do the full armature-name scan (still cheap relative
+                # to running it every tick).
+                current = s._get_scene_armature_names()
+                if current != s._cached_armature_names:
+                    s._cached_armature_names = current
+                    if not s._scene_change_timer.isActive():
+                        s._scene_change_timer.start(300)
+            except Exception:
+                pass
+
+        _on_depsgraph_update_scene._bpy_persistent = True
+        self._scene_depsgraph_fn = _on_depsgraph_update_scene
+        bpy.app.handlers.depsgraph_update_post.append(self._scene_depsgraph_fn)
+
+    def _get_scene_armature_names(self):
+        """Return a frozenset of armature object names in the current scene"""
+        import bpy
+        try:
+            return frozenset(
+                obj.name for obj in bpy.context.scene.objects
+                if obj.type == 'ARMATURE'
             )
-        except Exception as e:
-            print(f"BGEN Picker: Could not setup msgbus, falling back to timer: {e}")
-            # Fallback to slower timer-based approach
-            self.scene_update_timer = QtCore.QTimer(self)
-            self.scene_update_timer.timeout.connect(self.check_scene_for_updates)
-            self.scene_update_timer.start(5000)  # Increased to 5 seconds as fallback
-    
-    def _on_scene_objects_changed(self, scene):
-        """Callback when scene objects change - triggered by msgbus"""
-        # Debounce updates with a short delay
-        if not hasattr(self, '_scene_change_timer'):
-            self._scene_change_timer = QtCore.QTimer(self)
-            self._scene_change_timer.setSingleShot(True)
-            self._scene_change_timer.timeout.connect(self.check_scene_for_updates)
-        
-        if not self._scene_change_timer.isActive():
-            self._scene_change_timer.start(500)  # 500ms debounce
+        except Exception:
+            return frozenset()
 
     def check_scene_for_updates(self):
-        """Check if rigs in scene have changed and update dropdown if needed - OPTIMIZED"""
-        import bpy
-        
-        # OPTIMIZATION: Only get armature objects directly instead of iterating all objects
-        current_rigs = []
-        try:
-            # More efficient: filter by type directly from the data
-            for obj in bpy.data.objects:
-                if obj.type == 'ARMATURE' and obj.name in bpy.context.scene.objects:
-                    current_rigs.append(obj.name)
-            current_rigs.sort()
-        except Exception as e:
-            print(f"Error getting scene rigs: {e}")
-            return
-        
-        # Get dropdown items (excluding 'None')
-        dropdown_items = []
-        for i in range(1, self.namespace_dropdown.count()):  # Skip index 0 which is 'None'
-            dropdown_items.append(self.namespace_dropdown.itemText(i))
-        
-        # Update dropdown if rigs have changed
-        if current_rigs != dropdown_items:
-            #print("Scene rigs changed, updating namespace dropdown")
-            self.update_namespace_dropdown()
+        """Update namespace dropdown when scene armatures have changed"""
+        self.update_namespace_dropdown()
 
     def on_namespace_changed(self, namespace_text):
         """Handle namespace dropdown change"""
         if not self.tab_system.current_tab:
             return
-            
+
         current_tab = self.tab_system.current_tab
-        
+
         # Update the namespace in the data manager for this tab
         DM.PickerDataManager.update_tab_namespace(current_tab, namespace_text)
-        
+
         #print(f"Tab '{current_tab}' namespace changed to: {namespace_text}")
-        
+
+    def _show_namespace_context_menu(self, global_pos):
+        """Build the right-click context menu for the namespace dropdown.
+
+        Lets the user toggle 'Show Pinned Only' (which filters the dropdown
+        and turns the border #1d65ca) and check/uncheck which scene armatures
+        are pinned. Per-tab state.
+        """
+        current_tab = self.tab_system.current_tab
+        if not current_tab:
+            return
+
+        tab_data = DM.PickerDataManager.get_tab_data(current_tab)
+        filter_mode = bool(tab_data.get('namespace_filter_mode', False))
+        pinned = list(tab_data.get('pinned_namespaces', []) or [])
+        scene_rigs = sorted(self._get_scene_armature_names())
+
+        menu = QtWidgets.QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2a2a2a; color: #dddddd;
+                border: 1px solid #3a3a3a; border-radius: 4px; padding: 4px;
+            }
+            QMenu::item { padding: 5px 20px; border-radius: 3px; }
+            QMenu::item:selected { background-color: rgba(29,101,202,0.4); }
+            QMenu::separator { height: 1px; background: #3a3a3a; margin: 4px 6px; }
+        """)
+
+        # 1. Show Pinned Only — checkable, applies immediately, closes menu
+        toggle_action = menu.addAction("Show Pinned Only")
+        toggle_action.setCheckable(True)
+        toggle_action.setChecked(filter_mode)
+        toggle_action.triggered.connect(
+            lambda checked: self._on_namespace_filter_toggled(bool(checked))
+        )
+
+        menu.addSeparator()
+
+        # 2. Quick actions
+        pin_all = menu.addAction("Pin All")
+        pin_all.setEnabled(bool(scene_rigs))
+        pin_all.triggered.connect(lambda: self._on_pin_all_namespaces(scene_rigs))
+
+        clear_all = menu.addAction("Clear Pins")
+        clear_all.setEnabled(bool(pinned))
+        clear_all.triggered.connect(self._on_clear_pinned_namespaces)
+
+        menu.addSeparator()
+
+        # 3. Per-armature checkboxes (QWidgetAction so toggling stays open)
+        if not scene_rigs:
+            empty = menu.addAction("No rigs in scene")
+            empty.setEnabled(False)
+        else:
+            for name in scene_rigs:
+                cb = QtWidgets.QCheckBox(name)
+                cb.setChecked(name in pinned)
+                cb.setStyleSheet(
+                    "QCheckBox { color: #dddddd; padding: 4px 20px; background: transparent; }"
+                    "QCheckBox:hover { background-color: rgba(29,101,202,0.4); border-radius: 3px; }"
+                    "QCheckBox::indicator { width: 12px; height: 12px; }"
+                )
+                cb.toggled.connect(
+                    lambda checked, n=name: self._on_pinned_namespace_toggled(n, checked)
+                )
+                wa = QtWidgets.QWidgetAction(menu)
+                wa.setDefaultWidget(cb)
+                menu.addAction(wa)
+
+        menu.exec_(global_pos)
+
+    def _on_namespace_filter_toggled(self, enabled):
+        if not self.tab_system.current_tab:
+            return
+        DM.PickerDataManager.update_tab_namespace_filter_mode(
+            self.tab_system.current_tab, enabled
+        )
+        # Refresh dropdown contents + border
+        self.update_namespace_dropdown()
+
+    def _on_pin_all_namespaces(self, scene_rigs):
+        if not self.tab_system.current_tab:
+            return
+        DM.PickerDataManager.update_tab_pinned_namespaces(
+            self.tab_system.current_tab, list(scene_rigs)
+        )
+        self.update_namespace_dropdown()
+
+    def _on_clear_pinned_namespaces(self):
+        if not self.tab_system.current_tab:
+            return
+        DM.PickerDataManager.update_tab_pinned_namespaces(
+            self.tab_system.current_tab, []
+        )
+        self.update_namespace_dropdown()
+
+    def _on_pinned_namespace_toggled(self, name, checked):
+        if not self.tab_system.current_tab:
+            return
+        tab_data = DM.PickerDataManager.get_tab_data(self.tab_system.current_tab)
+        pinned = list(tab_data.get('pinned_namespaces', []) or [])
+        if checked and name not in pinned:
+            pinned.append(name)
+        elif not checked and name in pinned:
+            pinned.remove(name)
+        else:
+            return
+        DM.PickerDataManager.update_tab_pinned_namespaces(
+            self.tab_system.current_tab, pinned
+        )
+        # Live-refresh dropdown so filtered list updates without closing menu
+        self.update_namespace_dropdown()
+
+
     def update_namespace_dropdown_width(self):
         """Calculate and set optimal width for namespace dropdown based on content"""
         # Use QFontMetrics to measure text width
@@ -2308,35 +2515,59 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self.namespace_dropdown.setFixedWidth(optimal_width)
     
     def populate_namespace_dropdown(self):
-        """Populate namespace dropdown with rigs (armature objects) in the scene"""
+        """Populate namespace dropdown with rigs (armature objects) in the scene.
+
+        If the current tab has 'namespace_filter_mode' enabled, the list is
+        narrowed to 'pinned_namespaces' (intersected with the actual scene
+        contents). The currently-selected namespace is always kept visible
+        even if it isn't pinned, so the user never silently loses it.
+        """
         import bpy
-        
+
+        # Resolve filter state from the current tab (if any)
+        filter_mode = False
+        pinned = []
+        current_namespace = 'None'
+        if self.tab_system.current_tab:
+            tab_data = DM.PickerDataManager.get_tab_data(self.tab_system.current_tab)
+            filter_mode = bool(tab_data.get('namespace_filter_mode', False))
+            pinned = list(tab_data.get('pinned_namespaces', []) or [])
+            current_namespace = tab_data.get('namespace', 'None') or 'None'
+
         # Block signals during population to prevent unwanted triggers
         self.namespace_dropdown.blockSignals(True)
-        
+
         try:
             with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
                 # Clear existing items
                 self.namespace_dropdown.clear()
-                
+
                 # Add default "None" option
                 self.namespace_dropdown.addItem('None')
-                
+
                 # Get all armature objects in the scene
-                rig_names = []
-                for obj in bpy.context.scene.objects:
-                    if obj.type == 'ARMATURE':
-                        rig_names.append(obj.name)
-                
-                # Sort rig names alphabetically
-                rig_names.sort()
-                
-                # Add rig names to dropdown
+                scene_rigs = [
+                    obj.name for obj in bpy.context.scene.objects
+                    if obj.type == 'ARMATURE'
+                ]
+                scene_set = set(scene_rigs)
+
+                if filter_mode:
+                    # Pinned ∩ scene, plus current selection if it's a real
+                    # armature missing from the pinned set (preserve selection)
+                    visible = [n for n in pinned if n in scene_set]
+                    if (current_namespace
+                            and current_namespace != 'None'
+                            and current_namespace in scene_set
+                            and current_namespace not in visible):
+                        visible.append(current_namespace)
+                    rig_names = sorted(set(visible))
+                else:
+                    rig_names = sorted(scene_rigs)
+
                 for rig_name in rig_names:
                     self.namespace_dropdown.addItem(rig_name)
-                
-                #print(f"Populated namespace dropdown - Found {len(rig_names)} rigs in scene: {rig_names}")
-                
+
                 # Update dropdown width based on content
                 self.update_namespace_dropdown_width()
         finally:
@@ -2349,11 +2580,15 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         if self.tab_system.current_tab:
             tab_data = DM.PickerDataManager.get_tab_data(self.tab_system.current_tab)
             stored_namespace = tab_data.get('namespace', 'None')
-            #print(f"update_namespace_dropdown: Current tab '{self.tab_system.current_tab}' has stored namespace: '{stored_namespace}'")
+            filter_mode = bool(tab_data.get('namespace_filter_mode', False))
         else:
             stored_namespace = 'None'
-            #print("update_namespace_dropdown: No current tab, using 'None'")
-        
+            filter_mode = False
+
+        # Reflect the current tab's filter mode on the dropdown border
+        if hasattr(self.namespace_dropdown, 'set_filter_mode_style'):
+            self.namespace_dropdown.set_filter_mode_style(filter_mode)
+
         # Block signals during update
         self.namespace_dropdown.blockSignals(True)
         
@@ -2810,28 +3045,8 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         tab_data = DM.PickerDataManager.get_tab_data(current_tab)
         
         # Create comprehensive button data
-        button_data = {
-            "id": button.unique_id,
-            "selectable": button.selectable,
-            "label": button.label,
-            "color": button.color,
-            "opacity": button.opacity,
-            "position": (button.scene_position.x(), button.scene_position.y()),
-            "width": button.width,
-            "height": button.height,
-            "radius": button.radius,
-            "assigned_objects": getattr(button, 'assigned_objects', []),
-            "mode": getattr(button, 'mode', 'select'),
-            "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
-            "pose_data": getattr(button, 'pose_data', {}),
-            "animation_data": getattr(button, 'animation_data', {}),
-            "controller_data": getattr(button, 'controller_data', {}),
-            "thumbnail_path": getattr(button, 'thumbnail_path', ''),
-            "shape_type": button.shape_type,
-            "svg_path_data": button.svg_path_data,
-            "svg_file_path": button.svg_file_path
-        }
-        
+        button_data = self._create_button_data(button)
+
         # Update existing button or add new one
         updated = False
         for i, existing_button in enumerate(tab_data['buttons']):
@@ -2914,7 +3129,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                 # Default fields to update if none specified
                 if fields_to_update is None:
                     # Update all fields
-                    fields_to_update = ['position', 'width', 'height', 'radius', 'rotation', 'shape_type','label', 'color', 'opacity', 'assigned_objects', 'mode', 'script_data', 'pose_data', 'thumbnail_path','svg_path_data','svg_file_path','selectable', 'text_color', 'text_bold', 'text_italic', 'text_underline']
+                    fields_to_update = ['position', 'width', 'height', 'radius', 'rotation', 'shape_type','label', 'color', 'opacity', 'assigned_objects', 'mode', 'script_data', 'pose_data', 'animation_data', 'controller_data', 'thumbnail_path','svg_path_data','svg_file_path','selectable', 'text_color', 'text_bold', 'text_italic', 'text_underline']
                 
                 # Update specified fields for all affected buttons
                 for button in buttons_to_update:
@@ -2952,6 +3167,8 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
                                     tab_data['buttons'][i]['pose_data'] = getattr(button, 'pose_data', {})
                                 elif field == 'animation_data':
                                     tab_data['buttons'][i]['animation_data'] = getattr(button, 'animation_data', {})
+                                elif field == 'controller_data':
+                                    tab_data['buttons'][i]['controller_data'] = getattr(button, 'controller_data', {})
                                 elif field == 'thumbnail_path':
                                     tab_data['buttons'][i]['thumbnail_path'] = getattr(button, 'thumbnail_path', '')
                                 elif field == 'selectable':
@@ -3109,31 +3326,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             for button in updates_to_process:
                 try:
                     # Create comprehensive button data
-                    button_data = {
-                        "id": button.unique_id,
-                        "selectable": button.selectable,
-                        "label": button.label,
-                        "color": button.color,
-                        "opacity": button.opacity,
-                        "position": (button.scene_position.x(), button.scene_position.y()),
-                        "width": button.width,
-                        "height": button.height,
-                        "radius": button.radius,
-                        "assigned_objects": getattr(button, 'assigned_objects', []),
-                        "mode": getattr(button, 'mode', 'select'),
-                        "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
-                        "pose_data": getattr(button, 'pose_data', {}),
-                        "animation_data": getattr(button, 'animation_data', {}),
-                        "controller_data": getattr(button, 'controller_data', {}),
-                        "thumbnail_path": getattr(button, 'thumbnail_path', ''),
-                        "shape_type": button.shape_type,
-                        "svg_path_data": button.svg_path_data,
-                        "svg_file_path": button.svg_file_path,
-                        "text_color": getattr(button, 'text_color', '#ffffff'),
-                        "text_bold": getattr(button, 'text_bold', False),
-                        "text_italic": getattr(button, 'text_italic', False),
-                        "text_underline": getattr(button, 'text_underline', False)
-                    }
+                    button_data = self._create_button_data(button)
                     
                     # Update existing button or add new one
                     if button.unique_id in existing_buttons_map:
@@ -3192,28 +3385,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         tab_data = DM.PickerDataManager.get_tab_data(current_tab)
         
         # Create comprehensive button data
-        button_data = {
-            "id": button.unique_id,
-            "selectable": button.selectable,
-            "label": button.label,
-            "color": button.color,
-            "opacity": button.opacity,
-            "position": (button.scene_position.x(), button.scene_position.y()),  # CRITICAL: Always update position
-            "width": button.width,
-            "height": button.height,
-            "radius": button.radius,
-            "assigned_objects": getattr(button, 'assigned_objects', []),
-            "mode": getattr(button, 'mode', 'select'),
-            "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
-            "pose_data": getattr(button, 'pose_data', {}),
-            "animation_data": getattr(button, 'animation_data', {}),
-            "controller_data": getattr(button, 'controller_data', {}),
-            "thumbnail_path": getattr(button, 'thumbnail_path', ''),
-            "rotation": getattr(button, 'rotation', 0),
-            "shape_type": button.shape_type,
-            "svg_path_data": button.svg_path_data,
-            "svg_file_path": button.svg_file_path
-        }
+        button_data = self._create_button_data(button)
 
         # CRITICAL FIX: Find and update existing button or add new one
         updated = False
@@ -4110,6 +4282,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             "shape_type": button.shape_type,
             "svg_path_data": button.svg_path_data,
             "svg_file_path": button.svg_file_path,
+            "rotation": getattr(button, 'rotation', 0),
             "text_color": getattr(button, 'text_color', '#ffffff'),
             "text_bold": getattr(button, 'text_bold', False),
             "text_italic": getattr(button, 'text_italic', False),
@@ -4127,6 +4300,20 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
     #-----------------------------------------------------------------------------------------------------------------------------------
     # Events
     #-----------------------------------------------------------------------------------------------------------------------------------
+    def _on_app_focus_changed(self, old, new):
+        """When focus leaves a picker QLineEdit, refresh Blender's input
+        state so it doesn't get stuck thinking a modifier key is held."""
+        try:
+            if old is None or not isinstance(old, QtWidgets.QLineEdit):
+                return
+            # Only react if the line edit was inside this picker window.
+            if old.window() is not self:
+                return
+            from . import utils as UT
+            UT.blender_main_window()
+        except Exception:
+            pass
+
     def enterEvent(self, event):
         """Ensure mouse tracking is active when entering the window"""
         self.setMouseTracking(True)
@@ -4140,6 +4327,25 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         if not self.resizing:
             self.setCursor(QtCore.Qt.ArrowCursor)
         #QtWidgets.QToolTip.hideText()
+
+        # Hand macOS key window status back to Blender as soon as the
+        # cursor leaves the picker. The picker is a floating tool with
+        # WindowStaysOnTopHint, so AppKit will never auto-transfer key
+        # status — we have to do it explicitly. Without this, Blender's
+        # GHOST stays in a "not key" state and viewport orbit/pan/zoom
+        # silently break until something forces a GHOST resync (e.g.
+        # resizing an area).
+        #
+        # leaveEvent fires when the cursor crosses to a child widget
+        # too, so verify the cursor is actually outside the top-level
+        # picker frame before handing focus over.
+        try:
+            global_pos = QtGui.QCursor.pos()
+            if not self.frameGeometry().contains(global_pos):
+                from . import utils as UT
+                UT.blender_main_window()
+        except Exception:
+            pass
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
@@ -4339,6 +4545,47 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             self.setCursor(QtCore.Qt.ArrowCursor)
         super().leaveEvent(event)
     
+    def showEvent(self, event):
+        """Resume per-picker polling and catch up on selection state when the
+        window becomes visible. Blender-side handlers skip work while hidden,
+        so we need a one-shot resync on reshow.
+        """
+        super().showEvent(event)
+        try:
+            if hasattr(self, '_bones_sync_timer') and self._bones_sync_timer is not None:
+                if not self._bones_sync_timer.isActive():
+                    self._bones_sync_timer.start()
+                self._sync_show_bones_state()
+        except Exception:
+            pass
+        # Catch-up selection sync: handlers may have skipped events while hidden.
+        try:
+            mgr = SSM.SelectionSyncManager.get_instance()
+            if mgr is not None and not mgr._update_timer.isActive():
+                mgr._update_timer.start(50)
+        except Exception:
+            pass
+        # Refresh namespace dropdown in case armatures changed while hidden.
+        try:
+            if hasattr(self, 'check_scene_for_updates'):
+                self.check_scene_for_updates()
+                # Reset cached counters so the gated handler re-syncs correctly.
+                if hasattr(self, '_cached_scene_object_count'):
+                    import bpy
+                    self._cached_scene_object_count = len(bpy.context.scene.objects)
+        except Exception:
+            pass
+
+    def hideEvent(self, event):
+        """Pause per-picker polling while the window is not visible."""
+        super().hideEvent(event)
+        try:
+            if hasattr(self, '_bones_sync_timer') and self._bones_sync_timer is not None:
+                if self._bones_sync_timer.isActive():
+                    self._bones_sync_timer.stop()
+        except Exception:
+            pass
+
     def resizeEvent(self, event):
         """Enhanced resize event with better throttling"""
         # Call parent implementation first
@@ -4403,7 +4650,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         result = dialog.get_result()
 
         if result == "create_new":
-            self.create_new_picker()
+            self._on_library_create_new()
         elif result == "open_library":
             # Switch to Library page
             self.page_segment.set_selected_index(1)
@@ -4786,11 +5033,11 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             self.library_controller.set_search_text(text)
 
     # ------------------------------------------------------------------
-    # BGEN Marketplace filter / search
+    # BGEN Library filter / search
     # ------------------------------------------------------------------
 
     def _on_bgen_filter_menu(self):
-        """Show sort popup for the BGEN marketplace catalogue."""
+        """Show sort popup for the BGEN library catalogue."""
         popup = QtWidgets.QFrame(self, QtCore.Qt.Popup)
         popup.setStyleSheet(
             "QFrame#bgenFilterPopup { background-color: #2a2a2a; "
@@ -4853,8 +5100,8 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             def make_click_handler(sort_key):
                 def handler(event):
                     self._bgen_sort_mode = sort_key
-                    if hasattr(self, 'marketplace_controller') and self.marketplace_controller:
-                        self.marketplace_controller.set_sort_mode(sort_key)
+                    if hasattr(self, 'bgen_library_controller') and self.bgen_library_controller:
+                        self.bgen_library_controller.set_sort_mode(sort_key)
                     popup.close()
                 return handler
             row.mousePressEvent = make_click_handler(key)
@@ -4917,8 +5164,8 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
             def make_view_handler(view_key):
                 def handler(event):
                     self._bgen_view_mode = view_key
-                    if hasattr(self, 'marketplace_controller') and self.marketplace_controller:
-                        self.marketplace_controller.set_view_mode(view_key)
+                    if hasattr(self, 'bgen_library_controller') and self.bgen_library_controller:
+                        self.bgen_library_controller.set_view_mode(view_key)
                     popup.close()
                 return handler
             row.mousePressEvent = make_view_handler(key)
@@ -4933,7 +5180,7 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         self._bgen_filter_popup = popup
 
     def _toggle_bgen_search(self):
-        """Toggle the BGEN marketplace search bar."""
+        """Toggle the BGEN library search bar."""
         self._bgen_search_visible = not self._bgen_search_visible
 
         anim = QtCore.QPropertyAnimation(self.bgen_search_container, b"maximumHeight")
@@ -4954,9 +5201,9 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         anim.start()
 
     def _on_bgen_search_changed(self, text):
-        """Forward search text to the marketplace controller."""
-        if hasattr(self, 'marketplace_controller') and self.marketplace_controller:
-            self.marketplace_controller.set_search_text(text)
+        """Forward search text to the library controller."""
+        if hasattr(self, 'bgen_library_controller') and self.bgen_library_controller:
+            self.bgen_library_controller.set_search_text(text)
 
     def _on_library_plus_menu(self):
         """Show a menu from the + button with New Picker and Convert options."""
@@ -5016,22 +5263,22 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
 
     def _browse_library_path(self):
         """Browse for a new library folder location."""
-        from .library_manager import LibraryManager
-        current = str(LibraryManager.get_library_path())
+        from .local_file_manager import LocalFileManager
+        current = str(LocalFileManager.get_library_path())
         new_path = QtWidgets.QFileDialog.getExistingDirectory(
             self, "Select Library Folder", current
         )
         if new_path:
-            LibraryManager.set_library_path(new_path)
+            LocalFileManager.set_library_path(new_path)
             self.settings_page.update_library_path_display(new_path)
             if self.library_controller:
                 self.library_controller.refresh()
 
     def _open_library_folder(self):
         """Open the library folder in the system file manager."""
-        from .library_manager import LibraryManager
-        lib_path = str(LibraryManager.get_library_path())
-        LibraryManager.ensure_library_exists()
+        from .local_file_manager import LocalFileManager
+        lib_path = str(LocalFileManager.get_library_path())
+        LocalFileManager.ensure_library_exists()
         import subprocess, sys
         if sys.platform == 'win32':
             os.startfile(lib_path)
@@ -5042,19 +5289,19 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
 
     def _browse_downloads_path(self):
         """Browse for a new downloads folder location."""
-        from .library_manager import LibraryManager
-        current = str(LibraryManager.get_downloads_path())
+        from .local_file_manager import LocalFileManager
+        current = str(LocalFileManager.get_downloads_path())
         new_path = QtWidgets.QFileDialog.getExistingDirectory(
             self, "Select Downloads Folder", current
         )
         if new_path:
-            LibraryManager.set_downloads_path(new_path)
+            LocalFileManager.set_downloads_path(new_path)
             self.settings_page.update_downloads_path_display(new_path)
 
     def _open_downloads_folder(self):
         """Open the downloads folder in the system file manager."""
-        from .library_manager import LibraryManager
-        dl_path = str(LibraryManager.get_downloads_path())
+        from .local_file_manager import LocalFileManager
+        dl_path = str(LocalFileManager.get_downloads_path())
         Path(dl_path).mkdir(parents=True, exist_ok=True)
         import subprocess, sys
         if sys.platform == 'win32':
@@ -5092,10 +5339,27 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
 
     def closeEvent(self, event):
         """Enhanced close event to ensure all data is saved and timers are cleaned up"""
-        # Clean up session
+        # Exit rename mode for any button in rename mode in the active canvas
+        if hasattr(self, 'tab_system') and self.tab_system and self.tab_system.current_tab:
+            canvas = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
+            for button in getattr(canvas, 'buttons', []):
+                if getattr(button, 'rename_mode', False):
+                    button.commit_rename()
+                    button.exit_rename_mode()
+
+        self.edit_mode = False
+
+        # Flush ALL pending data to PickerDataManager BEFORE session save
+        if hasattr(self, 'edit_controller') and self.edit_controller:
+            self.edit_controller._commit_drag_to_database()
+        if hasattr(self, 'pending_widget_changes') and self.pending_widget_changes:
+            self._apply_widget_changes()
+        if hasattr(self, 'pending_button_updates') and self.pending_button_updates:
+            self._process_batch_updates()
+
+        # Save and close session AFTER all data is flushed
         if self.session:
             if self.session.is_dirty():
-                # Auto-save on close
                 try:
                     self.session.save()
                 except Exception as e:
@@ -5120,28 +5384,11 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
-        # Invalidate marketplace cache so next window-open fetches fresh data
+        # Invalidate library cache so next window-open fetches fresh data
         try:
-            self._marketplace_mgr.invalidate_all_caches()
+            self._bgen_library_mgr.invalidate_all_caches()
         except Exception:
             pass
-
-         # Exit rename mode for any button in rename mode in the active canvas
-        if hasattr(self, 'tab_system') and self.tab_system and self.tab_system.current_tab:
-            canvas = self.tab_system.tabs[self.tab_system.current_tab]['canvas']
-            for button in getattr(canvas, 'buttons', []):
-                if getattr(button, 'rename_mode', False):
-                    button.commit_rename()
-                    button.exit_rename_mode()
-        
-        self.edit_mode = False
-        
-        # Process any pending updates before closing
-        if hasattr(self, 'pending_button_updates') and self.pending_button_updates:
-            self._process_batch_updates()
-        
-        if hasattr(self, 'pending_widget_changes') and self.pending_widget_changes:
-            self._apply_widget_changes()
 
         # Stop the stay-on-top timer first
         if hasattr(self, 'stay_on_top_timer') and self.stay_on_top_timer:
@@ -5273,14 +5520,14 @@ class BlenderAnimPickerWindow(QtWidgets.QWidget):
 
     def _cleanup_timers(self):
         """Stop and delete all timers and msgbus subscriptions"""
-        # Cleanup msgbus subscriptions
-        if hasattr(self, '_scene_msgbus_owner'):
+        # Cleanup depsgraph handler for scene armature detection
+        if hasattr(self, '_scene_depsgraph_fn'):
             try:
                 import bpy
-                bpy.msgbus.clear_by_owner(self._scene_msgbus_owner)
-                #print("Cleaned up scene msgbus subscriptions")
+                if self._scene_depsgraph_fn in bpy.app.handlers.depsgraph_update_post:
+                    bpy.app.handlers.depsgraph_update_post.remove(self._scene_depsgraph_fn)
             except Exception as e:
-                print(f"Error cleaning up scene msgbus: {e}")
+                print(f"Error cleaning up scene depsgraph handler: {e}")
         
         # Stop and cleanup timers
         for timer_attr in ['resize_timer', 'batch_update_timer', 'widget_update_timer', 'stay_on_top_timer', 'update_checker_timer', 'scene_update_timer', '_scene_change_timer']:

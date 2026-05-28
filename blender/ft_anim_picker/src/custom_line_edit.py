@@ -16,6 +16,7 @@ class FocusLosingLineEdit(QtWidgets.QLineEdit):
 class IntegerLineEdit(QtWidgets.QLineEdit):
     valueChanged = Signal(float)
     applyToAllRequested = Signal(float)  # New signal for apply-to-all functionality
+    dragFinished = Signal()  # Emitted on mouse release after drag, or on Enter/apply
 
     def __init__(self, parent=None, min_value=0, max_value=100, increment=1, precision=1, width=None, height=None, label=""):
         super(IntegerLineEdit, self).__init__(parent)
@@ -123,12 +124,24 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
         # Provide a default size hint if no custom size is set
         return QSize(100, 25)
 
+    def _get_label_width(self):
+        """Return the pixel width of the label drag zone."""
+        if self.label_text:
+            return self.fontMetrics().horizontalAdvance(self.label_text + ": ") + 4
+        return 0
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.last_x = event.x()
-            self.dragging = True
-            self.drag_used = False  # Reset drag usage flag
-            self.setCursor(Qt.SizeHorCursor)  # Change cursor to indicate drag mode
+            label_zone = self._get_label_width()
+            if label_zone == 0 or event.x() <= label_zone:
+                # Click in label area (or no label) → start drag
+                self.last_x = event.x()
+                self.dragging = True
+                self.drag_used = False
+                self.setCursor(Qt.SizeHorCursor)
+            else:
+                # Click in text area → normal text editing, no drag
+                self.dragging = False
         super(IntegerLineEdit, self).mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -146,6 +159,7 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
             # Only clear focus if dragging was actually used
             if self.drag_used:
                 self.clearFocus()
+                self.dragFinished.emit()
             self.dragging = False
             self.setCursor(Qt.IBeamCursor)  # Reset cursor to text editing cursor
         super(IntegerLineEdit, self).mouseReleaseEvent(event)
@@ -190,7 +204,7 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
         # Skip if this is a programmatic update
         if self.is_programmatic_update:
             return
-            
+
         try:
             value = float(self.text())
             clamped_value = max(self.min_value, min(self.max_value, value))
@@ -198,6 +212,7 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
             if abs(clamped_value - value) > 0.001:  # Small tolerance for floating point
                 self.setText(f"{clamped_value:.{self.precision}f}")
             self.valueChanged.emit(clamped_value)
+            self.dragFinished.emit()
         except ValueError:
             # If the text is not a valid float, try to preserve the current value
             # Only reset to min_value if the text is completely empty or invalid
@@ -205,6 +220,7 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
             if not current_text or current_text == '':
                 self.setText(f"{self.min_value:.{self.precision}f}")
                 self.valueChanged.emit(self.min_value)
+                self.dragFinished.emit()
             # If text is not empty but invalid, don't change it - let user fix it
 
     def applyToAll(self):

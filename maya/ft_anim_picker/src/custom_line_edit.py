@@ -20,6 +20,7 @@ class FocusLosingLineEdit(QtWidgets.QLineEdit):
 class IntegerLineEdit(QtWidgets.QLineEdit):
     valueChanged = Signal(float)
     applyToAllRequested = Signal(float)  # New signal for apply-to-all functionality
+    dragFinished = Signal()  # Emitted on mouse release after drag, or on Enter/apply
 
     def __init__(self, parent=None, min_value=0, max_value=100, increment=1, precision=1, width=None, height=None, label=""):
         super(IntegerLineEdit, self).__init__(parent)
@@ -150,6 +151,7 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
             # Only clear focus if dragging was actually used
             if self.drag_used:
                 self.clearFocus()
+                self.dragFinished.emit()
             self.dragging = False
             self.setCursor(Qt.IBeamCursor)  # Reset cursor to text editing cursor
         super(IntegerLineEdit, self).mouseReleaseEvent(event)
@@ -175,6 +177,12 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
         self.setText(f"{clamped_value:.{self.precision}f}")
         self.is_programmatic_update = False
         # Don't emit valueChanged here to avoid conflicts during widget updates
+
+    def setRange(self, min_val, max_val):
+        """Update the min/max range and re-apply the validator."""
+        self.min_value = float(min_val)
+        self.max_value = float(max_val)
+        self.setValidator(QDoubleValidator(self.min_value, self.max_value, self.precision, self))
 
     def value(self):
         return float(self.text())
@@ -202,6 +210,7 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
             if abs(clamped_value - value) > 0.001:  # Small tolerance for floating point
                 self.setText(f"{clamped_value:.{self.precision}f}")
             self.valueChanged.emit(clamped_value)
+            self.dragFinished.emit()
         except ValueError:
             # If the text is not a valid float, try to preserve the current value
             # Only reset to min_value if the text is completely empty or invalid
@@ -209,6 +218,7 @@ class IntegerLineEdit(QtWidgets.QLineEdit):
             if not current_text or current_text == '':
                 self.setText(f"{self.min_value:.{self.precision}f}")
                 self.valueChanged.emit(self.min_value)
+                self.dragFinished.emit()
             # If text is not empty but invalid, don't change it - let user fix it
 
     def applyToAll(self):

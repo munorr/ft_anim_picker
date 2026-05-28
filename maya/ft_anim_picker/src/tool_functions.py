@@ -1431,7 +1431,9 @@ def button_appearance(text="", color="", opacity="", selectable="", source_butto
     
     # Process and validate appearance parameters
     validated_params = _process_appearance_parameters(text, color, opacity, selectable)
-    if not any(validated_params.values()):
+    # Use `is not None` so legit values like selectable=False or opacity=0.0
+    # are counted as intended changes (a plain truthy check treats them as "no change").
+    if not any(v is not None for v in validated_params.values()):
         print("No changes were made. Please provide at least one parameter (text, color, opacity, or selectable).")
         return
     
@@ -1716,6 +1718,7 @@ def _persist_appearance_changes(modified_buttons, context, validated_params):
                     "opacity": button.opacity,
                     "selectable": button.selectable,
                     "position": (button.scene_position.x(), button.scene_position.y()),
+                    "rotation": getattr(button, 'rotation', 0),
                     "width": getattr(button, 'width', 80),
                     "height": getattr(button, 'height', 30),
                     "radius": getattr(button, 'radius', [3, 3, 3, 3]),
@@ -1723,6 +1726,8 @@ def _persist_appearance_changes(modified_buttons, context, validated_params):
                     "mode": getattr(button, 'mode', 'select'),
                     "script_data": getattr(button, 'script_data', {'code': '', 'type': 'python'}),
                     "pose_data": getattr(button, 'pose_data', {}),
+                    "animation_data": getattr(button, 'animation_data', {}),
+                    "controller_data": getattr(button, 'controller_data', {}),
                     "thumbnail_path": getattr(button, 'thumbnail_path', ''),
                     "shape_type": getattr(button, 'shape_type', 'rect'),
                     "svg_path_data": getattr(button, 'svg_path_data', None),
@@ -2065,7 +2070,12 @@ def pb(button_ids):
         def pose_data(self):
             """Get the button's pose data."""
             return getattr(self._button, 'pose_data', {})
-            
+
+        @property
+        def animation_data(self):
+            """Get the button's animation data."""
+            return getattr(self._button, 'animation_data', {})
+
         @property
         def thumbnail_path(self):
             """Get the button's thumbnail path."""
@@ -2268,3 +2278,24 @@ def print_buttons():
     for button in buttons:
         print(f"ID: {button['id']:<20} | Label: {button['label']:<15} | Color: {button['color']:<8} | Opacity: {button['opacity']:<4} | Mode: {button['mode']}")
 
+def get_current_scene_selection():
+    """Return the current Maya selection as a normalized list for button creation.
+
+    Each item: {'label': short_name, 'assigned_object': {'uuid': ..., 'long_name': ...}}
+    Preserves selection order. Returns [] if nothing selected.
+    """
+    names = cmds.ls(selection=True, long=True) or []
+    items = []
+    for long_name in names:
+        try:
+            uuids = cmds.ls(long_name, uuid=True) or []
+            if not uuids:
+                continue
+            short = long_name.split('|')[-1].split(':')[-1]
+            items.append({
+                'label': short,
+                'assigned_object': {'uuid': uuids[0], 'long_name': long_name}
+            })
+        except Exception:
+            continue
+    return items

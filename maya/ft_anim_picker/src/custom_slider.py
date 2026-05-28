@@ -135,9 +135,15 @@ class CustomSlider(QtWidgets.QSlider):
             self.label.hide()
 
     def hideLineEdit(self):
-        """Hide line edit and show label"""
+        """Hide line edit and show label.
+
+        Also force-refresh the label text — updateLabel() skips updates while
+        the line_edit is visible, so without this the label can hold stale
+        text after a typed value is committed (slider moves but number doesn't).
+        """
         self.line_edit.hide()
         self.label.show()
+        self.updateLabel(super().value())
 
     def setValueFromText(self):
         try:

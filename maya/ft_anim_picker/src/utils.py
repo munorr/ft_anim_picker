@@ -60,8 +60,32 @@ def shortcuts(**shortcut_map):
         return wrapper
     return decorator
 
+def to_qcolor(color_input):
+    """Convert various color formats to a QColor.
+    Accepts: hex string, rgb/rgba CSS string, tuple/list of (r,g,b) or (r,g,b,a).
+    """
+    if isinstance(color_input, QColor):
+        return QColor(color_input)
+    if isinstance(color_input, (tuple, list)):
+        return QColor(*[int(c) for c in color_input])
+    if isinstance(color_input, str):
+        s = color_input.strip()
+        if s.startswith(('rgba(', 'rgb(')):
+            inner = s.split('(', 1)[1].rstrip(')')
+            parts = [p.strip() for p in inner.split(',')]
+            r, g, b = int(parts[0]), int(parts[1]), int(parts[2])
+            if len(parts) == 4:
+                a_val = float(parts[3])
+                if a_val <= 1.0:
+                    a_val = int(a_val * 255)
+                else:
+                    a_val = int(a_val)
+                return QColor(r, g, b, a_val)
+            return QColor(r, g, b)
+    return QColor(color_input)
+
 def rgba_value(hex_color, factor, alpha=None):
-    color = QColor(hex_color)
+    color = to_qcolor(hex_color)
     r, g, b, a = color.getRgbF()
     
     # Apply factor to RGB values
@@ -77,7 +101,7 @@ def rgba_value(hex_color, factor, alpha=None):
 
 def get_icon(icon_name, opacity=1.0, size=24):
     package_dir = Path(__file__).parent
-    icon_path = package_dir / 'ft_picker_icons' / icon_name
+    icon_path = package_dir / 'bgen_picker_icons' / icon_name
     if icon_path.exists():
         icon_pixmap = QtGui.QPixmap(str(icon_path))
         icon_pixmap = icon_pixmap.scaled(size, size, QtCore.Qt.KeepAspectRatio)
@@ -94,8 +118,32 @@ def get_icon(icon_name, opacity=1.0, size=24):
             return transparent_pixmap
         
         return icon_pixmap
-    return None
-    
+    return QtGui.QPixmap()
+
+def icon_render(icon_path, opacity=0.5, size=10):
+    """Create a QIcon from a file path with specified opacity and size."""
+    pixmap = QtGui.QPixmap(str(icon_path))
+    pixmap = pixmap.scaled(size, size, QtCore.Qt.KeepAspectRatio,
+                           QtCore.Qt.SmoothTransformation)
+    transparent_pixmap = QtGui.QPixmap(pixmap.size())
+    transparent_pixmap.fill(QtCore.Qt.transparent)
+    painter = QtGui.QPainter(transparent_pixmap)
+    painter.setOpacity(opacity)
+    painter.drawPixmap(0, 0, pixmap)
+    painter.end()
+    return QtGui.QIcon(transparent_pixmap)
+
+def parse_version(version_string):
+    """Parse version string into comparable tuple of ints.  '2.3.0' → (2,3,0)"""
+    import re
+    version = str(version_string).strip().lstrip('v')
+    numbers = re.findall(r'\d+', version)
+    return tuple(map(int, numbers)) if numbers else (0,)
+
+def is_version_less_than(version_a, version_b):
+    """Return True if version_a < version_b."""
+    return parse_version(version_a) < parse_version(version_b)
+
 def maya_main_window():
     main_window_ptr = omui.MQtUtil.mainWindow()
     return wrapInstance(int(main_window_ptr), QtWidgets.QWidget)

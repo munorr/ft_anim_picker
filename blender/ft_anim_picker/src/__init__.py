@@ -1,16 +1,10 @@
-"""FT Anim Picker - A powerful animation picker tool for Maya and Blender
+"""BGEN Picker - A powerful animation picker tool for Maya and Blender
 
-Part of the Floating Tools (FT) collection.
+Part of the BGEN collection.
 """
 
-__version__ = '2.2.3'
-__author__ = 'Floating Tools'
+__version__ = '3.0.8'
+__author__ = 'M2KY inc.'
 
-# Make main functions available at the package level
-try:
-    # Check if we're in Blender
-    import bpy
-    from .blender_main import open
-except ImportError:
-    # Fall back to Maya
-    from .blender_main import open
+# Note: Import functions only when explicitly needed to avoid circular imports
+# from .blender_main import open  # Available but not auto-imported

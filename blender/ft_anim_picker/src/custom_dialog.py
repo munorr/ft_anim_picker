@@ -3,18 +3,19 @@ from PySide6.QtGui import QColor
 from PySide6.QtCore import QTimer, QPropertyAnimation, QEasingCurve
 from shiboken6 import wrapInstance
 
+from . import utils as UT
+
 
 class CustomDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, title="", size=(250, 150), info_box = False):
         super(CustomDialog, self).__init__(parent)
         self.info_box = info_box
         self.setWindowTitle(title)
-        self.setWindowFlags(self.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        UT.apply_dark_window_flags(self)
         self.setFixedSize(*size)
         self.setStyleSheet('''
             QFrame {
-                background-color: rgba(40, 40, 40, 1);
+                background-color: #1d1d1d;
                 border-radius: 5px;
                 border: 1px solid #444444;
             }

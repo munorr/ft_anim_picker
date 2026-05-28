@@ -128,9 +128,15 @@ class CustomSlider(QtWidgets.QSlider):
             self.label.hide()
 
     def hideLineEdit(self):
-        """Hide line edit and show label"""
+        """Hide line edit and show label.
+
+        Also force-refresh the label text — updateLabel() skips updates while
+        the line_edit is visible, so without this the label can hold stale
+        text after a typed value is committed (slider moves but number doesn't).
+        """
         self.line_edit.hide()
         self.label.show()
+        self.updateLabel(super().value())
 
     def setValueFromText(self):
         try:
@@ -157,11 +163,21 @@ class CustomSlider(QtWidgets.QSlider):
 
 class HorizontalScrollArea(QtWidgets.QScrollArea):
     def wheelEvent(self, event):
-        # Get the horizontal scrollbar
         hbar = self.horizontalScrollBar()
-        # Use vertical wheel delta for horizontal scrolling
-        # You can adjust the 120 value to control scrolling speed
-        delta = event.angleDelta().y() // 120 * 30  # Normalize to steps of 120
-        hbar.setValue(hbar.value() - delta)
+        pixel_delta = event.pixelDelta()
+
+        if not pixel_delta.isNull():
+            # Trackpad / tablet: use pixel-accurate smooth scrolling
+            # Prefer horizontal pixel delta if available, otherwise remap vertical
+            delta = pixel_delta.x() if pixel_delta.x() != 0 else pixel_delta.y()
+            hbar.setValue(hbar.value() - delta)
+        else:
+            # Standard mouse wheel: convert angle steps to pixel offset
+            angle = event.angleDelta()
+            dy = angle.x() if angle.x() != 0 else angle.y()
+            delta = dy / 120.0 * 30
+            hbar.setValue(int(hbar.value() - delta))
+
+        event.accept()
 
 #self.canvas_tab_frame_scroll_area = HorizontalScrollArea()

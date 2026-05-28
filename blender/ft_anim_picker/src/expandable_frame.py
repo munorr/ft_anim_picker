@@ -18,15 +18,16 @@ class ClickableWidget(QWidget):
 class ExpandableFrame(QFrame):
     expandedSignal = Signal() 
     collapsedSignal = Signal()
-    def __init__(self, title, parent=None, height=None, margin=4,color='#2a2a2a',border=1, border_color='#555555', alpha=1):
+    def __init__(self, title, parent=None, height=None, margin=4,color='#2a2a2a',border=1, border_color='#555555', alpha=1, radius=4):
         super(ExpandableFrame, self).__init__(parent)
         #self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.color = color
         self.border = str(border)+'px'
         self.border_color = border_color
         self.alpha = alpha
+        self.radius = radius
         self.setStyleSheet(f'''
-                            QFrame {{ border: {self.border} solid {UT.rgba_value(self.border_color,1,self.alpha)}; border-radius: 4px; background-color: {UT.rgba_value(self.color,1,self.alpha)}; }}
+                            QFrame {{ border: {self.border} solid {UT.rgba_value(self.border_color,1,self.alpha)}; border-radius: {self.radius}px; background-color: {UT.rgba_value(self.color,1,self.alpha)}; }}
                            ''')
 
 
@@ -75,8 +76,11 @@ class ExpandableFrame(QFrame):
     
     def expand_button_style(self, button):
         bc = UT.rgba_value(self.color, 2)
-        button.setStyleSheet(f'''QPushButton {{ background-color: {bc if self.is_expanded else 'transparent'}; 
-                                         color: white; border: {'0px solid #ffffff' if self.is_expanded else f'1px solid {bc}'}; border-radius: 3px }}''')
+        bg = bc if self.is_expanded else 'transparent'
+        border = '0px solid #ffffff' if self.is_expanded else f'1px solid {bc}'
+        button.setStyleSheet(
+            f"QPushButton {{ background-color: {bg}; color: white; border: {border}; border-radius: 3px; }}"
+        )
     
     def set_alpha(self, alpha):
         """Set the alpha value and update all styles."""
@@ -85,7 +89,7 @@ class ExpandableFrame(QFrame):
     
     def update_styles(self):
         self.setStyleSheet(f'''
-                            QFrame {{ border: {self.border} solid {UT.rgba_value(self.border_color,1,self.alpha)}; border-radius: 4px; background-color: {UT.rgba_value(self.color,1,self.alpha)}; }}
+                            QFrame {{ border: {self.border} solid {UT.rgba_value(self.border_color,1,self.alpha)}; border-radius: {self.radius}px; background-color: {UT.rgba_value(self.color,1,self.alpha)}; }}
                            ''')
         self.content_widget.setStyleSheet(f'''
                                           QWidget {{border:0px solid {UT.rgba_value(self.color,1.2,self.alpha)};background-color:{UT.rgba_value(self.color,1.2,self.alpha)};}}

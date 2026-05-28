@@ -14,6 +14,7 @@ from . import utils as UT
 from . import picker_button as PB
 from . import custom_slider as CS
 from . import custom_color_picker as CCP
+from . import expandable_frame as EF
 from functools import partial
 
 def create_button_edit_widgets(parent):
@@ -28,7 +29,7 @@ def create_button_edit_widgets(parent):
         layout.setSpacing(space)
     
     def set_widget_style(widget, color):
-        widget.setStyleSheet(f"""QWidget {{background-color: {color}; padding: 0px; border-radius: 3px; border: 0px solid #666666;}}
+        widget.setStyleSheet(f"""QWidget {{background-color: transparent; padding: 0px; border-radius: 3px; border: 0px solid #666666;}}
         QLabel {{color: {label_color}; border: none;font-size: 11px;}}
         """)
 
@@ -78,6 +79,122 @@ def create_button_edit_widgets(parent):
     widgets['rename_widget'] = rename_widget
     widgets['rename_edit'] = rename_edit
     widgets['clear_button'] = clear_button
+
+    #---------------------------------------------------------------------------------------------------------------------------------------
+    # Text Formatting drawer (collapsible)
+    text_format_drawer = EF.ExpandableFrame("Text Format", parent=None, color=widget_color, border=0, border_color='#333333')
+    text_format_widget = QtWidgets.QWidget()
+    set_widget_style(text_format_widget, widget_color)
+    text_format_layout = QtWidgets.QVBoxLayout(text_format_widget)
+
+    # B/I/U buttons row
+    biu_widget = QtWidgets.QWidget()
+    biu_layout = QtWidgets.QHBoxLayout(biu_widget)
+    set_margin_space(biu_layout, 0, 4)
+    
+    text_format_label = QtWidgets.QLabel("Style")
+    text_format_label.setStyleSheet(f"color: {label_color};")
+    text_format_layout.addWidget(text_format_label)
+    
+
+    TFS = 22  # Text Format Size
+    # Color Picker button
+    text_color_picker = CCP.ColorPicker(mode='palette', size=TFS)
+    biu_layout.addWidget(text_color_picker)
+    
+    # Bold button
+    text_bold_btn = QtWidgets.QPushButton("B")
+    text_bold_btn.setCheckable(True)
+    text_bold_btn.setFixedSize(TFS, TFS)
+    text_bold_btn.setStyleSheet("""
+        QPushButton {
+            background-color: #333333;
+            color: #ffffff;
+            font-weight: bold;
+            border-radius: 3px;
+            border: 1px solid #555555;
+        }
+        QPushButton:hover {
+            background-color: #444444;
+        }
+        QPushButton:checked {
+            background-color: #5c7918;
+            border: 1px solid #6c9809;
+        }
+    """)
+    biu_layout.addWidget(text_bold_btn)
+    
+    # Italic button
+    text_italic_btn = QtWidgets.QPushButton("I")
+    text_italic_btn.setCheckable(True)
+    text_italic_btn.setFixedSize(TFS, TFS)
+    text_italic_btn.setStyleSheet("""
+        QPushButton {
+            background-color: #333333;
+            color: #ffffff;
+            font-style: italic;
+            border-radius: 3px;
+            border: 1px solid #555555;
+        }
+        QPushButton:hover {
+            background-color: #444444;
+        }
+        QPushButton:checked {
+            background-color: #5c7918;
+            border: 1px solid #6c9809;
+        }
+    """)
+    biu_layout.addWidget(text_italic_btn)
+    
+    # Underline button
+    text_underline_btn = QtWidgets.QPushButton("U")
+    text_underline_btn.setCheckable(True)
+    text_underline_btn.setFixedSize(TFS, TFS)
+    text_underline_btn.setStyleSheet("""
+        QPushButton {
+            background-color: #333333;
+            color: #ffffff;
+            text-decoration: underline;
+            border-radius: 3px;
+            border: 1px solid #555555;
+        }
+        QPushButton:hover {
+            background-color: #444444;
+        }
+        QPushButton:checked {
+            background-color: #5c7918;
+            border: 1px solid #6c9809;
+        }
+    """)
+    biu_layout.addWidget(text_underline_btn)
+    
+    biu_layout.addStretch()
+    text_format_layout.addWidget(biu_widget)
+    
+    widgets['text_format_widget'] = text_format_widget
+    widgets['text_color_picker'] = text_color_picker
+    widgets['text_bold_btn'] = text_bold_btn
+    widgets['text_italic_btn'] = text_italic_btn
+    widgets['text_underline_btn'] = text_underline_btn
+    
+    # Connect text formatting controls
+    def handle_text_color_change(qcolor):
+        main_window = parent.window()
+        if hasattr(main_window, "change_text_color_for_selected_buttons"):
+            main_window.change_text_color_for_selected_buttons(qcolor.name())
+    
+    text_color_picker.colorChanged.connect(handle_text_color_change)
+    text_bold_btn.toggled.connect(lambda checked: queue_text_format_change(parent.window(), 'bold', checked))
+    text_italic_btn.toggled.connect(lambda checked: queue_text_format_change(parent.window(), 'italic', checked))
+    text_underline_btn.toggled.connect(lambda checked: queue_text_format_change(parent.window(), 'underline', checked))
+
+    #add divider
+    divider = QtWidgets.QFrame()
+    divider.setFixedHeight(1)
+    #divider.setFrameShape(QtWidgets.QFrame.HLine)
+    #divider.setFrameShadow(QtWidgets.QFrame.Sunken)
+    divider.setStyleSheet("background-color: rgba(255, 255, 255, 0.1);")
+    text_format_layout.addWidget(divider)
     #---------------------------------------------------------------------------------------------------------------------------------------
     # Transform widget
     transform_widget = QtWidgets.QWidget()
@@ -92,10 +209,10 @@ def create_button_edit_widgets(parent):
     transform_label = QtWidgets.QLabel("Size")
     transform_label.setStyleSheet(f"color: {label_color};")
 
-    transform_prop = CB.CustomRadioButton("", fill=True, width=8, height=8, color="#6c9809")
+    transform_prop = CB.CustomRadioButton("", fill=True, width=8, height=8, color="#1D65CA")
     transform_w_edit = CLE.IntegerLineEdit(min_value=0, max_value=2000, increment=1, width=None, height=18, label="W")
     transform_h_edit = CLE.IntegerLineEdit(min_value=0, max_value=2000, increment=1, width=None, height=18, label="H")
-    transform_match = CB.CustomButton("", width=6, height=18, color="#6c9809", tooltip="Match Width to Height")
+    transform_match = CB.CustomButton("", width=6, height=18, color="#1D65CA", tooltip="Match Width to Height")
     
     transform_main_layout.addWidget(transform_label)
     transform_main_layout.addLayout(transform_layout)
@@ -147,7 +264,7 @@ def create_button_edit_widgets(parent):
     bh = 2000  # button height max
     top_left_radius = CLE.IntegerLineEdit(min_value=0, max_value=bh, increment=1, height=18, label="╭")
     top_right_radius = CLE.IntegerLineEdit(min_value=0, max_value=bh, increment=1, height=18, label="╮")
-    single_radius = CB.CustomRadioButton("", fill=True, width=8, height=8, color="#6c9809")
+    single_radius = CB.CustomRadioButton("", fill=True, width=8, height=8, color="#1D65CA")
     bottom_left_radius = CLE.IntegerLineEdit(min_value=0, max_value=bh, increment=1, height=18, label="╰")
     bottom_right_radius = CLE.IntegerLineEdit(min_value=0, max_value=bh, increment=1, height=18, label="╯")
 
@@ -187,61 +304,6 @@ def create_button_edit_widgets(parent):
     
     widgets['opacity_widget'] = opacity_widget  
     widgets['opacity_slider'] = opacity_slider
-    #---------------------------------------------------------------------------------------------------------------------------------------
-    # Thumbnail directory widget
-    thumbnail_dir_widget = QtWidgets.QWidget()
-    set_widget_style(thumbnail_dir_widget, widget_color)
-    thumbnail_dir_layout = QtWidgets.QVBoxLayout(thumbnail_dir_widget)
-    set_margin_space(thumbnail_dir_layout,6,6)
-    
-    thumbnail_dir_label = QtWidgets.QLabel("Thumbnail Directory:")
-    thumbnail_dir_label.setStyleSheet("color: #aaaaaa;")
-    
-    thumbnail_dir_edit = QtWidgets.QLineEdit()
-    thumbnail_dir_edit.setStyleSheet("background-color: #222222; color: #dddddd; border: 1px solid #444444; border-radius: 3px; padding: 2px;")
-    thumbnail_dir_edit.setFixedHeight(24)
-    thumbnail_dir_edit.setReadOnly(True)
-    
-    # Set the current thumbnail directory
-    from . import data_management as DM
-    thumbnail_dir = DM.PickerDataManager.get_thumbnail_directory()
-    thumbnail_dir_edit.setText(thumbnail_dir)
-    
-    thumbnail_dir_button = QtWidgets.QPushButton("Browse")
-    thumbnail_dir_button.setStyleSheet("""
-        QPushButton {
-            background-color: #5285a6;
-            color: white;
-            border: none;
-            border-radius: 3px;
-            padding: 2px 10px;
-        }
-        QPushButton:hover {
-            background-color: #77c2f2;
-        }
-    """)
-    thumbnail_dir_button.setFixedHeight(24)
-    
-    thumbnail_dir_layout.addWidget(thumbnail_dir_label)
-    thumbnail_dir_layout.addWidget(thumbnail_dir_edit)
-    thumbnail_dir_layout.addWidget(thumbnail_dir_button)
-    
-    widgets['thumbnail_dir_widget'] = thumbnail_dir_widget
-    widgets['thumbnail_dir_edit'] = thumbnail_dir_edit
-    widgets['thumbnail_dir_button'] = thumbnail_dir_button
-    
-    # Connect thumbnail directory functionality
-    def browse_thumbnail_directory():
-        directory = QtWidgets.QFileDialog.getExistingDirectory(
-            parent,
-            "Select Thumbnail Directory",
-            thumbnail_dir_edit.text() or ""
-        )
-        if directory:
-            thumbnail_dir_edit.setText(directory)
-            DM.PickerDataManager.set_thumbnail_directory(directory)
-    
-    thumbnail_dir_button.clicked.connect(browse_thumbnail_directory)
     #---------------------------------------------------------------------------------------------------------------------------------------
     # Color widget
     color_widget = QtWidgets.QWidget()
@@ -436,6 +498,13 @@ def queue_color_change(main_window, color):
             
             # DEBUGGING: Print to verify the color change is being queued
             #print(f"Queued color change: {color_str}")
+
+def queue_text_format_change(main_window, format_type, value):
+    """Queue text formatting changes for batch processing"""
+    if isinstance(main_window, UI.BlenderAnimPickerWindow):
+        if not main_window.is_updating_widgets:
+            main_window.pending_widget_changes[f'text_{format_type}'] = value
+            main_window.widget_update_timer.start(main_window.widget_update_delay)
 
 # Original helper functions (kept for compatibility)
 def rename_selected_buttons(main_window, new_label):

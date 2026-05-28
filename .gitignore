@@ -1,0 +1,15 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Windows / Google Drive cruft
+desktop.ini
+
+# Runtime / local user state (never commit)
+**/library_prefs.json
+**/marketplace_cache.json
+**/update_cache.json
+**/auth_prefs.json
+
+# Local editor / tooling settings
+.claude/settings.local.json

@@ -96,7 +96,7 @@ class TwoColumnMenu(QtWidgets.QMenu):
                     rect = QtCore.QRectF(x, y, icon_size, icon_size)
                     
                     # Set color from notification_color property
-                    painter.setBrush(QColor(action_data.get("notification_color", "#7db305")))
+                    painter.setBrush(QColor(action_data.get("notification_color", "#1D65CA")))
                     painter.setPen(Qt.NoPen)
                     
                     # Draw the circle
@@ -187,7 +187,7 @@ class CustomButton(QtWidgets.QPushButton):
     rightClicked = QtCore.Signal(QtCore.QPoint)
 
     def __init__(self, text='', icon=None, color='#4d4d4d', tooltip='', flat=False, size=None, width=None, height=None, parent=None, radius=3, ContextMenu=False, 
-                 cmColor='#00749a', cmHeight = 20, onlyContext=False, alpha=1,textColor='white', text_size=12, notification=False, notification_color='#7db305'):
+                 cmColor='#00749a', cmHeight = 20, onlyContext=False, alpha=1,textColor='white', text_size=12, notification=False, notification_color='#1D65CA'):
         super().__init__(parent)
         self.setFlat(flat)
         self.base_color = color
@@ -319,7 +319,7 @@ class CustomButton(QtWidgets.QPushButton):
             self.menu_actions.append((text, position))
             self.context_menu.rebuild_grid(self.menu_actions)
 
-    def addToMenu(self, name, function, icon=None, position=None, rowSpan=1, colSpan=1, notification=False, notification_color='#7db305'):
+    def addToMenu(self, name, function, icon=None, position=None, rowSpan=1, colSpan=1, notification=False, notification_color='#1D65CA'):
         """
         Add an item to the context menu.
         Args:
@@ -401,7 +401,7 @@ class CustomButton(QtWidgets.QPushButton):
             painter.setRenderHint(QPainter.Antialiasing)
             
             # Calculate the size and position of the circle
-            icon_size = min(10, self.height() // 2.5)  # Size proportional to button height, max 10px
+            icon_size = min(7, self.height() // 3)  # Size proportional to button height
             margin = 2  # Margin from the bottom-right edge
             
             x = self.width() - icon_size - margin
@@ -415,13 +415,13 @@ class CustomButton(QtWidgets.QPushButton):
             # Draw the circle
             painter.drawEllipse(rect)
         
-    def set_notification(self, state=True, color="#7db305"):
+    def set_notification(self, state=True, color="#1D65CA"):
         """Set notification state and color for the button"""
         self.notification = state
         self.notification_color = color
         self.update()
         
-    def set_menu_item_notification(self, action_name, state=True, color="#7db305"):
+    def set_menu_item_notification(self, action_name, state=True, color="#1D65CA"):
         """Set notification state and color for a menu item by name"""
         for item in self.menu_actions:
             if isinstance(item, tuple) and len(item) >= 4 and isinstance(item[0], QAction):

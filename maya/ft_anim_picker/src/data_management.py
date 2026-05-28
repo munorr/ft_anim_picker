@@ -2,15 +2,16 @@ import maya.cmds as cmds
 import json
 from collections import OrderedDict
 import time
-from threading import Timer
 
 try:
-    from PySide6 import QtWidgets
+    from PySide6 import QtWidgets, QtCore
 except ImportError:
-    from PySide2 import QtWidgets
+    from PySide2 import QtWidgets, QtCore
 
 class PickerDataManager:
     ATTR_NAME = 'PickerToolData'
+    SCENE_LINK_ATTR = 'PickerLink'
+    _active_session = None  # PickerSession reference for .bpicker auto-save
     DEFAULT_DATA = OrderedDict({
         'tabs': OrderedDict({
             'Tab 1': {
@@ -20,10 +21,12 @@ class PickerDataManager:
                 'image_scale': 1.0,
                 'background_value': 20,
                 'namespace': 'None',
+                'namespace_filter_mode': False,
+                'pinned_namespaces': [],
                 'show_dots': False,
-                'show_axes': True,    
-                'show_grid': True,   
-                'grid_size': 50       
+                'show_axes': True,
+                'show_grid': True,
+                'grid_size': 50
             }
         }),
         'thumbnail_directory': ''
@@ -36,13 +39,124 @@ class PickerDataManager:
     _last_undo_state = None
     _saving_in_progress = False  # CRITICAL: Prevent recursion
 
-    # Batch update system
-    _batch_timer = None
-    _batch_delay = 0.0  # 200ms delay for batching
+    # Batch update system (QTimer-based so callbacks fire on the
+    # main thread, which is required for cmds.setAttr).
+    _batch_qtimer = None
+    _batch_delay = 0.15  # 150 ms debounce — drags/slider scrubs coalesce
     _pending_updates = False
     _last_save_time = 0
-    _min_save_interval = 0.0  # Minimum 100ms between saves
+    _min_save_interval = 0.15
     _cached_data = None
+
+    # --- Node lock helpers ---
+    @classmethod
+    def _unlock_node(cls, node='defaultObjectSet'):
+        """Unlock a node if locked. Returns True if it was locked."""
+        try:
+            was_locked = cmds.lockNode(node, query=True, lock=True)[0]
+            if was_locked:
+                cmds.lockNode(node, lock=False)
+            return was_locked
+        except Exception:
+            return False
+
+    @classmethod
+    def _relock_node(cls, node='defaultObjectSet', was_locked=True):
+        """Re-lock a node if it was previously locked."""
+        if was_locked:
+            try:
+                cmds.lockNode(node, lock=True)
+            except Exception:
+                pass
+
+    # --- Session integration (dual storage: scene attrs + .bpicker) ---
+    @classmethod
+    def set_active_session(cls, session):
+        """Register a PickerSession for .bpicker auto-save alongside scene storage."""
+        cls._active_session = session
+
+    @classmethod
+    def get_active_session(cls):
+        """Return the currently active PickerSession, or None."""
+        return cls._active_session
+
+    # --- Scene link (UUID reference to .bpicker in library) ---
+    @classmethod
+    def get_scene_link(cls):
+        """Read the scene-level picker link. Returns dict or None."""
+        try:
+            node = 'defaultObjectSet'
+            if cmds.objExists(node) and cmds.attributeQuery(cls.SCENE_LINK_ATTR, node=node, exists=True):
+                raw = cmds.getAttr(f'{node}.{cls.SCENE_LINK_ATTR}')
+                if raw:
+                    return json.loads(raw)
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def set_scene_link(cls, link_data):
+        """Write the scene-level picker link."""
+        try:
+            node = 'defaultObjectSet'
+            if not cmds.objExists(node):
+                return
+            was_locked = cls._unlock_node(node)
+            try:
+                if not cmds.attributeQuery(cls.SCENE_LINK_ATTR, node=node, exists=True):
+                    cmds.addAttr(node, longName=cls.SCENE_LINK_ATTR, dataType='string')
+                cmds.setAttr(f'{node}.{cls.SCENE_LINK_ATTR}', json.dumps(link_data), type='string')
+            finally:
+                cls._relock_node(node, was_locked)
+        except Exception as e:
+            cmds.warning(f"Failed to set scene link: {e}")
+
+    @classmethod
+    def clear_scene_link(cls):
+        """Remove the scene-level picker link."""
+        try:
+            node = 'defaultObjectSet'
+            if cmds.objExists(node) and cmds.attributeQuery(cls.SCENE_LINK_ATTR, node=node, exists=True):
+                was_locked = cls._unlock_node(node)
+                try:
+                    cmds.deleteAttr(f'{node}.{cls.SCENE_LINK_ATTR}')
+                finally:
+                    cls._relock_node(node, was_locked)
+        except Exception:
+            pass
+
+    # --- Media path resolution ---
+    @classmethod
+    def resolve_image_path(cls, stored_path, tab_name=None):
+        """Resolve a stored image path to an absolute path for display.
+
+        Handles: bpicker:// archive paths, absolute paths, and legacy formats.
+        Returns str (absolute path) or None.
+        """
+        import os
+        if not stored_path:
+            return None
+
+        # BPicker archive-relative path (session media)
+        if stored_path.startswith("bpicker://"):
+            if cls._active_session and hasattr(cls._active_session, 'get_media_path'):
+                return cls._active_session.get_media_path(stored_path)
+            return None
+
+        # Already absolute and exists
+        if os.path.isabs(stored_path) and os.path.exists(stored_path):
+            return stored_path
+
+        # Try relative to Maya workspace
+        try:
+            workspace = cmds.workspace(q=True, rootDirectory=True)
+            resolved = os.path.join(workspace, stored_path)
+            if os.path.exists(resolved):
+                return resolved
+        except Exception:
+            pass
+
+        return None
 
     #----------------------------------------------------------------------------------------------------------------------------------------
     # UNDO REDO SYSTEM
@@ -150,7 +264,7 @@ class PickerDataManager:
                 if len(cls._undo_stack) > cls._max_undo_steps:
                     cls._undo_stack.pop(0)
                 
-                print(f"Saved undo state: {operation_name} (Stack size: {len(cls._undo_stack)})")
+                #print(f"Saved undo state: {operation_name} (Stack size: {len(cls._undo_stack)})")
 
             # Clear redo stack when new action is performed
             cls._redo_stack.clear()
@@ -209,7 +323,7 @@ class PickerDataManager:
         finally:
             cls._recording_enabled = old_recording
             
-        print(f"Undid: {undo_entry['operation']}")
+        #print(f"Undid: {undo_entry['operation']}")
         return undo_entry['operation'], restored_selected_ids
     
     @classmethod
@@ -377,7 +491,11 @@ class PickerDataManager:
             cmds.createNode('objectSet', name='defaultObjectSet')
         
         if not cmds.attributeQuery(cls.ATTR_NAME, node='defaultObjectSet', exists=True):
-            cmds.addAttr('defaultObjectSet', longName=cls.ATTR_NAME, dataType='string')
+            was_locked = cls._unlock_node('defaultObjectSet')
+            try:
+                cmds.addAttr('defaultObjectSet', longName=cls.ATTR_NAME, dataType='string')
+            finally:
+                cls._relock_node('defaultObjectSet', was_locked)
             # CRITICAL FIX: Use internal method to avoid recursion during initialization
             cls._perform_save(cls.DEFAULT_DATA)
 
@@ -483,55 +601,88 @@ class PickerDataManager:
         return data
 
     @classmethod
-    def save_data(cls, data, force_immediate=False):
-        """Save data with batching to improve performance"""
+    def save_data(cls, data, force_immediate=False, notify_session=True):
+        """Save data with batching to improve performance.
+
+        Args:
+            data: The picker data dict to save.
+            force_immediate: Skip batching and save now.
+            notify_session: If False, skip marking the PickerSession dirty.
+                Use this for view-only changes (pan/zoom) that don't need
+                to trigger a .bpicker archive repack.
+        """
         # Update cache
         cls._cached_data = data
-        
+
         current_time = time.time()
-        
+
         # Force immediate save for critical operations
         if force_immediate:
-            cls._perform_save(data)
+            cls._perform_save(data, notify_session=notify_session)
             return
-            
+
         # Check if we need to throttle saves
         if current_time - cls._last_save_time < cls._min_save_interval:
             # Schedule a batched save
             cls._schedule_batched_save(data)
             return
-            
+
         # Perform immediate save if enough time has passed
-        cls._perform_save(data)
+        cls._perform_save(data, notify_session=notify_session)
 
     @classmethod
-    def _perform_save(cls, data):
+    def _perform_save(cls, data, notify_session=True):
         """Actually perform the save operation"""
         try:
-            cmds.setAttr(f'defaultObjectSet.{cls.ATTR_NAME}', json.dumps(data), type='string')
+            was_locked = cls._unlock_node('defaultObjectSet')
+            try:
+                cmds.setAttr(f'defaultObjectSet.{cls.ATTR_NAME}', json.dumps(data), type='string')
+            finally:
+                cls._relock_node('defaultObjectSet', was_locked)
             cls._last_save_time = time.time()
             cls._pending_updates = False
-            
+
             # Cancel any pending batch timer since we just saved
-            if cls._batch_timer:
-                cls._batch_timer.cancel()
-                cls._batch_timer = None
-                
+            if cls._batch_qtimer is not None:
+                cls._batch_qtimer.stop()
+
+            # Notify active session so .bpicker auto-save fires
+            if notify_session and cls._active_session is not None:
+                try:
+                    cls._active_session.mark_dirty()
+                except Exception:
+                    pass
+
         except Exception as e:
             cmds.warning(f"Failed to save picker data: {e}")
 
     @classmethod
     def _schedule_batched_save(cls, data):
-        """Schedule a batched save operation"""
+        """Schedule a debounced save on the main thread via QTimer.
+
+        cmds.setAttr is not safe from background threads, so the timer
+        must fire on the Qt main thread. _cached_data holds the latest
+        pending state — repeated calls coalesce into a single save.
+        """
         cls._pending_updates = True
-        
-        # Cancel existing timer if any
-        if cls._batch_timer:
-            cls._batch_timer.cancel()
-            
-        # Schedule new save
-        cls._batch_timer = Timer(cls._batch_delay, cls._perform_save, args=[data])
-        cls._batch_timer.start()
+        cls._cached_data = data
+
+        if cls._batch_qtimer is None:
+            t = QtCore.QTimer()
+            t.setSingleShot(True)
+            t.timeout.connect(cls._flush_pending_save)
+            cls._batch_qtimer = t
+
+        cls._batch_qtimer.stop()
+        cls._batch_qtimer.start(int(cls._batch_delay * 1000))
+
+    @classmethod
+    def _flush_pending_save(cls):
+        """Fire the pending save now. Called by the QTimer and by
+        flush_pending_saves() from window-close / edit-mode-exit paths.
+        """
+        if cls._pending_updates and cls._cached_data is not None:
+            cls._perform_save(cls._cached_data)
 
     @classmethod
     def batch_update_buttons(cls, tab_name, buttons_data):
@@ -570,12 +721,27 @@ class PickerDataManager:
                 'image_scale': 1.0,
                 'background_value': 20,
                 'namespace': 'None',
+                'namespace_filter_mode': False,
+                'pinned_namespaces': [],
                 'show_dots': False,
-                'show_axes': True,    
-                'show_grid': True,   
-                'grid_size': 50      
+                'show_axes': True,
+                'show_grid': True,
+                'grid_size': 50
             })
             cls.save_data(data)
+        else:
+            # Backward-compat: backfill the new pinned-namespace fields on
+            # tabs created before this feature shipped.
+            tab_data = data['tabs'][tab_name]
+            updated = False
+            if 'namespace_filter_mode' not in tab_data:
+                tab_data['namespace_filter_mode'] = False
+                updated = True
+            if 'pinned_namespaces' not in tab_data:
+                tab_data['pinned_namespaces'] = []
+                updated = True
+            if updated:
+                cls.save_data(data)
         return data['tabs'][tab_name]
 
     @classmethod
@@ -583,7 +749,12 @@ class PickerDataManager:
         #cls.save_undo_state("Data Change")  # CRITICAL: Save state BEFORE changes
         data = cls.get_data()
         data['tabs'][tab_name] = tab_data
-        cls.save_data(data, force_immediate=True)
+        # Use the 150 ms batch debounce so rapid per-button edits (color,
+        # size, rotation, rename) coalesce into a single scene-attr write
+        # before mark_dirty() restarts the archive auto-save timer.
+        # Structural ops (add/delete/rename tab, add/delete button) keep
+        # force_immediate=True at their own call sites.
+        cls.save_data(data)
 
     @classmethod
     def add_tab(cls, tab_name, operation_name="Add Tab"):
@@ -639,6 +810,7 @@ class PickerDataManager:
         button_data['width'] = button_data.get('width', 80)
         button_data['height'] = button_data.get('height', 30)
         button_data['radius'] = button_data.get('radius', [3, 3, 3, 3])
+        button_data['rotation'] = button_data.get('rotation', 0)
 
         # Handle assigned_objects in old or new format
         if 'assigned_objects' in button_data:
@@ -697,6 +869,14 @@ class PickerDataManager:
         # Initialize pose data if not present
         if 'pose_data' not in button_data:
             button_data['pose_data'] = {}
+
+        # Initialize animation data if not present
+        if 'animation_data' not in button_data:
+            button_data['animation_data'] = {}
+
+        # Initialize controller data if not present
+        if 'controller_data' not in button_data:
+            button_data['controller_data'] = {}
 
         data['tabs'][tab_name]['buttons'].append(button_data)
         cls.save_data(data, force_immediate=True)  # Force immediate for button operations
@@ -806,6 +986,27 @@ class PickerDataManager:
             cls.save_data(data)
 
     @classmethod
+    def update_tab_namespace_filter_mode(cls, tab_name, enabled):
+        data = cls.get_data()
+        if tab_name in data['tabs']:
+            data['tabs'][tab_name]['namespace_filter_mode'] = bool(enabled)
+            cls.save_data(data, force_immediate=True)
+
+    @classmethod
+    def update_tab_pinned_namespaces(cls, tab_name, names):
+        data = cls.get_data()
+        if tab_name in data['tabs']:
+            seen = set()
+            cleaned = []
+            for n in names or []:
+                s = str(n)
+                if s not in seen:
+                    seen.add(s)
+                    cleaned.append(s)
+            data['tabs'][tab_name]['pinned_namespaces'] = cleaned
+            cls.save_data(data, force_immediate=True)
+
+    @classmethod
     def reorder_tabs(cls, new_order):
         data = cls.get_data()
         new_tabs = OrderedDict()
@@ -828,13 +1029,27 @@ class PickerDataManager:
 
     @classmethod
     def flush_pending_saves(cls):
-        """Force any pending saves to complete immediately"""
-        if cls._batch_timer:
-            cls._batch_timer.cancel()
-            cls._batch_timer = None
-        
-        if cls._pending_updates and cls._cached_data:
-            cls._perform_save(cls._cached_data)
+        """Force any pending saves to complete immediately. Call from
+        closeEvent, edit-mode exit, or before archive save to guarantee
+        any debounced writes land before the window goes away.
+
+        Also drains the active session's archive auto-save: with the 800 ms
+        debounce, closing the window 100 ms after an edit would otherwise
+        leave the archive without that edit. close() in PickerSession
+        already cleans up state, but explicit flush ensures the disk
+        catches up first.
+        """
+        if cls._batch_qtimer is not None:
+            cls._batch_qtimer.stop()
+        cls._flush_pending_save()
+
+        session = cls._active_session
+        if session is not None and session.is_dirty():
+            try:
+                session.save(auto=False)
+            except Exception as e:
+                print(f"[PickerDataManager] flush_pending_saves: "
+                      f"session save failed: {e}")
 
     @classmethod
     def set_batch_delay(cls, delay_seconds):

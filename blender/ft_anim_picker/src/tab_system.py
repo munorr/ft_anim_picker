@@ -3,9 +3,12 @@ from PySide6.QtGui import QColor
 from PySide6.QtCore import QTimer, QPropertyAnimation, QEasingCurve
 from shiboken6 import wrapInstance
 
+import os
+
 from .import picker_canvas as PC
-from . import data_management as DM 
+from . import data_management as DM
 from . import custom_dialog as CD
+from . import bpicker_format as BPF
 from collections import OrderedDict
 from . import utils as UT
 
@@ -31,6 +34,7 @@ class TabButton(QtWidgets.QPushButton):
             QPushButton:hover {
                 background-color: #5a5a5a;
             }
+        QToolTip {{background-color: #222222; color: #eeeeee ; border: 1px solid rgba(255,255,255,.2); padding: 0px;}}
         ''')
         self.setFixedHeight(16)
         self.setFixedWidth(self.calculate_button_width(text))
@@ -234,26 +238,105 @@ class TabSystem(QtCore.QObject):
                 self.switch_tab(tab_name)
 
     def add_new_tab(self):
-        '''new_tab_name, ok = QtWidgets.QInputDialog.getText(None, "New Tab", "Enter tab name:")
-        if ok and new_tab_name:
-            self.add_tab(new_tab_name, switch=True)
-            
-            # Update PickerToolData
-            DM.PickerDataManager.add_tab(new_tab_name)'''
-        
-        # Get the parent widget (the window/widget containing the tab system)
-        parent_widget = self.tab_layout.parentWidget()
-        dialog = CD.CustomDialog(parent_widget, "New Tab", (180, 100))
-        dialog.add_widget(QtWidgets.QLabel("Enter tab name:"))
-        input_field = QtWidgets.QLineEdit()
-        dialog.add_widget(input_field)
-        dialog.add_button_box()
+        from .new_tab_dialog import NewTabDialog
 
-        if dialog.exec_() == QtWidgets.QDialog.Accepted:
-            new_tab_name = input_field.text()
-            if new_tab_name:
-                self.add_tab(new_tab_name, switch=True)
-                DM.PickerDataManager.add_tab(new_tab_name)
+        parent_widget = self.tab_layout.parentWidget()
+        top_window = parent_widget.window() if parent_widget else None
+        result = NewTabDialog.show(top_window)
+        if result is None:
+            return
+
+        tab_name = result["tab_name"]
+        template_path = result.get("template_path")
+
+        if not tab_name:
+            return
+
+        if template_path:
+            self._add_tab_from_template(tab_name, template_path)
+        else:
+            self.add_tab(tab_name, switch=True)
+            DM.PickerDataManager.add_tab(tab_name)
+
+    def _add_tab_from_template(self, tab_name, template_path):
+        """Load the first tab from a template .bpicker and add it as a new tab."""
+        import shutil
+        import uuid
+
+        try:
+            info = BPF.BPickerArchive.read(template_path)
+            manifest = info["manifest"]
+            template_tabs = manifest.get("tabs", {})
+        except Exception as e:
+            print(f"[tab_system] Failed to read template: {e}")
+            self.add_tab(tab_name, switch=True)
+            DM.PickerDataManager.add_tab(tab_name)
+            return
+
+        if not template_tabs:
+            self.add_tab(tab_name, switch=True)
+            DM.PickerDataManager.add_tab(tab_name)
+            return
+
+        # Take the first tab from the template
+        source_tab_name, source_tab_data = next(iter(template_tabs.items()))
+
+        # Extract template to temp, copy media into active session
+        session = DM.PickerDataManager.get_active_session()
+        source_temp = BPF.BPickerArchive.extract_to_temp(template_path)
+
+        try:
+            if session:
+                from . import picker_io as PIO
+                tab_data = PIO._remap_imported_media(
+                    dict(source_tab_data), source_temp, session
+                )
+            else:
+                # Convert manifest paths to bpicker:// format
+                converted = BPF.build_picker_data_from_manifest(
+                    {"tabs": {tab_name: source_tab_data}}
+                )
+                tab_data = converted["tabs"].get(tab_name, source_tab_data)
+        finally:
+            shutil.rmtree(source_temp, ignore_errors=True)
+
+        # Normalize button data to PickerDataManager format
+        self._normalize_buttons(tab_data)
+
+        # Add data FIRST so it's ready when on_tab_switched reads it
+        DM.PickerDataManager.add_tab(tab_name)
+        DM.PickerDataManager.update_tab_data(tab_name, tab_data)
+
+        # Now create the UI tab and switch (triggers create_buttons which reads data)
+        self.add_tab(tab_name, switch=True)
+
+    @staticmethod
+    def _normalize_buttons(tab_data):
+        """Ensure buttons have the fields _create_single_button expects."""
+        import uuid
+        for btn in tab_data.get("buttons", []):
+            # Generate id if missing
+            if "id" not in btn:
+                btn["id"] = str(uuid.uuid4())[:8]
+
+            # Convert x/y to position tuple
+            if "position" not in btn and ("x" in btn or "y" in btn):
+                btn["position"] = (btn.pop("x", 0), btn.pop("y", 0))
+            elif "position" not in btn:
+                btn["position"] = (0, 0)
+
+            # Convert float-list color [r,g,b] to hex string
+            c = btn.get("color")
+            if isinstance(c, (list, tuple)) and len(c) >= 3:
+                if all(isinstance(v, float) and v <= 1.0 for v in c):
+                    btn["color"] = "#{:02x}{:02x}{:02x}".format(
+                        int(c[0] * 255), int(c[1] * 255), int(c[2] * 255)
+                    )
+
+            # Ensure defaults for required fields
+            btn.setdefault("opacity", 1.0)
+            btn.setdefault("radius", [3, 3, 3, 3])
+            btn.setdefault("assigned_objects", [])
 
     def rename_tab(self, button):
         old_name = button.text()
@@ -364,27 +447,61 @@ class TabSystem(QtCore.QObject):
             if tab_name == self.current_tab:
                 button.setStyleSheet('''
                     QPushButton {
-                        background-color: #3096bb;
+                        background-color: rgba(255, 255, 255, .2);
                         font-weight: bold;
                         color: white;
                         border-radius: 8px;
                         padding: 0px 0px 1px 0px;
                         font-size: 10px;
                     }
+                }
+                    QToolTip {{background-color: #222222; color: #eeeeee ; border: 1px solid rgba(255,255,255,.2); padding: 0px;}}
                 ''')
             else:
                 button.setStyleSheet('''
                     QPushButton {
-                        background-color: #444444;
+                        background-color: rgba(255, 255, 255, 0);
                         color: rgba(255, 255, 255, .5);
                         border-radius: 8px;
                         padding: 0px 0px 1px 0px;
                         font-size: 10px;
                     }
+                    QPushButton:hover {
+                        color: rgba(255, 255, 255, .8);
+                    }
+                QToolTip {{background-color: #222222; color: #eeeeee ; border: 1px solid rgba(255,255,255,.2); padding: 0px;}}
                 ''')
     #-----------------------------------------------------------------------------------
     def clear_all_tabs(self):
-        # Remove all tab buttons and clear the tabs dictionary
+        """OPTIMIZED: Properly cleanup all canvases and buttons before clearing tabs"""
+        # First, cleanup all canvases and their buttons
+        for tab_name, tab_data in list(self.tabs.items()):
+            canvas = tab_data.get('canvas')
+            if canvas:
+                # Cleanup all buttons in the canvas
+                for button in list(canvas.buttons):
+                    try:
+                        # Disconnect signals to prevent memory leaks
+                        button.setParent(None)
+                        button.deleteLater()
+                    except (RuntimeError, AttributeError):
+                        pass
+                
+                # Clear the buttons list
+                canvas.buttons.clear()
+                
+                # Disconnect canvas signals
+                try:
+                    canvas.button_selection_changed.disconnect()
+                    canvas.clicked.disconnect()
+                except:
+                    pass
+                
+                # Remove canvas from parent and delete
+                canvas.setParent(None)
+                canvas.deleteLater()
+        
+        # Now remove all tab buttons from layout
         for i in reversed(range(self.tab_layout.count() - 1)):  # -1 to keep the add button
             widget = self.tab_layout.itemAt(i).widget()
             if isinstance(widget, TabButton):
@@ -394,6 +511,10 @@ class TabSystem(QtCore.QObject):
         # Clear the tabs dictionary
         self.tabs.clear()
         self.current_tab = None
+        
+        # Force Qt to process deletion events
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
 
     def setup_tabs(self):
         data = DM.PickerDataManager.get_data()
@@ -405,36 +526,15 @@ class TabSystem(QtCore.QObject):
         self.show_tab_context_menu(pos, button)
 
     def show_tab_context_menu(self, pos, button):
-        menu = QtWidgets.QMenu()
-        menu.setWindowFlags(menu.windowFlags() | QtCore.Qt.FramelessWindowHint | QtCore.Qt.NoDropShadowWindowHint)
-        menu.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        menu.setStyleSheet('''
-            QMenu {
-                background-color: rgba(30, 30, 30, .9);
-                border: 1px solid #444444;
-                border-radius: 3px;
-                padding: 5px 7px;
-            }
-            QMenu::item {
-                background-color: transparent;
-                padding: 3px 10px 3px 3px; ;
-                margin: 3px 0px  ;
-                border-radius: 3px;
-            }
-            QMenu::item:selected {
-                background-color: #444444;
-            }
-            QMenu::item:disabled {
-                padding-left: 0px;
-                color: #888888;
-            }''')
+        menu = UT.create_styled_menu()
         
-        #label = menu.addAction("Tab Options")
-        #label.setEnabled(False)
-        
-        #menu.addSeparator()
-        rename_action = menu.addAction(QtGui.QIcon(UT.get_icon("rename.png")),"Rename Tab")
-        delete_action = menu.addAction(QtGui.QIcon(UT.get_icon("delete_red.png")),"Delete Tab")
+        rename_action = menu.addAction(QtGui.QIcon(UT.get_icon("rename.png")), "Rename Tab")
+        delete_action = menu.addAction(QtGui.QIcon(UT.get_icon("delete_red.png")), "Delete Tab")
+        menu.addSeparator()
+        export_action = menu.addAction(QtGui.QIcon(UT.get_icon("save.png")), "Export Tab...")
+        import_action = menu.addAction(QtGui.QIcon(UT.get_icon("load.png")), "Import Tab...")
+        menu.addSeparator()
+        save_template_action = menu.addAction(QtGui.QIcon(UT.get_icon("add.png")), "Save as Template")
 
         action = menu.exec_(button.mapToGlobal(pos))
 
@@ -442,5 +542,79 @@ class TabSystem(QtCore.QObject):
             self.rename_tab(button)
         elif action == delete_action:
             self.delete_tab(button)
+        elif action == export_action:
+            self._export_tab(button)
+        elif action == import_action:
+            self._import_tab()
+        elif action == save_template_action:
+            self._save_tab_as_template(button)
 
-    
+    # ── Tab Export / Import ────────────────────────────────────────────
+    def _export_tab(self, button):
+        """Export the clicked tab as a standalone .bpicker file."""
+        from . import picker_io as PIO
+        tab_name = button.tab_name
+        parent_widget = self.tab_layout.parentWidget()
+
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            parent_widget,
+            f"Export Tab '{tab_name}'",
+            os.path.expanduser(f"~/{tab_name}.bpicker"),
+            "BPicker Files (*.bpicker)"
+        )
+        if file_path:
+            PIO.export_tab_as_bpicker(tab_name, file_path)
+
+    def _import_tab(self):
+        """Import tabs from a .bpicker file into the current picker."""
+        from . import picker_io as PIO
+        parent_widget = self.tab_layout.parentWidget()
+
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            parent_widget,
+            "Import Tab from BPicker",
+            os.path.expanduser("~"),
+            "BPicker Files (*.bpicker)"
+        )
+        if not file_path:
+            return
+
+        imported_tabs = PIO.import_tabs_from_bpicker(file_path)
+        for tab_name in imported_tabs:
+            if tab_name not in self.tabs:
+                self.add_tab(tab_name, switch=False)
+        if imported_tabs:
+            self.switch_tab(imported_tabs[-1])
+            self.tab_reordered.emit()
+
+    def _save_tab_as_template(self, button):
+        """Save the clicked tab as a template .bpicker in the templates folder."""
+        from . import picker_io as PIO
+        from .config.settings import TEMPLATE_DIR
+
+        tab_name = button.tab_name
+        os.makedirs(str(TEMPLATE_DIR), exist_ok=True)
+
+        # Sanitize filename
+        safe_name = tab_name.strip()
+        for ch in r'<>:"/\|?*':
+            safe_name = safe_name.replace(ch, '_')
+        dest_path = os.path.join(str(TEMPLATE_DIR), f"{safe_name}.bpicker")
+
+        if PIO.export_tab_as_bpicker(tab_name, dest_path):
+            # Capture canvas preview and inject into the archive
+            if self.current_tab == tab_name:
+                canvas = self.tabs[tab_name]['canvas']
+                try:
+                    import tempfile
+                    preview_path = os.path.join(tempfile.gettempdir(), "template_preview.png")
+                    pixmap = canvas.grab()
+                    scaled = pixmap.scaled(256, 256, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+                    scaled.save(preview_path, "PNG")
+                    BPF.BPickerArchive.add_media(dest_path, "cache/preview.png", open(preview_path, 'rb').read())
+                    os.remove(preview_path)
+                except Exception as e:
+                    print(f"[tab_system] Could not capture template preview: {e}")
+
+            print(f"[tab_system] Saved tab '{tab_name}' as template: {dest_path}")
+

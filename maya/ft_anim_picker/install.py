@@ -1,9 +1,9 @@
 """
-Drag and drop this file into Maya to install the FT Anim Picker.
+Drag and drop this file into Maya to install the BGEN Picker.
 
 This will:
-- Create a button in the active shelf with the FT Anim Picker logo
-- The button will load/reload the FT Anim Picker tool
+- Create a button in the active shelf with the BGEN Picker logo
+- The button will load/reload the BGEN Picker tool
 """
 
 import maya.cmds as cmds
@@ -37,14 +37,14 @@ def unload(pkg):
         sys.modules.pop(name)
         #print("Unloaded {}.".format(name))
 
-def create_ft_anim_picker_button():
+def create_bgen_picker_button():
     # Get the directory where this script is located
     script_dir = os.path.normpath(os.path.dirname(os.path.realpath(__file__)))
     # Get the parent directory (where ft_anim_picker is located)
     parent_dir = os.path.normpath(os.path.dirname(script_dir))
     
     # Define the icon path
-    icon_path = os.path.join(script_dir,'src', 'ft_picker_icons', 'ftap_logo_64.png')
+    icon_path = os.path.join(script_dir,'src', 'bgen_picker_icons', 'bgen-picker-icon-02.png')
     
     # Create the command string - use raw string and normalize path
     parent_dir_normalized = parent_dir.replace("\\", "/")
@@ -72,7 +72,7 @@ except:
     if gShelfTopLevel:
         current_shelf = cmds.tabLayout(gShelfTopLevel, query=True, selectTab=True)
         shelf_button = cmds.shelfButton(
-            label="FT Anim Picker (v2.2.3)",
+            label="BGEN Picker",
             image=icon_path,
             command=command_str,
             parent=current_shelf,
@@ -91,7 +91,7 @@ def onMayaDroppedPythonFile(*args, **kwargs):
         unload(ft_anim_picker)
     except:
         pass
-    create_ft_anim_picker_button()
+    create_bgen_picker_button()
     
 
 # This will be executed when the file is dropped into Maya

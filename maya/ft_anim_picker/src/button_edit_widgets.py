@@ -50,7 +50,7 @@ def create_button_edit_widgets(parent):
     QLineEdit {{
         background-color: transparent; 
         color: #dddddd; 
-        border: 0px solid #5c7918; 
+        border: 0px solid #1D65CA; 
         border-radius: 3px; 
         padding: 2px;
     }}''')
@@ -65,7 +65,7 @@ def create_button_edit_widgets(parent):
             background-color: transparent;
             color: #dddddd;
             border-radius: 3px;
-            border: 0px solid #5c7918;
+            border: 0px solid #1D65CA;
             font-weight: bold;
             font-size: 12px;
         }
@@ -182,7 +182,7 @@ def create_button_edit_widgets(parent):
     opacity_slider = CS.CustomSlider(
         min_value=0, max_value=100, float_precision=0, 
         height=18, radius=8, prefix='',
-        suffix='%', color='#5c7918'
+        suffix='%', color='#1D65CA'
     )
     opacity_slider.setValue(100)
     opacity_layout.addWidget(opacity_slider)
